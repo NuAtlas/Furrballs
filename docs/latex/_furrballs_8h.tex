@@ -1,0 +1,43 @@
+\doxysection{Furrballs/include/\+Furrballs.h File Reference}
+\hypertarget{_furrballs_8h}{}\label{_furrballs_8h}\index{Furrballs/include/Furrballs.h@{Furrballs/include/Furrballs.h}}
+{\ttfamily \#include $<$memory$>$}\newline
+{\ttfamily \#include $<$string$>$}\newline
+{\ttfamily \#include $<$filesystem$>$}\newline
+{\ttfamily \#include $<$thread$>$}\newline
+{\ttfamily \#include $<$rocksdb/db.\+h$>$}\newline
+{\ttfamily \#include $<$rocksdb/options.\+h$>$}\newline
+{\ttfamily \#include $<$rocksdb/advanced\+\_\+cache.\+h$>$}\newline
+{\ttfamily \#include $<$unordered\+\_\+map$>$}\newline
+{\ttfamily \#include $<$unistd.\+h$>$}\newline
+\doxysubsubsection*{Classes}
+\begin{DoxyCompactItemize}
+\item 
+class \mbox{\hyperlink{class_furrball_1_1_cache_view}{Furrball\+::\+Cache\+View$<$ Value $>$}}
+\item 
+class \mbox{\hyperlink{class_furrball_1_1_cache}{Furrball\+::\+Cache$<$ Key, Value, Policy $>$}}
+\item 
+class \mbox{\hyperlink{class_furrball_1_1_a_r_c_policy}{Furrball\+::\+ARCPolicy$<$ Key, Value $>$}}
+\begin{DoxyCompactList}\small\item\em Implements the ARC eviction policy. \end{DoxyCompactList}\item 
+class \mbox{\hyperlink{class_furrball_1_1_s3_f_i_f_o_policy}{Furrball\+::\+S3\+FIFOPolicy$<$ Key, Value $>$}}
+\begin{DoxyCompactList}\small\item\em Implements the S3\+FIFO eviction policy. \end{DoxyCompactList}\item 
+class \mbox{\hyperlink{class_furrball_1_1_l_r_u_policy}{Furrball\+::\+LRUPolicy$<$ Key, Value $>$}}
+\begin{DoxyCompactList}\small\item\em Implements the LRU eviction policy. \end{DoxyCompactList}\item 
+class \mbox{\hyperlink{class_furrball_1_1_l_f_u_policy}{Furrball\+::\+LFUPolicy$<$ Key, Value $>$}}
+\begin{DoxyCompactList}\small\item\em Implements the LFU eviction policy. \end{DoxyCompactList}\item 
+class \mbox{\hyperlink{class_furrball_1_1_furr_ball}{Furrball\+::\+Furr\+Ball}}
+\begin{DoxyCompactList}\small\item\em Furrballs are a LZ4 Compressed DB using Rocks\+DB with \doxylink{class_furrball_1_1_cache}{Cache} and Paging Logic. \end{DoxyCompactList}\end{DoxyCompactItemize}
+\doxysubsubsection*{Namespaces}
+\begin{DoxyCompactItemize}
+\item 
+namespace \mbox{\hyperlink{namespace_furrball}{Furrball}}
+\end{DoxyCompactItemize}
+\doxysubsubsection*{Typedefs}
+\begin{DoxyCompactItemize}
+\item 
+typedef \mbox{\hyperlink{class_furrball_1_1_cache}{Cache}}$<$ size\+\_\+t, void \texorpdfstring{$\ast$}{*}, \mbox{\hyperlink{class_furrball_1_1_a_r_c_policy}{ARCPolicy}} $>$ \mbox{\hyperlink{namespace_furrball_a1d08305108865a8c314a15b20d627c1f}{Furrball\+::\+ARCCache}}
+\begin{DoxyCompactList}\small\item\em A \doxylink{class_furrball_1_1_cache}{Cache} with size\+\_\+t as Keys, void\texorpdfstring{$\ast$}{*} as values and ARC eviction policy. \end{DoxyCompactList}\end{DoxyCompactItemize}
+\doxysubsubsection*{Functions}
+\begin{DoxyCompactItemize}
+\item 
+size\+\_\+t \mbox{\hyperlink{namespace_furrball_a3f53cf55c0dc81a50e47cffc339a3d27}{Furrball\+::\+Get\+Available\+Memory}} ()
+\begin{DoxyCompactList}\small\item\em Returns the available memory, works for both Windows and Unix. \end{DoxyCompactList}\end{DoxyCompactItemize}

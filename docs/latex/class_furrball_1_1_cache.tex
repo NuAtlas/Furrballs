@@ -1,0 +1,168 @@
+\doxysection{Cache\texorpdfstring{$<$}{<} Key, Value, Policy \texorpdfstring{$>$}{>} Class Template Reference}
+\hypertarget{class_furrball_1_1_cache}{}\label{class_furrball_1_1_cache}\index{Cache$<$ Key, Value, Policy $>$@{Cache$<$ Key, Value, Policy $>$}}
+
+
+Caching Interface.  
+
+
+
+
+{\ttfamily \#include $<$Furrballs.\+h$>$}
+
+\doxysubsubsection*{Public Member Functions}
+\begin{DoxyCompactItemize}
+\item 
+\mbox{\hyperlink{class_furrball_1_1_cache_ae1e6297c25b58d8c5a0f7dad45487c08}{Cache}} ()
+\item 
+\mbox{\hyperlink{class_furrball_1_1_cache}{Cache}} \& \mbox{\hyperlink{class_furrball_1_1_cache_a0d4190c9ee3825ee706609a181b39769}{operator=}} (\mbox{\hyperlink{class_furrball_1_1_cache}{Cache}} \&\&mv)
+\item 
+\mbox{\hyperlink{class_furrball_1_1_cache_a2b8d780373fc10d270e9281c32413374}{Cache}} (\mbox{\hyperlink{class_furrball_1_1_cache}{Cache}} \&\&move)
+\item 
+\mbox{\hyperlink{class_furrball_1_1_cache_ac6438f8cf5ae58377894c04866277ccd}{Cache}} (const \mbox{\hyperlink{class_furrball_1_1_cache}{Cache}} \&)=delete
+\begin{DoxyCompactList}\small\item\em Cannot Copy \doxylink{class_furrball_1_1_cache}{Cache}. \end{DoxyCompactList}\item 
+\mbox{\hyperlink{class_furrball_1_1_cache}{Cache}} \& \mbox{\hyperlink{class_furrball_1_1_cache_a1a3c1f861e0e0ea89e996925f793f371}{operator=}} (const \mbox{\hyperlink{class_furrball_1_1_cache}{Cache}} \&mv)=delete
+\begin{DoxyCompactList}\small\item\em Cannot Copy \doxylink{class_furrball_1_1_cache}{Cache}. \end{DoxyCompactList}\item 
+\mbox{\hyperlink{class_furrball_1_1_cache_a899b8bf120ecc87b59e142f00b2987b0}{\texorpdfstring{$\sim$}{\string~}\+Cache}} ()
+\item 
+void \mbox{\hyperlink{class_furrball_1_1_cache_a740071247a178d84b8bf2b17901509b4}{Expand}} ()
+\item 
+size\+\_\+t \mbox{\hyperlink{class_furrball_1_1_cache_a23b0888a260f98efd146f60090703d40}{Get\+Capacity}} ()
+\item 
+void \mbox{\hyperlink{class_furrball_1_1_cache_ae796495db1a9e1a26f5fc436ff0c6efd}{Set}} (Key k, Value v)
+\item 
+Value \mbox{\hyperlink{class_furrball_1_1_cache_a0d73a4ace6bc91a253661f2ba624cdf1}{Get}} (Key k)
+\end{DoxyCompactItemize}
+
+
+\doxysubsection{Detailed Description}
+\subsubsection*{template$<$class Key, class Value, template$<$ class, class $>$ class Policy$>$\newline
+class Furrball\+::\+Cache$<$ Key, Value, Policy $>$}
+
+\begin{DoxyTemplParams}{Template Parameters}
+{\em Key} & Specifies Key Type. \\
+\hline
+{\em Value} & Specifies Value Type. \\
+\hline
+{\em Policy} & Specifies the eviction policy to be used. \\
+\hline
+\end{DoxyTemplParams}
+\begin{DoxySeeAlso}{See also}
+\doxylink{class_furrball_1_1_a_r_c_policy}{ARCPolicy} 
+\end{DoxySeeAlso}
+
+
+Definition at line \mbox{\hyperlink{_furrballs_8h_source_l00048}{48}} of file \mbox{\hyperlink{_furrballs_8h_source}{Furrballs.\+h}}.
+
+
+
+\doxysubsection{Constructor \& Destructor Documentation}
+\Hypertarget{class_furrball_1_1_cache_ae1e6297c25b58d8c5a0f7dad45487c08}\index{Cache$<$ Key, Value, Policy $>$@{Cache$<$ Key, Value, Policy $>$}!Cache@{Cache}}
+\index{Cache@{Cache}!Cache$<$ Key, Value, Policy $>$@{Cache$<$ Key, Value, Policy $>$}}
+\doxysubsubsection{\texorpdfstring{Cache()}{Cache()}\hspace{0.1cm}{\footnotesize\ttfamily [1/3]}}
+{\footnotesize\ttfamily \label{class_furrball_1_1_cache_ae1e6297c25b58d8c5a0f7dad45487c08} 
+template$<$class Key , class Value , template$<$ class, class $>$ class Policy$>$ \\
+\mbox{\hyperlink{class_furrball_1_1_cache}{Cache}} (\begin{DoxyParamCaption}{}{}\end{DoxyParamCaption})\hspace{0.3cm}{\ttfamily [inline]}}
+
+
+
+Definition at line \mbox{\hyperlink{_furrballs_8h_source_l00056}{56}} of file \mbox{\hyperlink{_furrballs_8h_source}{Furrballs.\+h}}.
+
+\Hypertarget{class_furrball_1_1_cache_a2b8d780373fc10d270e9281c32413374}\index{Cache$<$ Key, Value, Policy $>$@{Cache$<$ Key, Value, Policy $>$}!Cache@{Cache}}
+\index{Cache@{Cache}!Cache$<$ Key, Value, Policy $>$@{Cache$<$ Key, Value, Policy $>$}}
+\doxysubsubsection{\texorpdfstring{Cache()}{Cache()}\hspace{0.1cm}{\footnotesize\ttfamily [2/3]}}
+{\footnotesize\ttfamily \label{class_furrball_1_1_cache_a2b8d780373fc10d270e9281c32413374} 
+template$<$class Key , class Value , template$<$ class, class $>$ class Policy$>$ \\
+\mbox{\hyperlink{class_furrball_1_1_cache}{Cache}} (\begin{DoxyParamCaption}\item[{\mbox{\hyperlink{class_furrball_1_1_cache}{Cache}}$<$ Key, Value, Policy $>$ \&\&}]{move}{}\end{DoxyParamCaption})\hspace{0.3cm}{\ttfamily [inline]}}
+
+
+
+Definition at line \mbox{\hyperlink{_furrballs_8h_source_l00065}{65}} of file \mbox{\hyperlink{_furrballs_8h_source}{Furrballs.\+h}}.
+
+\Hypertarget{class_furrball_1_1_cache_ac6438f8cf5ae58377894c04866277ccd}\index{Cache$<$ Key, Value, Policy $>$@{Cache$<$ Key, Value, Policy $>$}!Cache@{Cache}}
+\index{Cache@{Cache}!Cache$<$ Key, Value, Policy $>$@{Cache$<$ Key, Value, Policy $>$}}
+\doxysubsubsection{\texorpdfstring{Cache()}{Cache()}\hspace{0.1cm}{\footnotesize\ttfamily [3/3]}}
+{\footnotesize\ttfamily \label{class_furrball_1_1_cache_ac6438f8cf5ae58377894c04866277ccd} 
+template$<$class Key , class Value , template$<$ class, class $>$ class Policy$>$ \\
+\mbox{\hyperlink{class_furrball_1_1_cache}{Cache}} (\begin{DoxyParamCaption}\item[{const \mbox{\hyperlink{class_furrball_1_1_cache}{Cache}}$<$ Key, Value, Policy $>$ \&}]{}{}\end{DoxyParamCaption})\hspace{0.3cm}{\ttfamily [delete]}}
+
+\Hypertarget{class_furrball_1_1_cache_a899b8bf120ecc87b59e142f00b2987b0}\index{Cache$<$ Key, Value, Policy $>$@{Cache$<$ Key, Value, Policy $>$}!````~Cache@{\texorpdfstring{$\sim$}{\string~}Cache}}
+\index{````~Cache@{\texorpdfstring{$\sim$}{\string~}Cache}!Cache$<$ Key, Value, Policy $>$@{Cache$<$ Key, Value, Policy $>$}}
+\doxysubsubsection{\texorpdfstring{\texorpdfstring{$\sim$}{\string~}Cache()}{\string~Cache()}}
+{\footnotesize\ttfamily \label{class_furrball_1_1_cache_a899b8bf120ecc87b59e142f00b2987b0} 
+template$<$class Key , class Value , template$<$ class, class $>$ class Policy$>$ \\
+\texorpdfstring{$\sim$}{\string~}\mbox{\hyperlink{class_furrball_1_1_cache}{Cache}} (\begin{DoxyParamCaption}{}{}\end{DoxyParamCaption})\hspace{0.3cm}{\ttfamily [inline]}}
+
+
+
+Definition at line \mbox{\hyperlink{_furrballs_8h_source_l00076}{76}} of file \mbox{\hyperlink{_furrballs_8h_source}{Furrballs.\+h}}.
+
+
+
+\doxysubsection{Member Function Documentation}
+\Hypertarget{class_furrball_1_1_cache_a740071247a178d84b8bf2b17901509b4}\index{Cache$<$ Key, Value, Policy $>$@{Cache$<$ Key, Value, Policy $>$}!Expand@{Expand}}
+\index{Expand@{Expand}!Cache$<$ Key, Value, Policy $>$@{Cache$<$ Key, Value, Policy $>$}}
+\doxysubsubsection{\texorpdfstring{Expand()}{Expand()}}
+{\footnotesize\ttfamily \label{class_furrball_1_1_cache_a740071247a178d84b8bf2b17901509b4} 
+template$<$class Key , class Value , template$<$ class, class $>$ class Policy$>$ \\
+void Expand (\begin{DoxyParamCaption}{}{}\end{DoxyParamCaption})\hspace{0.3cm}{\ttfamily [inline]}}
+
+
+
+Definition at line \mbox{\hyperlink{_furrballs_8h_source_l00079}{79}} of file \mbox{\hyperlink{_furrballs_8h_source}{Furrballs.\+h}}.
+
+\Hypertarget{class_furrball_1_1_cache_a0d73a4ace6bc91a253661f2ba624cdf1}\index{Cache$<$ Key, Value, Policy $>$@{Cache$<$ Key, Value, Policy $>$}!Get@{Get}}
+\index{Get@{Get}!Cache$<$ Key, Value, Policy $>$@{Cache$<$ Key, Value, Policy $>$}}
+\doxysubsubsection{\texorpdfstring{Get()}{Get()}}
+{\footnotesize\ttfamily \label{class_furrball_1_1_cache_a0d73a4ace6bc91a253661f2ba624cdf1} 
+template$<$class Key , class Value , template$<$ class, class $>$ class Policy$>$ \\
+Value Get (\begin{DoxyParamCaption}\item[{Key}]{k}{}\end{DoxyParamCaption})\hspace{0.3cm}{\ttfamily [inline]}}
+
+
+
+Definition at line \mbox{\hyperlink{_furrballs_8h_source_l00089}{89}} of file \mbox{\hyperlink{_furrballs_8h_source}{Furrballs.\+h}}.
+
+\Hypertarget{class_furrball_1_1_cache_a23b0888a260f98efd146f60090703d40}\index{Cache$<$ Key, Value, Policy $>$@{Cache$<$ Key, Value, Policy $>$}!GetCapacity@{GetCapacity}}
+\index{GetCapacity@{GetCapacity}!Cache$<$ Key, Value, Policy $>$@{Cache$<$ Key, Value, Policy $>$}}
+\doxysubsubsection{\texorpdfstring{GetCapacity()}{GetCapacity()}}
+{\footnotesize\ttfamily \label{class_furrball_1_1_cache_a23b0888a260f98efd146f60090703d40} 
+template$<$class Key , class Value , template$<$ class, class $>$ class Policy$>$ \\
+size\+\_\+t Get\+Capacity (\begin{DoxyParamCaption}{}{}\end{DoxyParamCaption})\hspace{0.3cm}{\ttfamily [inline]}}
+
+
+
+Definition at line \mbox{\hyperlink{_furrballs_8h_source_l00082}{82}} of file \mbox{\hyperlink{_furrballs_8h_source}{Furrballs.\+h}}.
+
+\Hypertarget{class_furrball_1_1_cache_a0d4190c9ee3825ee706609a181b39769}\index{Cache$<$ Key, Value, Policy $>$@{Cache$<$ Key, Value, Policy $>$}!operator=@{operator=}}
+\index{operator=@{operator=}!Cache$<$ Key, Value, Policy $>$@{Cache$<$ Key, Value, Policy $>$}}
+\doxysubsubsection{\texorpdfstring{operator=()}{operator=()}\hspace{0.1cm}{\footnotesize\ttfamily [1/2]}}
+{\footnotesize\ttfamily \label{class_furrball_1_1_cache_a0d4190c9ee3825ee706609a181b39769} 
+template$<$class Key , class Value , template$<$ class, class $>$ class Policy$>$ \\
+\mbox{\hyperlink{class_furrball_1_1_cache}{Cache}} \& operator= (\begin{DoxyParamCaption}\item[{\mbox{\hyperlink{class_furrball_1_1_cache}{Cache}}$<$ Key, Value, Policy $>$ \&\&}]{mv}{}\end{DoxyParamCaption})\hspace{0.3cm}{\ttfamily [inline]}}
+
+
+
+Definition at line \mbox{\hyperlink{_furrballs_8h_source_l00058}{58}} of file \mbox{\hyperlink{_furrballs_8h_source}{Furrballs.\+h}}.
+
+\Hypertarget{class_furrball_1_1_cache_a1a3c1f861e0e0ea89e996925f793f371}\index{Cache$<$ Key, Value, Policy $>$@{Cache$<$ Key, Value, Policy $>$}!operator=@{operator=}}
+\index{operator=@{operator=}!Cache$<$ Key, Value, Policy $>$@{Cache$<$ Key, Value, Policy $>$}}
+\doxysubsubsection{\texorpdfstring{operator=()}{operator=()}\hspace{0.1cm}{\footnotesize\ttfamily [2/2]}}
+{\footnotesize\ttfamily \label{class_furrball_1_1_cache_a1a3c1f861e0e0ea89e996925f793f371} 
+template$<$class Key , class Value , template$<$ class, class $>$ class Policy$>$ \\
+\mbox{\hyperlink{class_furrball_1_1_cache}{Cache}} \& operator= (\begin{DoxyParamCaption}\item[{const \mbox{\hyperlink{class_furrball_1_1_cache}{Cache}}$<$ Key, Value, Policy $>$ \&}]{mv}{}\end{DoxyParamCaption})\hspace{0.3cm}{\ttfamily [delete]}}
+
+\Hypertarget{class_furrball_1_1_cache_ae796495db1a9e1a26f5fc436ff0c6efd}\index{Cache$<$ Key, Value, Policy $>$@{Cache$<$ Key, Value, Policy $>$}!Set@{Set}}
+\index{Set@{Set}!Cache$<$ Key, Value, Policy $>$@{Cache$<$ Key, Value, Policy $>$}}
+\doxysubsubsection{\texorpdfstring{Set()}{Set()}}
+{\footnotesize\ttfamily \label{class_furrball_1_1_cache_ae796495db1a9e1a26f5fc436ff0c6efd} 
+template$<$class Key , class Value , template$<$ class, class $>$ class Policy$>$ \\
+void Set (\begin{DoxyParamCaption}\item[{Key}]{k}{, }\item[{Value}]{v}{}\end{DoxyParamCaption})\hspace{0.3cm}{\ttfamily [inline]}}
+
+
+
+Definition at line \mbox{\hyperlink{_furrballs_8h_source_l00086}{86}} of file \mbox{\hyperlink{_furrballs_8h_source}{Furrballs.\+h}}.
+
+
+
+The documentation for this class was generated from the following file\+:\begin{DoxyCompactItemize}
+\item 
+Furrballs/include/Furrballs.\+h\end{DoxyCompactItemize}
