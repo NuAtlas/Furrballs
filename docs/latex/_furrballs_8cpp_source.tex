@@ -1,0 +1,76 @@
+\doxysection{Furrballs.\+cpp}
+\hypertarget{_furrballs_8cpp_source}{}\label{_furrballs_8cpp_source}\index{Furrballs/src/Furrballs.cpp@{Furrballs/src/Furrballs.cpp}}
+
+\begin{DoxyCode}{0}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00001}00001\ \textcolor{comment}{/*****************************************************************/}\textcolor{comment}{/**}}
+\DoxyCodeLine{00002\ \textcolor{comment}{\ *\ \(\backslash\)file\ \ \ Furrballs.cpp}}
+\DoxyCodeLine{00003\ \textcolor{comment}{\ *\ }}
+\DoxyCodeLine{00004\ \textcolor{comment}{\ *\ \(\backslash\)author\ The\ Sphynx}}
+\DoxyCodeLine{00005\ \textcolor{comment}{\ *\ \(\backslash\)date\ \ \ July\ 2024}}
+\DoxyCodeLine{00006\ \textcolor{comment}{\ *********************************************************************/}}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00007}00007\ }
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00008}00008\ \textcolor{preprocessor}{\#}\textcolor{preprocessor}{include}\ \mbox{\hyperlink{_furrballs_8h}{"{}Furrballs.h"{}}}}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00009}00009\ }
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00010}00010\ \textcolor{keyword}{using}\ \textcolor{keyword}{namespace}\ \mbox{\hyperlink{namespace_furrball}{Furrball}};}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00011}00011\ }
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00012}\mbox{\hyperlink{struct_furr_ball_1_1_impl_detail}{00012}}\ \textcolor{keyword}{struct}\ FurrBall::\mbox{\hyperlink{struct_furr_ball_1_1_impl_detail}{ImplDetail}}\ \{}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00013}\mbox{\hyperlink{struct_furr_ball_1_1_impl_detail_a5759d11edd79a3a9ba2ac87b4ca9c407}{00013}}\ \ \ \ \ \mbox{\hyperlink{struct_furr_ball_1_1_impl_detail_a5759d11edd79a3a9ba2ac87b4ca9c407}{rocksdb}}::\mbox{\hyperlink{struct_furr_ball_1_1_impl_detail_a5759d11edd79a3a9ba2ac87b4ca9c407}{DB}}*\ \mbox{\hyperlink{struct_furr_ball_1_1_impl_detail_a5759d11edd79a3a9ba2ac87b4ca9c407}{db}}\ =\ \textcolor{keywordtype}{nullptr};}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00014}00014\ \};}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00015}00015\ }
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00016}00016\ \mbox{\hyperlink{namespace_furrball}{Furrball}}::FurrBall::FurrBall(std::unique\_ptr<ImplDetail>\ impl)}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00017}00017\ \{}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00018}00018\ \ \ \ \ \textcolor{keyword}{this}-\/>DataMembers.swap(impl);}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00019}00019\ \}}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00020}00020\ }
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00021}\mbox{\hyperlink{class_furrball_1_1_furr_ball_ad5d9b38144458479d42265591c440b12}{00021}}\ FurrBall*\ FurrBall::\mbox{\hyperlink{class_furrball_1_1_furr_ball_ad5d9b38144458479d42265591c440b12}{CreateBall}}(std::string\ DBpath,\ size\_t\ PageSize,\ size\_t\ numPages,\ \textcolor{keywordtype}{bool}\ overwrite)\ \textcolor{keyword}{noexcept}}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00022}00022\ \{}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00023}00023\ \ \ \ \ rocksdb::Options\ options;}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00024}00024\ \ \ \ \ rocksdb::DB*\ db;}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00025}00025\ \ \ \ \ options.compression\ =\ rocksdb::kLZ4Compression;}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00026}00026\ \ \ \ \ \textcolor{comment}{//fb.options.OptimizeForPointLookup();}}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00027}00027\ \ \ \ \ options.create\_if\_missing\ =\ \textcolor{keyword}{true};}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00028}00028\ \ \ \ \ rocksdb::Status\ status\ =}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00029}00029\ \ \ \ \ \ \ \ \ rocksdb::DB::Open(options,\ DBpath,\ \&db);}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00030}00030\ \ \ \ \ \textcolor{keywordflow}{if}\ (!status.ok())\ \{}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00031}00031\ \ \ \ \ \ \ \ \ \textcolor{comment}{//ERR}}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00032}00032\ \ \ \ \ \ \ \ \ \textcolor{keywordflow}{return}\ \textcolor{keywordtype}{nullptr};}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00033}00033\ \ \ \ \ \}}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00034}00034\ \ \ \ \ \textcolor{comment}{//Setup\ Cache.}}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00035}00035\ \ \ \ \ size\_t\ availMem\ =\ \mbox{\hyperlink{class_furrball_1_1_memory_manager}{MemoryManager}}\mbox{\hyperlink{class_furrball_1_1_memory_manager_a63b3ca5762785889ed4e072fe4281fb5}{::}}\mbox{\hyperlink{class_furrball_1_1_memory_manager_a63b3ca5762785889ed4e072fe4281fb5}{GetAvailableMemory}}\mbox{\hyperlink{class_furrball_1_1_memory_manager_a63b3ca5762785889ed4e072fe4281fb5}{(}}\mbox{\hyperlink{class_furrball_1_1_memory_manager_a63b3ca5762785889ed4e072fe4281fb5}{)}};}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00036}00036\ \ \ \ \ \textcolor{keywordflow}{if}\ (availMem\ <\ PageSize\ *\ numPages)\ \{}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00037}00037\ \ \ \ \ \ \ \ \ \textcolor{comment}{//We\ don't\ have\ enough\ memory\ to\ allocate\ all\ the\ pages.}}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00038}00038\ \ \ \ \ \ \ \ \ \textcolor{keywordflow}{while}\ ((-\/-\/numPages)\ ||\ availMem\ <\ PageSize\ *\ numPages);}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00039}00039\ \ \ \ \ \ \ \ \ \textcolor{keywordflow}{if}\ (numPages\ <=\ 0)\ \{}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00040}00040\ \ \ \ \ \ \ \ \ \ \ \ \ \mbox{\hyperlink{class_furrball_1_1_logger}{Logger}}\mbox{\hyperlink{class_furrball_1_1_logger_a3f7888501c07399bd4149ee8d67a6687}{::}}\mbox{\hyperlink{class_furrball_1_1_logger_a3f7888501c07399bd4149ee8d67a6687}{getInstance}}\mbox{\hyperlink{class_furrball_1_1_logger_a3f7888501c07399bd4149ee8d67a6687}{(}}\mbox{\hyperlink{class_furrball_1_1_logger_a3f7888501c07399bd4149ee8d67a6687}{)}}\mbox{\hyperlink{class_furrball_1_1_logger_a0adc83848b0eedbac34a21f82755aad8}{.}}\mbox{\hyperlink{class_furrball_1_1_logger_a0adc83848b0eedbac34a21f82755aad8}{error}}\mbox{\hyperlink{class_furrball_1_1_logger_a0adc83848b0eedbac34a21f82755aad8}{(}}\textcolor{stringliteral}{"{}Not\ enough\ memory"{}}\mbox{\hyperlink{class_furrball_1_1_logger_a0adc83848b0eedbac34a21f82755aad8}{)}};}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00041}00041\ \ \ \ \ \ \ \ \ \ \ \ \ \textcolor{keywordflow}{return}\ \textcolor{keywordtype}{nullptr};}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00042}00042\ \ \ \ \ \ \ \ \ \}}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00043}00043\ \ \ \ \ \}}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00044}00044\ \ \ \ \ \mbox{\hyperlink{class_furrball_1_1_a_r_c_policy}{ARCPolicy}}<size\_t,\ \textcolor{keywordtype}{void}*>\ Cache(numPages);}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00045}00045\ \ \ \ \ \textcolor{comment}{//Allocate\ Slab.}}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00046}00046\ \ \ \ \ \textcolor{keywordtype}{char}*\ slab\ =\ \textcolor{keyword}{static\_cast}<\textcolor{keywordtype}{char}*>(malloc(PageSize\ *\ numPages));}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00047}00047\ \ \ \ \ \textcolor{keywordflow}{if}\ (!slab)\ \{}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00048}00048\ \ \ \ \ \ \ \ \ \mbox{\hyperlink{class_furrball_1_1_logger}{Logger}}\mbox{\hyperlink{class_furrball_1_1_logger_a3f7888501c07399bd4149ee8d67a6687}{::}}\mbox{\hyperlink{class_furrball_1_1_logger_a3f7888501c07399bd4149ee8d67a6687}{getInstance}}\mbox{\hyperlink{class_furrball_1_1_logger_a3f7888501c07399bd4149ee8d67a6687}{(}}\mbox{\hyperlink{class_furrball_1_1_logger_a3f7888501c07399bd4149ee8d67a6687}{)}}\mbox{\hyperlink{class_furrball_1_1_logger_ade47e18c031a6bc7aef3d4783d887f0c}{.}}\mbox{\hyperlink{class_furrball_1_1_logger_ade47e18c031a6bc7aef3d4783d887f0c}{warning}}\mbox{\hyperlink{class_furrball_1_1_logger_ade47e18c031a6bc7aef3d4783d887f0c}{(}}\textcolor{stringliteral}{"{}Could\ not\ allocated\ memory\ slab."{}}\mbox{\hyperlink{class_furrball_1_1_logger_ade47e18c031a6bc7aef3d4783d887f0c}{)}};}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00049}00049\ \ \ \ \ \ \ \ \ \textcolor{comment}{//Maybe\ attempt\ to\ allocate\ fragmented\ slab.}}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00050}00050\ \ \ \ \ \ \ \ \ \textcolor{comment}{//for\ now\ return\ nullptr}}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00051}00051\ \ \ \ \ \ \ \ \ \textcolor{keywordflow}{return}\ \textcolor{keywordtype}{nullptr};}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00052}00052\ \ \ \ \ \}}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00053}00053\ \ \ \ \ size\_t\ PagePointer\ =\ 0;}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00054}00054\ \ \ \ \ \textcolor{keywordflow}{for}\ (\textcolor{keywordtype}{int}\ i\ =\ 0;\ i\ <\ numPages;\ i++)\ \{}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00055}00055\ \ \ \ \ \ \ \ \ Cache.add(PagePointer,\ slab\ +\ PagePointer);}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00056}00056\ \ \ \ \ \}}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00057}00057\ \ \ \ \ FurrBall*\ fb\ =\ \textcolor{keyword}{new}\ FurrBall();}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00058}00058\ \ \ \ \ fb-\/>DataMembers-\/>db\ =\ db;}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00059}00059\ \ \ \ \ \textcolor{keywordflow}{return}\ fb;}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00060}00060\ \}}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00061}00061\ }
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00062}\mbox{\hyperlink{class_furrball_1_1_furr_ball_a74c082b3331794c9f373e803675eeec4}{00062}}\ \textcolor{keywordtype}{void}\ \mbox{\hyperlink{namespace_furrball}{Furrball}}::FurrBall::\mbox{\hyperlink{class_furrball_1_1_furr_ball_a74c082b3331794c9f373e803675eeec4}{StoreLargeData}}(\textcolor{keywordtype}{void}*\ buffer,\ size\_t\ size)}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00063}00063\ \{}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00064}00064\ }
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00065}00065\ \}}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00066}00066\ }
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00067}\mbox{\hyperlink{class_furrball_1_1_furr_ball_aca812eaeb47f21590a4857c505a92a9b}{00067}}\ \mbox{\hyperlink{namespace_furrball}{Furrball}}::FurrBall::\string~\mbox{\hyperlink{class_furrball_1_1_furr_ball_aca812eaeb47f21590a4857c505a92a9b}{FurrBall}}()\ \textcolor{keyword}{noexcept}}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00068}00068\ \{}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00069}00069\ \ \ \ \ \textcolor{keyword}{delete}\ DataMembers-\/>db;}
+\DoxyCodeLine{\Hypertarget{_furrballs_8cpp_source_l00070}00070\ \}}
+
+\end{DoxyCode}

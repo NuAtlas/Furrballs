@@ -3,6 +3,15 @@
 #
 cmake_minimum_required (VERSION 3.8)
 
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Manually set compiler flags for C++17
+if (MSVC)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /std:c++17")
+else()
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17")
+endif()
 # Enable Hot Reload for MSVC compilers if supported.
 if (POLICY CMP0141)
   cmake_policy(SET CMP0141 NEW)
@@ -12,20 +21,11 @@ if(DEFINED ENV{VCPKG_ROOT})
     set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" CACHE STRING "")
 endif()
 
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
 
 project ("Furrballs")
 
-# Set the path to the installed GTest
-#set(GTest_DIR "C:/gtest/lib/cmake/GTest")
 # Include sub-projects.
 
 add_subdirectory("Sandbox")
 add_subdirectory("Furrballs")
-
-# Add CacheLib submodule
-#set(CACHELIB_BUILD_TESTS OFF CACHE BOOL "Build tests")
-#set(CACHELIB_BUILD_EXAMPLES OFF CACHE BOOL "Build examples")
-#set(CACHELIB_BUILD_BENCHMARKS OFF CACHE BOOL "Build benchmarks")
-#add_subdirectory(deps/CacheLib/cachelib)

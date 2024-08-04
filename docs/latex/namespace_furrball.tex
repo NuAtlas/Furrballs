@@ -1,0 +1,72 @@
+\doxysection{Furrball Namespace Reference}
+\hypertarget{namespace_furrball}{}\label{namespace_furrball}\index{Furrball@{Furrball}}
+\doxysubsubsection*{Classes}
+\begin{DoxyCompactItemize}
+\item 
+class \mbox{\hyperlink{class_furrball_1_1_a_r_c_policy}{ARCPolicy}}
+\begin{DoxyCompactList}\small\item\em Implements the ARC eviction policy TODO\+: Implement Adaptive Memory Pooling (AMP) You can create and manage your own cache separately by instantiating a Policy object and using it. \end{DoxyCompactList}\item 
+class \mbox{\hyperlink{class_furrball_1_1_factory}{Factory}}
+\begin{DoxyCompactList}\small\item\em Templated derived class for specific factories. \end{DoxyCompactList}\item 
+class \mbox{\hyperlink{class_furrball_1_1_furr_ball}{Furr\+Ball}}
+\begin{DoxyCompactList}\small\item\em A Cache with size\+\_\+t as Keys, void\texorpdfstring{$\ast$}{*} as values and ARC eviction policy. \end{DoxyCompactList}\item 
+class \mbox{\hyperlink{class_furrball_1_1_i_factory}{IFactory}}
+\begin{DoxyCompactList}\small\item\em Base class for factories. \end{DoxyCompactList}\item 
+class \mbox{\hyperlink{class_furrball_1_1_l_f_u_policy}{LFUPolicy}}
+\begin{DoxyCompactList}\small\item\em Implements the LFU eviction policy. \end{DoxyCompactList}\item 
+class \mbox{\hyperlink{class_furrball_1_1_logger}{Logger}}
+\begin{DoxyCompactList}\small\item\em Basic \doxylink{class_furrball_1_1_logger}{Logger}. \end{DoxyCompactList}\item 
+class \mbox{\hyperlink{class_furrball_1_1_l_r_u_policy}{LRUPolicy}}
+\begin{DoxyCompactList}\small\item\em Implements the LRU eviction policy. \end{DoxyCompactList}\item 
+class \mbox{\hyperlink{class_furrball_1_1_memory_manager}{Memory\+Manager}}
+\item 
+class \mbox{\hyperlink{class_furrball_1_1_s3_f_i_f_o_policy}{S3\+FIFOPolicy}}
+\begin{DoxyCompactList}\small\item\em Implements the S3\+FIFO eviction policy. \end{DoxyCompactList}\item 
+class \mbox{\hyperlink{class_furrball_1_1_static_factory_wrapper}{Static\+Factory\+Wrapper}}
+\begin{DoxyCompactList}\small\item\em Wrapper class to manage factories. \end{DoxyCompactList}\end{DoxyCompactItemize}
+\doxysubsubsection*{Enumerations}
+\begin{DoxyCompactItemize}
+\item 
+enum class \mbox{\hyperlink{namespace_furrball_aca1fd1d8935433e6ba2e3918214e07f9}{Log\+Level}} \{ \newline
+\mbox{\hyperlink{namespace_furrball_aca1fd1d8935433e6ba2e3918214e07f9aa603905470e2a5b8c13e96b579ef0dba}{Debug}}
+, \mbox{\hyperlink{namespace_furrball_aca1fd1d8935433e6ba2e3918214e07f9a4059b0251f66a18cb56f544728796875}{Info}}
+, \mbox{\hyperlink{namespace_furrball_aca1fd1d8935433e6ba2e3918214e07f9a0eaadb4fcb48a0a0ed7bc9868be9fbaa}{Warning}}
+, \mbox{\hyperlink{namespace_furrball_aca1fd1d8935433e6ba2e3918214e07f9a902b0d55fddef6f8d651fe1035b7d4bd}{Error}}
+, \newline
+\mbox{\hyperlink{namespace_furrball_aca1fd1d8935433e6ba2e3918214e07f9a278d01e5af56273bae1bb99a98b370cd}{Critical}}
+ \}
+\end{DoxyCompactItemize}
+
+
+\doxysubsection{Enumeration Type Documentation}
+\Hypertarget{namespace_furrball_aca1fd1d8935433e6ba2e3918214e07f9}\index{Furrball@{Furrball}!LogLevel@{LogLevel}}
+\index{LogLevel@{LogLevel}!Furrball@{Furrball}}
+\doxysubsubsection{\texorpdfstring{LogLevel}{LogLevel}}
+{\footnotesize\ttfamily \label{namespace_furrball_aca1fd1d8935433e6ba2e3918214e07f9} 
+enum class \mbox{\hyperlink{namespace_furrball_aca1fd1d8935433e6ba2e3918214e07f9}{Log\+Level}}\hspace{0.3cm}{\ttfamily [strong]}}
+
+\begin{DoxyEnumFields}{Enumerator}
+\raisebox{\heightof{T}}[0pt][0pt]{\index{Debug@{Debug}!Furrball@{Furrball}}\index{Furrball@{Furrball}!Debug@{Debug}}}\Hypertarget{namespace_furrball_aca1fd1d8935433e6ba2e3918214e07f9aa603905470e2a5b8c13e96b579ef0dba}\label{namespace_furrball_aca1fd1d8935433e6ba2e3918214e07f9} 
+Debug&\\
+\hline
+
+\raisebox{\heightof{T}}[0pt][0pt]{\index{Info@{Info}!Furrball@{Furrball}}\index{Furrball@{Furrball}!Info@{Info}}}\Hypertarget{namespace_furrball_aca1fd1d8935433e6ba2e3918214e07f9a4059b0251f66a18cb56f544728796875}\label{namespace_furrball_aca1fd1d8935433e6ba2e3918214e07f9} 
+Info&\\
+\hline
+
+\raisebox{\heightof{T}}[0pt][0pt]{\index{Warning@{Warning}!Furrball@{Furrball}}\index{Furrball@{Furrball}!Warning@{Warning}}}\Hypertarget{namespace_furrball_aca1fd1d8935433e6ba2e3918214e07f9a0eaadb4fcb48a0a0ed7bc9868be9fbaa}\label{namespace_furrball_aca1fd1d8935433e6ba2e3918214e07f9} 
+Warning&\\
+\hline
+
+\raisebox{\heightof{T}}[0pt][0pt]{\index{Error@{Error}!Furrball@{Furrball}}\index{Furrball@{Furrball}!Error@{Error}}}\Hypertarget{namespace_furrball_aca1fd1d8935433e6ba2e3918214e07f9a902b0d55fddef6f8d651fe1035b7d4bd}\label{namespace_furrball_aca1fd1d8935433e6ba2e3918214e07f9} 
+Error&\\
+\hline
+
+\raisebox{\heightof{T}}[0pt][0pt]{\index{Critical@{Critical}!Furrball@{Furrball}}\index{Furrball@{Furrball}!Critical@{Critical}}}\Hypertarget{namespace_furrball_aca1fd1d8935433e6ba2e3918214e07f9a278d01e5af56273bae1bb99a98b370cd}\label{namespace_furrball_aca1fd1d8935433e6ba2e3918214e07f9} 
+Critical&\\
+\hline
+
+\end{DoxyEnumFields}
+
+
+Definition at line \mbox{\hyperlink{_logger_8h_source_l00015}{15}} of file \mbox{\hyperlink{_logger_8h_source}{Logger.\+h}}.
+

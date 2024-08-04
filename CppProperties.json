@@ -9,9 +9,28 @@
         "${env.INCLUDE}",
         "${workspaceRoot}\\**"
       ],
+      "cppStandard": "c++17",
       "defines": [
         "WIN32",
         "NDEBUG",
+        "UNICODE",
+        "_UNICODE"
+      ],
+      "intelliSenseMode": "windows-msvc-x64"
+    },
+    {
+      "inheritEnvironments": [
+        "msvc_x64"
+      ],
+      "name": "x64-Debug",
+      "includePath": [
+        "${env.INCLUDE}",
+        "${workspaceRoot}\\**"
+      ],
+      "cppStandard": "c++17",
+      "defines": [
+        "WIN32",
+        "DEBUG",
         "UNICODE",
         "_UNICODE"
       ],
