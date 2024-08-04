@@ -41,7 +41,7 @@ Additionally, this solution is designed exclusively for 64-bit systems, as enfor
 **When possible use atomic types/operations.**
 
 **Allow for modularity and integration with and into other projects.**
-(ex: allow for the use of a threadpool or a job system provided externally for purrllel)
+(ex: allow for the use of a threadpool or a job system provided externally for purrallel)
 
 **Only paging system is allowed to allocated memory, 
 any allocation goes through it (or MemoryManager class) if independent buffer is needed**
