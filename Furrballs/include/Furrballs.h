@@ -13,6 +13,7 @@
 #include <string>
 #include <filesystem>
 #include <thread>
+#include <atomic>
 #include <rocksdb/db.h>
 #include <rocksdb/options.h>
 #include <rocksdb/advanced_cache.h>
@@ -142,7 +143,7 @@ namespace Furrball {
         std::list<Key> GhostEntries; // b1 + b2 Ghost entries
         size_t capacity;
         size_t p;  // Target size for t1
-        EvictionCallback evictionCallback = []() {};//NO-OP by default.
+        EvictionCallback evictionCallback = [](Key&) {};//NO-OP by default.
 
         void replace(const Key& key) {
             if (!t1.empty() && (t1.size() > p || (std::find(b2.begin(), b2.end(), key) != b2.end() && t1.size() == p))) {
@@ -301,16 +302,86 @@ namespace Furrball {
 
     };
 
-    /**
-    * @brief A Cache with size_t as Keys, void* as values and ARC eviction policy.
-    */
-    //typedef Cache<size_t, void*, ARCPolicy> ARCCache;
+    struct FurrConfig {
+        /**
+         * @brief The limit size after which the AMP will not allocate more pages. 1MB by default
+         */
+        size_t CapacityLimit = 1024 * 1024 * sizeof(char);
+
+        /**
+         * @brief The starting number of pages. This is a hint to the allocator.
+         */
+        size_t InitialPageCount = 2;
+
+        /**
+         * @brief The size of each page. 4KB by default.
+         */
+        size_t PageSize = 4096;
+        /**
+         * @brief Sets the eviction callback.
+         */
+        ARCPolicy<size_t, void*>::EvictionCallback evictionCallback = [](size_t&) {};
+
+        /**
+         * @brief Sets the hash function for cache validation.
+         */
+        std::function<size_t(const void*, size_t)> hashFunction = nullptr;
+
+        /**
+         * @brief Sets the logging function.
+         */
+        std::function<void(const std::string&)> logFunction = nullptr;
+
+        /**
+         * @brief Sets the threshold for resizing the memory pool.
+         */
+        size_t ResizeThreshold = 4;
+
+        /**
+         * @brief The number of threads to use in burrst mode.
+         */
+        size_t BurrstThreadCount = 4;
+
+        union {
+            struct {
+                /**
+                 * @brief Indicates whether to use hybrid page sizes. false by default.
+                 */
+                bool UseHybridPages : 1;
+                /**
+                 * @brief Indicates whether the Furrballs are volatile.
+                 * Volatile Furrballs are not persistent caches, meaning if the page is evicted, data is lost. You can use an eviction callback.
+                 * false by default.
+                 */
+                bool IsVolatile : 1;
+                /**
+                 * @brief Indicates whether the pages are lockable. Lockable pages need to have a mutex, 
+                 * consuming more memory per page entry and introducing more overhead. false by default.
+                 */
+                bool LockablePages : 1;
+                /**
+                 * @brief Enables or disables logging. false by default.
+                 */
+                bool EnableLogging : 1;
+                /**
+                 * @brief Enables or disables burst mode for parallel processing. false by default.
+                 */
+                bool EnableBurstMode : 1;
+            };
+            uint8_t flags = 0; // For convenience in handling all flags at once, 0 by default.
+        };
+    };
+
     /**
     * @class FurrBall
     * @brief Furrballs are a LZ4 Compressed DB using RocksDB with Cache and Paging Logic.
     */
     class FurrBall final {
     private:
+        /**
+         * @brief This struct is used to encapsulate implementation details and
+         *        avoid requiring the user's build system to locate RocksDB headers.
+         */
         struct ImplDetail;
         std::unique_ptr<ImplDetail> DataMembers;
 
@@ -320,13 +391,16 @@ namespace Furrball {
          * \brief Page Metadata.
          */
         struct Page {
-            void* ptr;
-            size_t PageIndex;
+            void* ptr = nullptr;
+            size_t PageIndex = 0;
 
             Page() {
 
             }
-
+            virtual void* get(void* offset) {
+                //it's the job of furrballs to validate offset passed here.
+                return (char*)ptr + reinterpret_cast<size_t>(offset);
+            }
             virtual bool IsLockable()const noexcept { return false; };
 
             ~Page() {
@@ -334,16 +408,38 @@ namespace Furrball {
             }
         };
         struct LockablePage : public Page {
+            std::mutex mutex;
             virtual bool IsLockable()const noexcept { return true; };
+            virtual void* get(void* vptr) {
+                std::lock_guard<std::mutex> lock(mutex);
+                return Page::get(vptr);
+            }
         };
         std::list<Page> PageList;
+
+        /**
+         * @brief AMP Expansion counter, when the counter reaches the threshold, live memory is expanded (amp_ExpansionMultiplier * page are allocated).
+         *
+         * See AMP in readme for description of the mechanism.
+         */
+        std::atomic_int amp_ExpansionCounter;
+
+        /**
+         * @brief .
+         */
+        std::atomic_int amp_ExpansionMultiplier = 1;
+
+        const size_t SizeLimit = 1 * 1024 * 1024 * sizeof(char);
+
         /**
          * @brief Cache Object.
          */
         //ARCPolicy<size_t,void*> ARC = ARCPolicy<size_t,void*>();
 
-        FurrBall()noexcept = default;
-        FurrBall(std::unique_ptr<ImplDetail>);
+        FurrBall(const FurrConfig& config)noexcept;
+        FurrBall(std::unique_ptr<ImplDetail>)noexcept;
+
+        void OnEvict(size_t key)noexcept;
 
         constexpr size_t floorAddress(size_t address)const noexcept {
             return address & ~(PageSize - 1);
@@ -367,7 +463,7 @@ namespace Furrball {
         * @param overwrite If DBpath points to an existing DB and this is true it will be overwritten instead of Loaded.
         * @see ARCPolicy
         */
-        static FurrBall* CreateBall(std::string DBpath, size_t PageSize, size_t numPages, bool overwrite = false)noexcept;
+        static FurrBall* CreateBall(const std::string& DBpath,const FurrConfig& config, bool overwrite = false)noexcept;
         /**
          * Returns a pointer to the page that contains the vAddress. if vAddress is not found and is far from all pages available
          * Get() doesn't create an entry and considers the vAddress to be invalid to preserve "contingency".

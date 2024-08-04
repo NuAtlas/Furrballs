@@ -13,12 +13,17 @@ struct FurrBall::ImplDetail {
     rocksdb::DB* db = nullptr;
 };
 
+Furrball::FurrBall::FurrBall(const FurrConfig& config) noexcept : PageSize(config.PageSize),
+    SizeLimit(config.CapacityLimit ? config.CapacityLimit : 1 * 1024 * 1024 * sizeof(char)),
+{
+}
+
 Furrball::FurrBall::FurrBall(std::unique_ptr<ImplDetail> impl)
 {
     this->DataMembers.swap(impl);
 }
 
-FurrBall* FurrBall::CreateBall(std::string DBpath, size_t PageSize, size_t numPages, bool overwrite) noexcept
+FurrBall* FurrBall::CreateBall(const std::string& DBpath, const FurrConfig& config, bool overwrite) noexcept
 {
     rocksdb::Options options;
     rocksdb::DB* db;
@@ -32,10 +37,11 @@ FurrBall* FurrBall::CreateBall(std::string DBpath, size_t PageSize, size_t numPa
         return nullptr;
     }
     //Setup Cache.
+    size_t numPages = config.InitialPageCount;
     size_t availMem = MemoryManager::GetAvailableMemory();
-    if (availMem < PageSize * numPages) {
+    if (availMem < config.PageSize * numPages) {
         //We don't have enough memory to allocate all the pages.
-        while ((--numPages) || availMem < PageSize * numPages);
+        while ((--numPages) || availMem < config.PageSize * numPages);
         if (numPages <= 0) {
             Logger::getInstance().error("Not enough memory");
             return nullptr;
@@ -43,19 +49,20 @@ FurrBall* FurrBall::CreateBall(std::string DBpath, size_t PageSize, size_t numPa
     }
     ARCPolicy<size_t, void*> Cache(numPages);
     //Allocate Slab.
-    char* slab = static_cast<char*>(malloc(PageSize * numPages));
+    char* slab = static_cast<char*>(malloc(config.PageSize * numPages));
     if (!slab) {
         Logger::getInstance().warning("Could not allocated memory slab.");
         //Maybe attempt to allocate fragmented slab.
         //for now return nullptr
         return nullptr;
     }
+    FurrBall* fb = new FurrBall(config);
+    fb->DataMembers->db = db;
     size_t PagePointer = 0;
     for (int i = 0; i < numPages; i++) {
         Cache.add(PagePointer, slab + PagePointer);
+        fb->PageList.push_back((config.LockablePages ? LockablePage{ (void*)(slab + PagePointer) } : Page()));
     }
-    FurrBall* fb = new FurrBall();
-    fb->DataMembers->db = db;
     return fb;
 }
 
