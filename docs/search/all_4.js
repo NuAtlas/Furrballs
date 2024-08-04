@@ -1,7 +1,7 @@
 var searchData=
 [
-  ['get_0',['Get',['../class_furrball_1_1_cache.html#a0d73a4ace6bc91a253661f2ba624cdf1',1,'Furrball::Cache']]],
-  ['get_1',['get',['../class_furrball_1_1_a_r_c_policy.html#a06adb9fe1583709d7fea1db37e21534f',1,'Furrball::ARCPolicy']]],
-  ['getavailablememory_2',['GetAvailableMemory',['../namespace_furrball.html#ad1af58ff6c57bce734565fb92747b875',1,'Furrball']]],
-  ['getcapacity_3',['GetCapacity',['../class_furrball_1_1_cache.html#a23b0888a260f98efd146f60090703d40',1,'Furrball::Cache']]]
+  ['factory_0',['Factory',['../class_furrball_1_1_factory.html',1,'Factory&lt; Value, Args &gt;'],['../class_furrball_1_1_factory.html#a35bdc65be6e8d2cefd443079d4f29f26',1,'Furrball::Factory::Factory()']]],
+  ['freememory_1',['FreeMemory',['../class_furrball_1_1_memory_manager.html#aada6c7bdde346769e9cd93c0ec89dd00',1,'Furrball::MemoryManager']]],
+  ['furrball_2',['FurrBall',['../class_furrball_1_1_furr_ball.html',1,'FurrBall'],['../class_furrball_1_1_furr_ball.html#a2c33754e4a1ac9602fd81a6f86f0f76e',1,'Furrball::FurrBall::FurrBall(const FurrBall &amp;cpy)=delete'],['../class_furrball_1_1_furr_ball.html#a66371916611988ebbea7034e3a706855',1,'Furrball::FurrBall::FurrBall(FurrBall &amp;&amp;mv) noexcept']]],
+  ['furrball_3',['Furrball',['../namespace_furrball.html',1,'']]]
 ];

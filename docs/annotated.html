@@ -18,7 +18,6 @@
 <link href="search/search.css" rel="stylesheet" type="text/css"/>
 <script type="text/javascript" src="search/searchdata.js"></script>
 <script type="text/javascript" src="search/search.js"></script>
-<script type="text/javascript" src="darkmode_toggle.js"></script>
 <link href="doxygen.css" rel="stylesheet" type="text/css" />
 </head>
 <body>
@@ -28,7 +27,7 @@
  <tbody>
  <tr id="projectrow">
   <td id="projectalign">
-   <div id="projectname">Furrballs
+   <div id="projectname">Furrballs<span id="projectnumber">&#160;v0.0.1</span>
    </div>
    <div id="projectbrief">A Caching and Storage Solution</div>
   </td>
@@ -102,18 +101,19 @@ $(function(){initNavTree('annotated.html',''); initResizable(true); });
 </div><!--header-->
 <div class="contents">
 <div class="textblock">Here are the classes, structs, unions and interfaces with brief descriptions:</div><div class="directory">
-<div class="levels">[detail level <span onclick="javascript:dynsection.toggleLevel(1);">1</span><span onclick="javascript:dynsection.toggleLevel(2);">2</span>]</div><table class="directory">
+<div class="levels">[detail level <span onclick="javascript:dynsection.toggleLevel(1);">1</span><span onclick="javascript:dynsection.toggleLevel(2);">2</span><span onclick="javascript:dynsection.toggleLevel(3);">3</span>]</div><table class="directory">
 <tr id="row_0_" class="even"><td class="entry"><span style="width:0px;display:inline-block;">&#160;</span><span id="arr_0_" class="arrow" onclick="dynsection.toggleFolder('0_')">&#9660;</span><span class="icona"><span class="icon">N</span></span><a class="el" href="namespace_furrball.html" target="_self">Furrball</a></td><td class="desc"></td></tr>
-<tr id="row_0_0_" class="odd"><td class="entry"><span style="width:32px;display:inline-block;">&#160;</span><span class="icona"><span class="icon">C</span></span><a class="el" href="class_furrball_1_1_a_r_c_policy.html" target="_self">ARCPolicy</a></td><td class="desc">Implements the ARC eviction policy </td></tr>
-<tr id="row_0_1_" class="even"><td class="entry"><span style="width:32px;display:inline-block;">&#160;</span><span class="icona"><span class="icon">C</span></span><a class="el" href="class_furrball_1_1_cache.html" target="_self">Cache</a></td><td class="desc">Caching Interface </td></tr>
-<tr id="row_0_2_" class="odd"><td class="entry"><span style="width:32px;display:inline-block;">&#160;</span><span class="icona"><span class="icon">C</span></span><a class="el" href="class_furrball_1_1_cache_view.html" target="_self">CacheView</a></td><td class="desc"></td></tr>
-<tr id="row_0_3_" class="even"><td class="entry"><span style="width:32px;display:inline-block;">&#160;</span><span class="icona"><span class="icon">C</span></span><a class="el" href="class_furrball_1_1_factory.html" target="_self">Factory</a></td><td class="desc">Templated derived class for specific factories </td></tr>
-<tr id="row_0_4_" class="odd"><td class="entry"><span style="width:32px;display:inline-block;">&#160;</span><span class="icona"><span class="icon">C</span></span><a class="el" href="class_furrball_1_1_furr_ball.html" target="_self">FurrBall</a></td><td class="desc">A <a class="el" href="class_furrball_1_1_cache.html" title="Caching Interface.">Cache</a> with size_t as Keys, void* as values and ARC eviction policy </td></tr>
-<tr id="row_0_5_" class="even"><td class="entry"><span style="width:32px;display:inline-block;">&#160;</span><span class="icona"><span class="icon">C</span></span><a class="el" href="class_furrball_1_1_i_factory.html" target="_self">IFactory</a></td><td class="desc">Base class for factories </td></tr>
-<tr id="row_0_6_" class="odd"><td class="entry"><span style="width:32px;display:inline-block;">&#160;</span><span class="icona"><span class="icon">C</span></span><a class="el" href="class_furrball_1_1_l_f_u_policy.html" target="_self">LFUPolicy</a></td><td class="desc">Implements the LFU eviction policy </td></tr>
-<tr id="row_0_7_" class="even"><td class="entry"><span style="width:32px;display:inline-block;">&#160;</span><span class="icona"><span class="icon">C</span></span><a class="el" href="class_furrball_1_1_l_r_u_policy.html" target="_self">LRUPolicy</a></td><td class="desc">Implements the LRU eviction policy </td></tr>
-<tr id="row_0_8_" class="odd"><td class="entry"><span style="width:32px;display:inline-block;">&#160;</span><span class="icona"><span class="icon">C</span></span><a class="el" href="class_furrball_1_1_s3_f_i_f_o_policy.html" target="_self">S3FIFOPolicy</a></td><td class="desc">Implements the S3FIFO eviction policy </td></tr>
-<tr id="row_0_9_" class="even"><td class="entry"><span style="width:32px;display:inline-block;">&#160;</span><span class="icona"><span class="icon">C</span></span><a class="el" href="class_furrball_1_1_static_factory_wrapper.html" target="_self">StaticFactoryWrapper</a></td><td class="desc">Wrapper class to manage factories </td></tr>
+<tr id="row_0_0_" class="odd"><td class="entry"><span style="width:32px;display:inline-block;">&#160;</span><span class="icona"><span class="icon">C</span></span><a class="el" href="class_furrball_1_1_a_r_c_policy.html" target="_self">ARCPolicy</a></td><td class="desc">Implements the ARC eviction policy TODO: Implement Adaptive Memory Pooling (AMP) You can create and manage your own cache separately by instantiating a Policy object and using it </td></tr>
+<tr id="row_0_1_" class="even"><td class="entry"><span style="width:32px;display:inline-block;">&#160;</span><span class="icona"><span class="icon">C</span></span><a class="el" href="class_furrball_1_1_factory.html" target="_self">Factory</a></td><td class="desc">Templated derived class for specific factories </td></tr>
+<tr id="row_0_2_" class="odd"><td class="entry"><span style="width:16px;display:inline-block;">&#160;</span><span id="arr_0_2_" class="arrow" onclick="dynsection.toggleFolder('0_2_')">&#9660;</span><span class="icona"><span class="icon">C</span></span><a class="el" href="class_furrball_1_1_furr_ball.html" target="_self">FurrBall</a></td><td class="desc">A Cache with size_t as Keys, void* as values and ARC eviction policy </td></tr>
+<tr id="row_0_2_0_" class="even"><td class="entry"><span style="width:48px;display:inline-block;">&#160;</span><span class="icona"><span class="icon">C</span></span><a class="el" href="struct_furr_ball_1_1_impl_detail.html" target="_self">ImplDetail</a></td><td class="desc"></td></tr>
+<tr id="row_0_3_" class="odd"><td class="entry"><span style="width:32px;display:inline-block;">&#160;</span><span class="icona"><span class="icon">C</span></span><a class="el" href="class_furrball_1_1_i_factory.html" target="_self">IFactory</a></td><td class="desc">Base class for factories </td></tr>
+<tr id="row_0_4_" class="even"><td class="entry"><span style="width:32px;display:inline-block;">&#160;</span><span class="icona"><span class="icon">C</span></span><a class="el" href="class_furrball_1_1_l_f_u_policy.html" target="_self">LFUPolicy</a></td><td class="desc">Implements the LFU eviction policy </td></tr>
+<tr id="row_0_5_" class="odd"><td class="entry"><span style="width:32px;display:inline-block;">&#160;</span><span class="icona"><span class="icon">C</span></span><a class="el" href="class_furrball_1_1_logger.html" target="_self">Logger</a></td><td class="desc">Basic <a class="el" href="class_furrball_1_1_logger.html" title="Basic Logger.">Logger</a> </td></tr>
+<tr id="row_0_6_" class="even"><td class="entry"><span style="width:32px;display:inline-block;">&#160;</span><span class="icona"><span class="icon">C</span></span><a class="el" href="class_furrball_1_1_l_r_u_policy.html" target="_self">LRUPolicy</a></td><td class="desc">Implements the LRU eviction policy </td></tr>
+<tr id="row_0_7_" class="odd"><td class="entry"><span style="width:32px;display:inline-block;">&#160;</span><span class="icona"><span class="icon">C</span></span><a class="el" href="class_furrball_1_1_memory_manager.html" target="_self">MemoryManager</a></td><td class="desc"></td></tr>
+<tr id="row_0_8_" class="even"><td class="entry"><span style="width:32px;display:inline-block;">&#160;</span><span class="icona"><span class="icon">C</span></span><a class="el" href="class_furrball_1_1_s3_f_i_f_o_policy.html" target="_self">S3FIFOPolicy</a></td><td class="desc">Implements the S3FIFO eviction policy </td></tr>
+<tr id="row_0_9_" class="odd"><td class="entry"><span style="width:32px;display:inline-block;">&#160;</span><span class="icona"><span class="icon">C</span></span><a class="el" href="class_furrball_1_1_static_factory_wrapper.html" target="_self">StaticFactoryWrapper</a></td><td class="desc">Wrapper class to manage factories </td></tr>
 </table>
 </div><!-- directory -->
 </div><!-- contents -->

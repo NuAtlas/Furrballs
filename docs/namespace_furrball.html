@@ -18,7 +18,6 @@
 <link href="search/search.css" rel="stylesheet" type="text/css"/>
 <script type="text/javascript" src="search/searchdata.js"></script>
 <script type="text/javascript" src="search/search.js"></script>
-<script type="text/javascript" src="darkmode_toggle.js"></script>
 <link href="doxygen.css" rel="stylesheet" type="text/css" />
 </head>
 <body>
@@ -28,7 +27,7 @@
  <tbody>
  <tr id="projectrow">
   <td id="projectalign">
-   <div id="projectname">Furrballs
+   <div id="projectname">Furrballs<span id="projectnumber">&#160;v0.0.1</span>
    </div>
    <div id="projectbrief">A Caching and Storage Solution</div>
   </td>
@@ -100,7 +99,7 @@ $(function(){initNavTree('namespace_furrball.html',''); initResizable(true); });
 <div class="header">
   <div class="summary">
 <a href="#nested-classes">Classes</a> &#124;
-<a href="#func-members">Functions</a>  </div>
+<a href="#enum-members">Enumerations</a>  </div>
   <div class="headertitle"><div class="title">Furrball Namespace Reference</div></div>
 </div><!--header-->
 <div class="contents">
@@ -108,18 +107,13 @@ $(function(){initNavTree('namespace_furrball.html',''); initResizable(true); });
 <tr class="heading"><td colspan="2"><h2 class="groupheader"><a id="nested-classes" name="nested-classes"></a>
 Classes</h2></td></tr>
 <tr class="memitem:"><td class="memItemLeft" align="right" valign="top">class &#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="class_furrball_1_1_a_r_c_policy.html">ARCPolicy</a></td></tr>
-<tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">Implements the ARC eviction policy.  <a href="class_furrball_1_1_a_r_c_policy.html#details">More...</a><br /></td></tr>
-<tr class="separator:"><td class="memSeparator" colspan="2">&#160;</td></tr>
-<tr class="memitem:"><td class="memItemLeft" align="right" valign="top">class &#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="class_furrball_1_1_cache.html">Cache</a></td></tr>
-<tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">Caching Interface.  <a href="class_furrball_1_1_cache.html#details">More...</a><br /></td></tr>
-<tr class="separator:"><td class="memSeparator" colspan="2">&#160;</td></tr>
-<tr class="memitem:"><td class="memItemLeft" align="right" valign="top">class &#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="class_furrball_1_1_cache_view.html">CacheView</a></td></tr>
+<tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">Implements the ARC eviction policy TODO: Implement Adaptive Memory Pooling (AMP) You can create and manage your own cache separately by instantiating a Policy object and using it.  <a href="class_furrball_1_1_a_r_c_policy.html#details">More...</a><br /></td></tr>
 <tr class="separator:"><td class="memSeparator" colspan="2">&#160;</td></tr>
 <tr class="memitem:"><td class="memItemLeft" align="right" valign="top">class &#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="class_furrball_1_1_factory.html">Factory</a></td></tr>
 <tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">Templated derived class for specific factories.  <a href="class_furrball_1_1_factory.html#details">More...</a><br /></td></tr>
 <tr class="separator:"><td class="memSeparator" colspan="2">&#160;</td></tr>
 <tr class="memitem:"><td class="memItemLeft" align="right" valign="top">class &#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="class_furrball_1_1_furr_ball.html">FurrBall</a></td></tr>
-<tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">A <a class="el" href="class_furrball_1_1_cache.html" title="Caching Interface.">Cache</a> with size_t as Keys, void* as values and ARC eviction policy.  <a href="class_furrball_1_1_furr_ball.html#details">More...</a><br /></td></tr>
+<tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">A Cache with size_t as Keys, void* as values and ARC eviction policy.  <a href="class_furrball_1_1_furr_ball.html#details">More...</a><br /></td></tr>
 <tr class="separator:"><td class="memSeparator" colspan="2">&#160;</td></tr>
 <tr class="memitem:"><td class="memItemLeft" align="right" valign="top">class &#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="class_furrball_1_1_i_factory.html">IFactory</a></td></tr>
 <tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">Base class for factories.  <a href="class_furrball_1_1_i_factory.html#details">More...</a><br /></td></tr>
@@ -127,8 +121,13 @@ Classes</h2></td></tr>
 <tr class="memitem:"><td class="memItemLeft" align="right" valign="top">class &#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="class_furrball_1_1_l_f_u_policy.html">LFUPolicy</a></td></tr>
 <tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">Implements the LFU eviction policy.  <a href="class_furrball_1_1_l_f_u_policy.html#details">More...</a><br /></td></tr>
 <tr class="separator:"><td class="memSeparator" colspan="2">&#160;</td></tr>
+<tr class="memitem:"><td class="memItemLeft" align="right" valign="top">class &#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="class_furrball_1_1_logger.html">Logger</a></td></tr>
+<tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">Basic <a class="el" href="class_furrball_1_1_logger.html" title="Basic Logger.">Logger</a>.  <a href="class_furrball_1_1_logger.html#details">More...</a><br /></td></tr>
+<tr class="separator:"><td class="memSeparator" colspan="2">&#160;</td></tr>
 <tr class="memitem:"><td class="memItemLeft" align="right" valign="top">class &#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="class_furrball_1_1_l_r_u_policy.html">LRUPolicy</a></td></tr>
 <tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">Implements the LRU eviction policy.  <a href="class_furrball_1_1_l_r_u_policy.html#details">More...</a><br /></td></tr>
+<tr class="separator:"><td class="memSeparator" colspan="2">&#160;</td></tr>
+<tr class="memitem:"><td class="memItemLeft" align="right" valign="top">class &#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="class_furrball_1_1_memory_manager.html">MemoryManager</a></td></tr>
 <tr class="separator:"><td class="memSeparator" colspan="2">&#160;</td></tr>
 <tr class="memitem:"><td class="memItemLeft" align="right" valign="top">class &#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="class_furrball_1_1_s3_f_i_f_o_policy.html">S3FIFOPolicy</a></td></tr>
 <tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">Implements the S3FIFO eviction policy.  <a href="class_furrball_1_1_s3_f_i_f_o_policy.html#details">More...</a><br /></td></tr>
@@ -137,29 +136,48 @@ Classes</h2></td></tr>
 <tr class="memdesc:"><td class="mdescLeft">&#160;</td><td class="mdescRight">Wrapper class to manage factories.  <a href="class_furrball_1_1_static_factory_wrapper.html#details">More...</a><br /></td></tr>
 <tr class="separator:"><td class="memSeparator" colspan="2">&#160;</td></tr>
 </table><table class="memberdecls">
-<tr class="heading"><td colspan="2"><h2 class="groupheader"><a id="func-members" name="func-members"></a>
-Functions</h2></td></tr>
-<tr class="memitem:ad1af58ff6c57bce734565fb92747b875" id="r_ad1af58ff6c57bce734565fb92747b875"><td class="memItemLeft" align="right" valign="top">size_t&#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="#ad1af58ff6c57bce734565fb92747b875">GetAvailableMemory</a> ()</td></tr>
-<tr class="memdesc:ad1af58ff6c57bce734565fb92747b875"><td class="mdescLeft">&#160;</td><td class="mdescRight">Returns the available memory, works for both Windows and Unix.  <br /></td></tr>
-<tr class="separator:ad1af58ff6c57bce734565fb92747b875"><td class="memSeparator" colspan="2">&#160;</td></tr>
+<tr class="heading"><td colspan="2"><h2 class="groupheader"><a id="enum-members" name="enum-members"></a>
+Enumerations</h2></td></tr>
+<tr class="memitem:aca1fd1d8935433e6ba2e3918214e07f9" id="r_aca1fd1d8935433e6ba2e3918214e07f9"><td class="memItemLeft" align="right" valign="top">enum class &#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="#aca1fd1d8935433e6ba2e3918214e07f9">LogLevel</a> { <br />
+&#160;&#160;<a class="el" href="#aca1fd1d8935433e6ba2e3918214e07f9aa603905470e2a5b8c13e96b579ef0dba">Debug</a>
+, <a class="el" href="#aca1fd1d8935433e6ba2e3918214e07f9a4059b0251f66a18cb56f544728796875">Info</a>
+, <a class="el" href="#aca1fd1d8935433e6ba2e3918214e07f9a0eaadb4fcb48a0a0ed7bc9868be9fbaa">Warning</a>
+, <a class="el" href="#aca1fd1d8935433e6ba2e3918214e07f9a902b0d55fddef6f8d651fe1035b7d4bd">Error</a>
+, <br />
+&#160;&#160;<a class="el" href="#aca1fd1d8935433e6ba2e3918214e07f9a278d01e5af56273bae1bb99a98b370cd">Critical</a>
+<br />
+ }</td></tr>
+<tr class="separator:aca1fd1d8935433e6ba2e3918214e07f9"><td class="memSeparator" colspan="2">&#160;</td></tr>
 </table>
-<h2 class="groupheader">Function Documentation</h2>
-<a id="ad1af58ff6c57bce734565fb92747b875" name="ad1af58ff6c57bce734565fb92747b875"></a>
-<h2 class="memtitle"><span class="permalink"><a href="#ad1af58ff6c57bce734565fb92747b875">&#9670;&#160;</a></span>GetAvailableMemory()</h2>
+<h2 class="groupheader">Enumeration Type Documentation</h2>
+<a id="aca1fd1d8935433e6ba2e3918214e07f9" name="aca1fd1d8935433e6ba2e3918214e07f9"></a>
+<h2 class="memtitle"><span class="permalink"><a href="#aca1fd1d8935433e6ba2e3918214e07f9">&#9670;&#160;</a></span>LogLevel</h2>
 
 <div class="memitem">
 <div class="memproto">
+<table class="mlabels">
+  <tr>
+  <td class="mlabels-left">
       <table class="memname">
         <tr>
-          <td class="memname">size_t GetAvailableMemory </td>
-          <td>(</td>
-          <td class="paramname"><span class="paramname"><em></em></span></td><td>)</td>
-          <td></td>
+          <td class="memname">enum class <a class="el" href="#aca1fd1d8935433e6ba2e3918214e07f9">LogLevel</a></td>
         </tr>
       </table>
+  </td>
+  <td class="mlabels-right">
+<span class="mlabels"><span class="mlabel">strong</span></span>  </td>
+  </tr>
+</table>
 </div><div class="memdoc">
+<table class="fieldtable">
+<tr><th colspan="2">Enumerator</th></tr><tr><td class="fieldname"><a id="aca1fd1d8935433e6ba2e3918214e07f9aa603905470e2a5b8c13e96b579ef0dba" name="aca1fd1d8935433e6ba2e3918214e07f9aa603905470e2a5b8c13e96b579ef0dba"></a>Debug&#160;</td><td class="fielddoc"></td></tr>
+<tr><td class="fieldname"><a id="aca1fd1d8935433e6ba2e3918214e07f9a4059b0251f66a18cb56f544728796875" name="aca1fd1d8935433e6ba2e3918214e07f9a4059b0251f66a18cb56f544728796875"></a>Info&#160;</td><td class="fielddoc"></td></tr>
+<tr><td class="fieldname"><a id="aca1fd1d8935433e6ba2e3918214e07f9a0eaadb4fcb48a0a0ed7bc9868be9fbaa" name="aca1fd1d8935433e6ba2e3918214e07f9a0eaadb4fcb48a0a0ed7bc9868be9fbaa"></a>Warning&#160;</td><td class="fielddoc"></td></tr>
+<tr><td class="fieldname"><a id="aca1fd1d8935433e6ba2e3918214e07f9a902b0d55fddef6f8d651fe1035b7d4bd" name="aca1fd1d8935433e6ba2e3918214e07f9a902b0d55fddef6f8d651fe1035b7d4bd"></a>Error&#160;</td><td class="fielddoc"></td></tr>
+<tr><td class="fieldname"><a id="aca1fd1d8935433e6ba2e3918214e07f9a278d01e5af56273bae1bb99a98b370cd" name="aca1fd1d8935433e6ba2e3918214e07f9a278d01e5af56273bae1bb99a98b370cd"></a>Critical&#160;</td><td class="fielddoc"></td></tr>
+</table>
 
-<p class="definition">Definition at line <a class="el" href="_furrballs_8h_source.html#l00032">32</a> of file <a class="el" href="_furrballs_8h_source.html">Furrballs.h</a>.</p>
+<p class="definition">Definition at line <a class="el" href="_logger_8h_source.html#l00015">15</a> of file <a class="el" href="_logger_8h_source.html">Logger.h</a>.</p>
 
 </div>
 </div>

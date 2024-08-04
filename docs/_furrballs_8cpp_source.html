@@ -18,7 +18,6 @@
 <link href="search/search.css" rel="stylesheet" type="text/css"/>
 <script type="text/javascript" src="search/searchdata.js"></script>
 <script type="text/javascript" src="search/search.js"></script>
-<script type="text/javascript" src="darkmode_toggle.js"></script>
 <link href="doxygen.css" rel="stylesheet" type="text/css" />
 </head>
 <body>
@@ -28,7 +27,7 @@
  <tbody>
  <tr id="projectrow">
   <td id="projectalign">
-   <div id="projectname">Furrballs
+   <div id="projectname">Furrballs<span id="projectnumber">&#160;v0.0.1</span>
    </div>
    <div id="projectbrief">A Caching and Storage Solution</div>
   </td>
@@ -109,6 +108,89 @@ $(function(){initNavTree('_furrballs_8cpp_source.html',''); initResizable(true);
 <div class="line"><span class="lineno">    6</span><span class="comment"> *********************************************************************/</span></div>
 <div class="line"><a id="l00007" name="l00007"></a><span class="lineno">    7</span> </div>
 <div class="line"><a id="l00008" name="l00008"></a><span class="lineno">    8</span><span class="preprocessor">#</span><span class="preprocessor">include</span> <a class="code" href="_furrballs_8h.html">&quot;Furrballs.h&quot;</a></div>
+<div class="line"><a id="l00009" name="l00009"></a><span class="lineno">    9</span> </div>
+<div class="line"><a id="l00010" name="l00010"></a><span class="lineno">   10</span><span class="keyword">using</span> <span class="keyword">namespace</span> <a class="code hl_namespace" href="namespace_furrball.html">Furrball</a>;</div>
+<div class="line"><a id="l00011" name="l00011"></a><span class="lineno">   11</span> </div>
+<div class="foldopen" id="foldopen00012" data-start="{" data-end="};">
+<div class="line"><a id="l00012" name="l00012"></a><span class="lineno"><a class="line" href="struct_furr_ball_1_1_impl_detail.html">   12</a></span><span class="keyword">struct</span> FurrBall::<a class="code hl_struct" href="struct_furr_ball_1_1_impl_detail.html">ImplDetail</a> {</div>
+<div class="line"><a id="l00013" name="l00013"></a><span class="lineno"><a class="line" href="struct_furr_ball_1_1_impl_detail.html#a5759d11edd79a3a9ba2ac87b4ca9c407">   13</a></span>    <a class="code hl_variable" href="struct_furr_ball_1_1_impl_detail.html#a5759d11edd79a3a9ba2ac87b4ca9c407">rocksdb</a>::<a class="code hl_variable" href="struct_furr_ball_1_1_impl_detail.html#a5759d11edd79a3a9ba2ac87b4ca9c407">DB</a>* <a class="code hl_variable" href="struct_furr_ball_1_1_impl_detail.html#a5759d11edd79a3a9ba2ac87b4ca9c407">db</a> = <span class="keywordtype">nullptr</span>;</div>
+<div class="line"><a id="l00014" name="l00014"></a><span class="lineno">   14</span>};</div>
+</div>
+<div class="line"><a id="l00015" name="l00015"></a><span class="lineno">   15</span> </div>
+<div class="line"><a id="l00016" name="l00016"></a><span class="lineno">   16</span><a class="code hl_namespace" href="namespace_furrball.html">Furrball</a>::FurrBall::FurrBall(std::unique_ptr&lt;ImplDetail&gt; impl)</div>
+<div class="line"><a id="l00017" name="l00017"></a><span class="lineno">   17</span>{</div>
+<div class="line"><a id="l00018" name="l00018"></a><span class="lineno">   18</span>    <span class="keyword">this</span>-&gt;DataMembers.swap(impl);</div>
+<div class="line"><a id="l00019" name="l00019"></a><span class="lineno">   19</span>}</div>
+<div class="line"><a id="l00020" name="l00020"></a><span class="lineno">   20</span> </div>
+<div class="foldopen" id="foldopen00021" data-start="{" data-end="}">
+<div class="line"><a id="l00021" name="l00021"></a><span class="lineno"><a class="line" href="class_furrball_1_1_furr_ball.html#ad5d9b38144458479d42265591c440b12">   21</a></span>FurrBall* FurrBall::<a class="code hl_function" href="class_furrball_1_1_furr_ball.html#ad5d9b38144458479d42265591c440b12">CreateBall</a>(std::string DBpath, size_t PageSize, size_t numPages, <span class="keywordtype">bool</span> overwrite) <span class="keyword">noexcept</span></div>
+<div class="line"><a id="l00022" name="l00022"></a><span class="lineno">   22</span>{</div>
+<div class="line"><a id="l00023" name="l00023"></a><span class="lineno">   23</span>    rocksdb::Options options;</div>
+<div class="line"><a id="l00024" name="l00024"></a><span class="lineno">   24</span>    rocksdb::DB* db;</div>
+<div class="line"><a id="l00025" name="l00025"></a><span class="lineno">   25</span>    options.compression = rocksdb::kLZ4Compression;</div>
+<div class="line"><a id="l00026" name="l00026"></a><span class="lineno">   26</span>    <span class="comment">//fb.options.OptimizeForPointLookup();</span></div>
+<div class="line"><a id="l00027" name="l00027"></a><span class="lineno">   27</span>    options.create_if_missing = <span class="keyword">true</span>;</div>
+<div class="line"><a id="l00028" name="l00028"></a><span class="lineno">   28</span>    rocksdb::Status status =</div>
+<div class="line"><a id="l00029" name="l00029"></a><span class="lineno">   29</span>        rocksdb::DB::Open(options, DBpath, &amp;db);</div>
+<div class="line"><a id="l00030" name="l00030"></a><span class="lineno">   30</span>    <span class="keywordflow">if</span> (!status.ok()) {</div>
+<div class="line"><a id="l00031" name="l00031"></a><span class="lineno">   31</span>        <span class="comment">//ERR</span></div>
+<div class="line"><a id="l00032" name="l00032"></a><span class="lineno">   32</span>        <span class="keywordflow">return</span> <span class="keywordtype">nullptr</span>;</div>
+<div class="line"><a id="l00033" name="l00033"></a><span class="lineno">   33</span>    }</div>
+<div class="line"><a id="l00034" name="l00034"></a><span class="lineno">   34</span>    <span class="comment">//Setup Cache.</span></div>
+<div class="line"><a id="l00035" name="l00035"></a><span class="lineno">   35</span>    size_t availMem = <a class="code hl_class" href="class_furrball_1_1_memory_manager.html">MemoryManager</a><a class="code hl_function" href="class_furrball_1_1_memory_manager.html#a63b3ca5762785889ed4e072fe4281fb5">::</a><a class="code hl_function" href="class_furrball_1_1_memory_manager.html#a63b3ca5762785889ed4e072fe4281fb5">GetAvailableMemory</a><a class="code hl_function" href="class_furrball_1_1_memory_manager.html#a63b3ca5762785889ed4e072fe4281fb5">(</a><a class="code hl_function" href="class_furrball_1_1_memory_manager.html#a63b3ca5762785889ed4e072fe4281fb5">)</a>;</div>
+<div class="line"><a id="l00036" name="l00036"></a><span class="lineno">   36</span>    <span class="keywordflow">if</span> (availMem &lt; PageSize * numPages) {</div>
+<div class="line"><a id="l00037" name="l00037"></a><span class="lineno">   37</span>        <span class="comment">//We don&#39;t have enough memory to allocate all the pages.</span></div>
+<div class="line"><a id="l00038" name="l00038"></a><span class="lineno">   38</span>        <span class="keywordflow">while</span> ((--numPages) || availMem &lt; PageSize * numPages);</div>
+<div class="line"><a id="l00039" name="l00039"></a><span class="lineno">   39</span>        <span class="keywordflow">if</span> (numPages &lt;= 0) {</div>
+<div class="line"><a id="l00040" name="l00040"></a><span class="lineno">   40</span>            <a class="code hl_class" href="class_furrball_1_1_logger.html">Logger</a><a class="code hl_function" href="class_furrball_1_1_logger.html#a3f7888501c07399bd4149ee8d67a6687">::</a><a class="code hl_function" href="class_furrball_1_1_logger.html#a3f7888501c07399bd4149ee8d67a6687">getInstance</a><a class="code hl_function" href="class_furrball_1_1_logger.html#a3f7888501c07399bd4149ee8d67a6687">(</a><a class="code hl_function" href="class_furrball_1_1_logger.html#a3f7888501c07399bd4149ee8d67a6687">)</a><a class="code hl_function" href="class_furrball_1_1_logger.html#a0adc83848b0eedbac34a21f82755aad8">.</a><a class="code hl_function" href="class_furrball_1_1_logger.html#a0adc83848b0eedbac34a21f82755aad8">error</a><a class="code hl_function" href="class_furrball_1_1_logger.html#a0adc83848b0eedbac34a21f82755aad8">(</a><span class="stringliteral">&quot;Not enough memory&quot;</span><a class="code hl_function" href="class_furrball_1_1_logger.html#a0adc83848b0eedbac34a21f82755aad8">)</a>;</div>
+<div class="line"><a id="l00041" name="l00041"></a><span class="lineno">   41</span>            <span class="keywordflow">return</span> <span class="keywordtype">nullptr</span>;</div>
+<div class="line"><a id="l00042" name="l00042"></a><span class="lineno">   42</span>        }</div>
+<div class="line"><a id="l00043" name="l00043"></a><span class="lineno">   43</span>    }</div>
+<div class="line"><a id="l00044" name="l00044"></a><span class="lineno">   44</span>    <a class="code hl_class" href="class_furrball_1_1_a_r_c_policy.html">ARCPolicy</a>&lt;size_t, <span class="keywordtype">void</span>*&gt; Cache(numPages);</div>
+<div class="line"><a id="l00045" name="l00045"></a><span class="lineno">   45</span>    <span class="comment">//Allocate Slab.</span></div>
+<div class="line"><a id="l00046" name="l00046"></a><span class="lineno">   46</span>    <span class="keywordtype">char</span>* slab = <span class="keyword">static_cast</span>&lt;<span class="keywordtype">char</span>*&gt;(malloc(PageSize * numPages));</div>
+<div class="line"><a id="l00047" name="l00047"></a><span class="lineno">   47</span>    <span class="keywordflow">if</span> (!slab) {</div>
+<div class="line"><a id="l00048" name="l00048"></a><span class="lineno">   48</span>        <a class="code hl_class" href="class_furrball_1_1_logger.html">Logger</a><a class="code hl_function" href="class_furrball_1_1_logger.html#a3f7888501c07399bd4149ee8d67a6687">::</a><a class="code hl_function" href="class_furrball_1_1_logger.html#a3f7888501c07399bd4149ee8d67a6687">getInstance</a><a class="code hl_function" href="class_furrball_1_1_logger.html#a3f7888501c07399bd4149ee8d67a6687">(</a><a class="code hl_function" href="class_furrball_1_1_logger.html#a3f7888501c07399bd4149ee8d67a6687">)</a><a class="code hl_function" href="class_furrball_1_1_logger.html#ade47e18c031a6bc7aef3d4783d887f0c">.</a><a class="code hl_function" href="class_furrball_1_1_logger.html#ade47e18c031a6bc7aef3d4783d887f0c">warning</a><a class="code hl_function" href="class_furrball_1_1_logger.html#ade47e18c031a6bc7aef3d4783d887f0c">(</a><span class="stringliteral">&quot;Could not allocated memory slab.&quot;</span><a class="code hl_function" href="class_furrball_1_1_logger.html#ade47e18c031a6bc7aef3d4783d887f0c">)</a>;</div>
+<div class="line"><a id="l00049" name="l00049"></a><span class="lineno">   49</span>        <span class="comment">//Maybe attempt to allocate fragmented slab.</span></div>
+<div class="line"><a id="l00050" name="l00050"></a><span class="lineno">   50</span>        <span class="comment">//for now return nullptr</span></div>
+<div class="line"><a id="l00051" name="l00051"></a><span class="lineno">   51</span>        <span class="keywordflow">return</span> <span class="keywordtype">nullptr</span>;</div>
+<div class="line"><a id="l00052" name="l00052"></a><span class="lineno">   52</span>    }</div>
+<div class="line"><a id="l00053" name="l00053"></a><span class="lineno">   53</span>    size_t PagePointer = 0;</div>
+<div class="line"><a id="l00054" name="l00054"></a><span class="lineno">   54</span>    <span class="keywordflow">for</span> (<span class="keywordtype">int</span> i = 0; i &lt; numPages; i++) {</div>
+<div class="line"><a id="l00055" name="l00055"></a><span class="lineno">   55</span>        Cache.add(PagePointer, slab + PagePointer);</div>
+<div class="line"><a id="l00056" name="l00056"></a><span class="lineno">   56</span>    }</div>
+<div class="line"><a id="l00057" name="l00057"></a><span class="lineno">   57</span>    FurrBall* fb = <span class="keyword">new</span> FurrBall();</div>
+<div class="line"><a id="l00058" name="l00058"></a><span class="lineno">   58</span>    fb-&gt;DataMembers-&gt;db = db;</div>
+<div class="line"><a id="l00059" name="l00059"></a><span class="lineno">   59</span>    <span class="keywordflow">return</span> fb;</div>
+<div class="line"><a id="l00060" name="l00060"></a><span class="lineno">   60</span>}</div>
+</div>
+<div class="line"><a id="l00061" name="l00061"></a><span class="lineno">   61</span> </div>
+<div class="foldopen" id="foldopen00062" data-start="{" data-end="}">
+<div class="line"><a id="l00062" name="l00062"></a><span class="lineno"><a class="line" href="class_furrball_1_1_furr_ball.html#a74c082b3331794c9f373e803675eeec4">   62</a></span><span class="keywordtype">void</span> <a class="code hl_namespace" href="namespace_furrball.html">Furrball</a>::FurrBall::<a class="code hl_function" href="class_furrball_1_1_furr_ball.html#a74c082b3331794c9f373e803675eeec4">StoreLargeData</a>(<span class="keywordtype">void</span>* buffer, size_t size)</div>
+<div class="line"><a id="l00063" name="l00063"></a><span class="lineno">   63</span>{</div>
+<div class="line"><a id="l00064" name="l00064"></a><span class="lineno">   64</span> </div>
+<div class="line"><a id="l00065" name="l00065"></a><span class="lineno">   65</span>}</div>
+</div>
+<div class="line"><a id="l00066" name="l00066"></a><span class="lineno">   66</span> </div>
+<div class="foldopen" id="foldopen00067" data-start="{" data-end="}">
+<div class="line"><a id="l00067" name="l00067"></a><span class="lineno"><a class="line" href="class_furrball_1_1_furr_ball.html#aca812eaeb47f21590a4857c505a92a9b">   67</a></span><a class="code hl_namespace" href="namespace_furrball.html">Furrball</a>::FurrBall::~<a class="code hl_function" href="class_furrball_1_1_furr_ball.html#aca812eaeb47f21590a4857c505a92a9b">FurrBall</a>() <span class="keyword">noexcept</span></div>
+<div class="line"><a id="l00068" name="l00068"></a><span class="lineno">   68</span>{</div>
+<div class="line"><a id="l00069" name="l00069"></a><span class="lineno">   69</span>    <span class="keyword">delete</span> DataMembers-&gt;db;</div>
+<div class="line"><a id="l00070" name="l00070"></a><span class="lineno">   70</span>}</div>
+</div>
+<div class="ttc" id="aclass_furrball_1_1_a_r_c_policy_html"><div class="ttname"><a href="class_furrball_1_1_a_r_c_policy.html">Furrball::ARCPolicy</a></div><div class="ttdoc">Implements the ARC eviction policy TODO: Implement Adaptive Memory Pooling (AMP) You can create and m...</div><div class="ttdef"><b>Definition</b> <a href="_furrballs_8h_source.html#l00132">Furrballs.h:132</a></div></div>
+<div class="ttc" id="aclass_furrball_1_1_furr_ball_html_a74c082b3331794c9f373e803675eeec4"><div class="ttname"><a href="class_furrball_1_1_furr_ball.html#a74c082b3331794c9f373e803675eeec4">Furrball::FurrBall::StoreLargeData</a></div><div class="ttdeci">void StoreLargeData(void *buffer, size_t size)</div><div class="ttdoc">Large data is stored seperate and a pointer to it is added to the cache.</div><div class="ttdef"><b>Definition</b> <a href="#l00062">Furrballs.cpp:62</a></div></div>
+<div class="ttc" id="aclass_furrball_1_1_furr_ball_html_aca812eaeb47f21590a4857c505a92a9b"><div class="ttname"><a href="class_furrball_1_1_furr_ball.html#aca812eaeb47f21590a4857c505a92a9b">Furrball::FurrBall::~FurrBall</a></div><div class="ttdeci">~FurrBall() noexcept</div><div class="ttdoc">Cleans up.</div><div class="ttdef"><b>Definition</b> <a href="#l00067">Furrballs.cpp:67</a></div></div>
+<div class="ttc" id="aclass_furrball_1_1_furr_ball_html_ad5d9b38144458479d42265591c440b12"><div class="ttname"><a href="class_furrball_1_1_furr_ball.html#ad5d9b38144458479d42265591c440b12">Furrball::FurrBall::CreateBall</a></div><div class="ttdeci">static FurrBall * CreateBall(std::string DBpath, size_t PageSize, size_t numPages, bool overwrite=false) noexcept</div><div class="ttdoc">Constructs a DB and allocates the Cache (with it's pages).</div><div class="ttdef"><b>Definition</b> <a href="#l00021">Furrballs.cpp:21</a></div></div>
+<div class="ttc" id="aclass_furrball_1_1_logger_html"><div class="ttname"><a href="class_furrball_1_1_logger.html">Furrball::Logger</a></div><div class="ttdoc">Basic Logger.</div><div class="ttdef"><b>Definition</b> <a href="_logger_8h_source.html#l00025">Logger.h:25</a></div></div>
+<div class="ttc" id="aclass_furrball_1_1_logger_html_a0adc83848b0eedbac34a21f82755aad8"><div class="ttname"><a href="class_furrball_1_1_logger.html#a0adc83848b0eedbac34a21f82755aad8">Furrball::Logger::error</a></div><div class="ttdeci">void error(const std::string &amp;message)</div><div class="ttdef"><b>Definition</b> <a href="_logger_8h_source.html#l00055">Logger.h:55</a></div></div>
+<div class="ttc" id="aclass_furrball_1_1_logger_html_a3f7888501c07399bd4149ee8d67a6687"><div class="ttname"><a href="class_furrball_1_1_logger.html#a3f7888501c07399bd4149ee8d67a6687">Furrball::Logger::getInstance</a></div><div class="ttdeci">static Logger &amp; getInstance()</div><div class="ttdef"><b>Definition</b> <a href="_logger_8h_source.html#l00033">Logger.h:33</a></div></div>
+<div class="ttc" id="aclass_furrball_1_1_logger_html_ade47e18c031a6bc7aef3d4783d887f0c"><div class="ttname"><a href="class_furrball_1_1_logger.html#ade47e18c031a6bc7aef3d4783d887f0c">Furrball::Logger::warning</a></div><div class="ttdeci">void warning(const std::string &amp;message)</div><div class="ttdef"><b>Definition</b> <a href="_logger_8h_source.html#l00054">Logger.h:54</a></div></div>
+<div class="ttc" id="aclass_furrball_1_1_memory_manager_html"><div class="ttname"><a href="class_furrball_1_1_memory_manager.html">Furrball::MemoryManager</a></div><div class="ttdef"><b>Definition</b> <a href="_furrballs_8h_source.html#l00033">Furrballs.h:33</a></div></div>
+<div class="ttc" id="aclass_furrball_1_1_memory_manager_html_a63b3ca5762785889ed4e072fe4281fb5"><div class="ttname"><a href="class_furrball_1_1_memory_manager.html#a63b3ca5762785889ed4e072fe4281fb5">Furrball::MemoryManager::GetAvailableMemory</a></div><div class="ttdeci">static size_t GetAvailableMemory()</div><div class="ttdoc">Returns the available memory, works for both Windows and Unix.</div><div class="ttdef"><b>Definition</b> <a href="_furrballs_8h_source.html#l00088">Furrballs.h:88</a></div></div>
+<div class="ttc" id="anamespace_furrball_html"><div class="ttname"><a href="namespace_furrball.html">Furrball</a></div><div class="ttdef"><b>Definition</b> <a href="_furrballs_8h_source.html#l00032">Furrballs.h:32</a></div></div>
+<div class="ttc" id="astruct_furr_ball_1_1_impl_detail_html"><div class="ttname"><a href="struct_furr_ball_1_1_impl_detail.html">Furrball::FurrBall::ImplDetail</a></div><div class="ttdef"><b>Definition</b> <a href="#l00012">Furrballs.cpp:12</a></div></div>
+<div class="ttc" id="astruct_furr_ball_1_1_impl_detail_html_a5759d11edd79a3a9ba2ac87b4ca9c407"><div class="ttname"><a href="struct_furr_ball_1_1_impl_detail.html#a5759d11edd79a3a9ba2ac87b4ca9c407">Furrball::FurrBall::ImplDetail::db</a></div><div class="ttdeci">rocksdb::DB * db</div><div class="ttdef"><b>Definition</b> <a href="#l00013">Furrballs.cpp:13</a></div></div>
 </div><!-- fragment --></div><!-- contents -->
 </div><!-- doc-content -->
 <!-- start footer part -->

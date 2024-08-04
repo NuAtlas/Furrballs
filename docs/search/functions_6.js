@@ -1,5 +1,4 @@
 var searchData=
 [
-  ['set_0',['Set',['../class_furrball_1_1_cache.html#ae796495db1a9e1a26f5fc436ff0c6efd',1,'Furrball::Cache']]],
-  ['set_1',['set',['../class_furrball_1_1_a_r_c_policy.html#a603dc3052fdde5db5980a0846177e561',1,'Furrball::ARCPolicy']]]
+  ['info_0',['info',['../class_furrball_1_1_logger.html#af06db9124b08a4f60420deaa361cd99f',1,'Furrball::Logger']]]
 ];

@@ -18,7 +18,6 @@
 <link href="search/search.css" rel="stylesheet" type="text/css"/>
 <script type="text/javascript" src="search/searchdata.js"></script>
 <script type="text/javascript" src="search/search.js"></script>
-<script type="text/javascript" src="darkmode_toggle.js"></script>
 <link href="doxygen.css" rel="stylesheet" type="text/css" />
 </head>
 <body>
@@ -28,7 +27,7 @@
  <tbody>
  <tr id="projectrow">
   <td id="projectalign">
-   <div id="projectname">Furrballs
+   <div id="projectname">Furrballs<span id="projectnumber">&#160;v0.0.1</span>
    </div>
    <div id="projectbrief">A Caching and Storage Solution</div>
   </td>
@@ -104,10 +103,15 @@ $(function(){initNavTree('class_furrball_1_1_furr_ball.html',''); initResizable(
 
 <p>This is the complete list of members for <a class="el" href="class_furrball_1_1_furr_ball.html">FurrBall</a>, including all inherited members.</p>
 <table class="directory">
-  <tr class="even"><td class="entry"><a class="el" href="class_furrball_1_1_furr_ball.html#aa2076b952613141ea81292663cdf70aa">CreateBall</a>(std::string DBpath, size_t BufferSize)</td><td class="entry"><a class="el" href="class_furrball_1_1_furr_ball.html">FurrBall</a></td><td class="entry"><span class="mlabel">inline</span><span class="mlabel">static</span></td></tr>
+  <tr class="even"><td class="entry"><a class="el" href="class_furrball_1_1_furr_ball.html#ad5d9b38144458479d42265591c440b12">CreateBall</a>(std::string DBpath, size_t PageSize, size_t numPages, bool overwrite=false) noexcept</td><td class="entry"><a class="el" href="class_furrball_1_1_furr_ball.html">FurrBall</a></td><td class="entry"><span class="mlabel">static</span></td></tr>
   <tr class="odd"><td class="entry"><a class="el" href="class_furrball_1_1_furr_ball.html#a2c33754e4a1ac9602fd81a6f86f0f76e">FurrBall</a>(const FurrBall &amp;cpy)=delete</td><td class="entry"><a class="el" href="class_furrball_1_1_furr_ball.html">FurrBall</a></td><td class="entry"></td></tr>
-  <tr class="even"><td class="entry"><a class="el" href="class_furrball_1_1_furr_ball.html#a89c2f0876b626ab75f3562db09cfc725">FurrBall</a>(FurrBall &amp;&amp;mv)</td><td class="entry"><a class="el" href="class_furrball_1_1_furr_ball.html">FurrBall</a></td><td class="entry"><span class="mlabel">inline</span></td></tr>
-  <tr class="odd"><td class="entry"><a class="el" href="class_furrball_1_1_furr_ball.html#a4a5bfcf494c3b3dcbf58fac97c1f383e">~FurrBall</a>()</td><td class="entry"><a class="el" href="class_furrball_1_1_furr_ball.html">FurrBall</a></td><td class="entry"><span class="mlabel">inline</span></td></tr>
+  <tr class="even"><td class="entry"><a class="el" href="class_furrball_1_1_furr_ball.html#a66371916611988ebbea7034e3a706855">FurrBall</a>(FurrBall &amp;&amp;mv) noexcept</td><td class="entry"><a class="el" href="class_furrball_1_1_furr_ball.html">FurrBall</a></td><td class="entry"><span class="mlabel">inline</span></td></tr>
+  <tr class="odd"><td class="entry"><a class="el" href="class_furrball_1_1_furr_ball.html#ad6949bd988357496f4b2e8602d0f131c">GenerateLockablePage</a>()</td><td class="entry"><a class="el" href="class_furrball_1_1_furr_ball.html">FurrBall</a></td><td class="entry"><span class="mlabel">inline</span></td></tr>
+  <tr class="even"><td class="entry"><a class="el" href="class_furrball_1_1_furr_ball.html#a297b453509d0a78a334c250c0e97d8e1">Get</a>(void *vAddress) noexcept</td><td class="entry"><a class="el" href="class_furrball_1_1_furr_ball.html">FurrBall</a></td><td class="entry"><span class="mlabel">inline</span></td></tr>
+  <tr class="odd"><td class="entry"><a class="el" href="class_furrball_1_1_furr_ball.html#afac8d7baedb9152b2ce8b961c50b678a">LockPage</a>(const Page *page)</td><td class="entry"><a class="el" href="class_furrball_1_1_furr_ball.html">FurrBall</a></td><td class="entry"><span class="mlabel">inline</span></td></tr>
+  <tr class="even"><td class="entry"><a class="el" href="class_furrball_1_1_furr_ball.html#a0d499c5a651c3955823371096c7f969a">SetPageToLockable</a>(Page *page)</td><td class="entry"><a class="el" href="class_furrball_1_1_furr_ball.html">FurrBall</a></td><td class="entry"><span class="mlabel">inline</span></td></tr>
+  <tr class="odd"><td class="entry"><a class="el" href="class_furrball_1_1_furr_ball.html#a74c082b3331794c9f373e803675eeec4">StoreLargeData</a>(void *buffer, size_t size)</td><td class="entry"><a class="el" href="class_furrball_1_1_furr_ball.html">FurrBall</a></td><td class="entry"></td></tr>
+  <tr class="even"><td class="entry"><a class="el" href="class_furrball_1_1_furr_ball.html#aca812eaeb47f21590a4857c505a92a9b">~FurrBall</a>() noexcept</td><td class="entry"><a class="el" href="class_furrball_1_1_furr_ball.html">FurrBall</a></td><td class="entry"></td></tr>
 </table></div><!-- contents -->
 </div><!-- doc-content -->
 <!-- start footer part -->

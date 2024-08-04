@@ -18,7 +18,6 @@
 <link href="search/search.css" rel="stylesheet" type="text/css"/>
 <script type="text/javascript" src="search/searchdata.js"></script>
 <script type="text/javascript" src="search/search.js"></script>
-<script type="text/javascript" src="darkmode_toggle.js"></script>
 <link href="doxygen.css" rel="stylesheet" type="text/css" />
 </head>
 <body>
@@ -28,7 +27,7 @@
  <tbody>
  <tr id="projectrow">
   <td id="projectalign">
-   <div id="projectname">Furrballs
+   <div id="projectname">Furrballs<span id="projectnumber">&#160;v0.0.1</span>
    </div>
    <div id="projectbrief">A Caching and Storage Solution</div>
   </td>
@@ -99,22 +98,30 @@ $(function(){initNavTree('class_furrball_1_1_a_r_c_policy.html',''); initResizab
 
 <div class="header">
   <div class="summary">
+<a href="#pub-types">Public Types</a> &#124;
 <a href="#pub-methods">Public Member Functions</a> &#124;
 <a href="class_furrball_1_1_a_r_c_policy-members.html">List of all members</a>  </div>
   <div class="headertitle"><div class="title">ARCPolicy&lt; Key, Value &gt; Class Template Reference</div></div>
 </div><!--header-->
 <div class="contents">
 
-<p>Implements the ARC eviction policy.  
+<p>Implements the ARC eviction policy TODO: Implement Adaptive Memory Pooling (AMP) You can create and manage your own cache separately by instantiating a Policy object and using it.  
  <a href="#details">More...</a></p>
 
 <p><code>#include &lt;<a class="el" href="_furrballs_8h_source.html">Furrballs.h</a>&gt;</code></p>
 <table class="memberdecls">
+<tr class="heading"><td colspan="2"><h2 class="groupheader"><a id="pub-types" name="pub-types"></a>
+Public Types</h2></td></tr>
+<tr class="memitem:a05fdf7638bba6c4f40cb6360e608154d" id="r_a05fdf7638bba6c4f40cb6360e608154d"><td class="memItemLeft" align="right" valign="top">typedef void(*&#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="#a05fdf7638bba6c4f40cb6360e608154d">EvictionCallback</a>) (Key &amp;)</td></tr>
+<tr class="separator:a05fdf7638bba6c4f40cb6360e608154d"><td class="memSeparator" colspan="2">&#160;</td></tr>
+</table><table class="memberdecls">
 <tr class="heading"><td colspan="2"><h2 class="groupheader"><a id="pub-methods" name="pub-methods"></a>
 Public Member Functions</h2></td></tr>
 <tr class="memitem:a5972757b37d84d8322150d507a7df243" id="r_a5972757b37d84d8322150d507a7df243"><td class="memItemLeft" align="right" valign="top">&#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="#a5972757b37d84d8322150d507a7df243">ARCPolicy</a> (size_t cap)</td></tr>
 <tr class="memdesc:a5972757b37d84d8322150d507a7df243"><td class="mdescLeft">&#160;</td><td class="mdescRight">Creates a cache following ARC policy.  <br /></td></tr>
 <tr class="separator:a5972757b37d84d8322150d507a7df243"><td class="memSeparator" colspan="2">&#160;</td></tr>
+<tr class="memitem:aa5e59d2fe8f404a4b855e4a83e39b65f" id="r_aa5e59d2fe8f404a4b855e4a83e39b65f"><td class="memItemLeft" align="right" valign="top">void&#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="#aa5e59d2fe8f404a4b855e4a83e39b65f">setEvictionCallback</a> (<a class="el" href="#a05fdf7638bba6c4f40cb6360e608154d">EvictionCallback</a> cb)</td></tr>
+<tr class="separator:aa5e59d2fe8f404a4b855e4a83e39b65f"><td class="memSeparator" colspan="2">&#160;</td></tr>
 <tr class="memitem:a4ba0005e319eda1ba871a1a01be7764e" id="r_a4ba0005e319eda1ba871a1a01be7764e"><td class="memItemLeft" align="right" valign="top">bool&#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="#a4ba0005e319eda1ba871a1a01be7764e">contains</a> (const Key &amp;key) const</td></tr>
 <tr class="separator:a4ba0005e319eda1ba871a1a01be7764e"><td class="memSeparator" colspan="2">&#160;</td></tr>
 <tr class="memitem:a107cc96d89ec81d940bf78c154c438e8" id="r_a107cc96d89ec81d940bf78c154c438e8"><td class="memItemLeft" align="right" valign="top">void&#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="#a107cc96d89ec81d940bf78c154c438e8">touch</a> (const Key &amp;key)</td></tr>
@@ -132,14 +139,33 @@ Public Member Functions</h2></td></tr>
 </table>
 <a name="details" id="details"></a><h2 class="groupheader">Detailed Description</h2>
 <div class="textblock"><div class="compoundTemplParams">template&lt;class Key, class Value&gt;<br />
-class Furrball::ARCPolicy&lt; Key, Value &gt;</div><p>You can create and manage your own cache separately by instantiating a Policy object and using it. </p><dl class="section see"><dt>See also</dt><dd><a class="el" href="class_furrball_1_1_s3_f_i_f_o_policy.html" title="Implements the S3FIFO eviction policy.">S3FIFOPolicy</a> </dd>
+class Furrball::ARCPolicy&lt; Key, Value &gt;</div><dl class="section see"><dt>See also</dt><dd><a class="el" href="class_furrball_1_1_s3_f_i_f_o_policy.html" title="Implements the S3FIFO eviction policy.">S3FIFOPolicy</a> </dd>
 <dd>
 <a class="el" href="class_furrball_1_1_l_r_u_policy.html" title="Implements the LRU eviction policy.">LRUPolicy</a> </dd>
 <dd>
 <a class="el" href="class_furrball_1_1_l_f_u_policy.html" title="Implements the LFU eviction policy.">LFUPolicy</a> </dd></dl>
 
-<p class="definition">Definition at line <a class="el" href="_furrballs_8h_source.html#l00112">112</a> of file <a class="el" href="_furrballs_8h_source.html">Furrballs.h</a>.</p>
-</div><h2 class="groupheader">Constructor &amp; Destructor Documentation</h2>
+<p class="definition">Definition at line <a class="el" href="_furrballs_8h_source.html#l00132">132</a> of file <a class="el" href="_furrballs_8h_source.html">Furrballs.h</a>.</p>
+</div><h2 class="groupheader">Member Typedef Documentation</h2>
+<a id="a05fdf7638bba6c4f40cb6360e608154d" name="a05fdf7638bba6c4f40cb6360e608154d"></a>
+<h2 class="memtitle"><span class="permalink"><a href="#a05fdf7638bba6c4f40cb6360e608154d">&#9670;&#160;</a></span>EvictionCallback</h2>
+
+<div class="memitem">
+<div class="memproto">
+<div class="memtemplate">
+template&lt;class Key , class Value &gt; </div>
+      <table class="memname">
+        <tr>
+          <td class="memname">typedef void(* EvictionCallback) (Key &amp;)</td>
+        </tr>
+      </table>
+</div><div class="memdoc">
+
+<p class="definition">Definition at line <a class="el" href="_furrballs_8h_source.html#l00134">134</a> of file <a class="el" href="_furrballs_8h_source.html">Furrballs.h</a>.</p>
+
+</div>
+</div>
+<h2 class="groupheader">Constructor &amp; Destructor Documentation</h2>
 <a id="a5972757b37d84d8322150d507a7df243" name="a5972757b37d84d8322150d507a7df243"></a>
 <h2 class="memtitle"><span class="permalink"><a href="#a5972757b37d84d8322150d507a7df243">&#9670;&#160;</a></span>ARCPolicy()</h2>
 
@@ -171,7 +197,7 @@ template&lt;class Key , class Value &gt; </div>
   </dd>
 </dl>
 
-<p class="definition">Definition at line <a class="el" href="_furrballs_8h_source.html#l00163">163</a> of file <a class="el" href="_furrballs_8h_source.html">Furrballs.h</a>.</p>
+<p class="definition">Definition at line <a class="el" href="_furrballs_8h_source.html#l00193">193</a> of file <a class="el" href="_furrballs_8h_source.html">Furrballs.h</a>.</p>
 
 </div>
 </div>
@@ -205,7 +231,7 @@ template&lt;class Key , class Value &gt; </div>
 </table>
 </div><div class="memdoc">
 
-<p class="definition">Definition at line <a class="el" href="_furrballs_8h_source.html#l00201">201</a> of file <a class="el" href="_furrballs_8h_source.html">Furrballs.h</a>.</p>
+<p class="definition">Definition at line <a class="el" href="_furrballs_8h_source.html#l00235">235</a> of file <a class="el" href="_furrballs_8h_source.html">Furrballs.h</a>.</p>
 
 </div>
 </div>
@@ -235,7 +261,7 @@ template&lt;class Key , class Value &gt; </div>
 </div><div class="memdoc">
 <dl class="section return"><dt>Returns</dt><dd>true if the key exists. </dd></dl>
 
-<p class="definition">Definition at line <a class="el" href="_furrballs_8h_source.html#l00167">167</a> of file <a class="el" href="_furrballs_8h_source.html">Furrballs.h</a>.</p>
+<p class="definition">Definition at line <a class="el" href="_furrballs_8h_source.html#l00201">201</a> of file <a class="el" href="_furrballs_8h_source.html">Furrballs.h</a>.</p>
 
 </div>
 </div>
@@ -264,7 +290,7 @@ template&lt;class Key , class Value &gt; </div>
 </table>
 </div><div class="memdoc">
 
-<p class="definition">Definition at line <a class="el" href="_furrballs_8h_source.html#l00211">211</a> of file <a class="el" href="_furrballs_8h_source.html">Furrballs.h</a>.</p>
+<p class="definition">Definition at line <a class="el" href="_furrballs_8h_source.html#l00245">245</a> of file <a class="el" href="_furrballs_8h_source.html">Furrballs.h</a>.</p>
 
 </div>
 </div>
@@ -297,7 +323,36 @@ template&lt;class Key , class Value &gt; </div>
 </table>
 </div><div class="memdoc">
 
-<p class="definition">Definition at line <a class="el" href="_furrballs_8h_source.html#l00218">218</a> of file <a class="el" href="_furrballs_8h_source.html">Furrballs.h</a>.</p>
+<p class="definition">Definition at line <a class="el" href="_furrballs_8h_source.html#l00252">252</a> of file <a class="el" href="_furrballs_8h_source.html">Furrballs.h</a>.</p>
+
+</div>
+</div>
+<a id="aa5e59d2fe8f404a4b855e4a83e39b65f" name="aa5e59d2fe8f404a4b855e4a83e39b65f"></a>
+<h2 class="memtitle"><span class="permalink"><a href="#aa5e59d2fe8f404a4b855e4a83e39b65f">&#9670;&#160;</a></span>setEvictionCallback()</h2>
+
+<div class="memitem">
+<div class="memproto">
+<div class="memtemplate">
+template&lt;class Key , class Value &gt; </div>
+<table class="mlabels">
+  <tr>
+  <td class="mlabels-left">
+      <table class="memname">
+        <tr>
+          <td class="memname">void setEvictionCallback </td>
+          <td>(</td>
+          <td class="paramtype"><a class="el" href="#a05fdf7638bba6c4f40cb6360e608154d">EvictionCallback</a></td>          <td class="paramname"><span class="paramname"><em>cb</em></span></td><td>)</td>
+          <td></td>
+        </tr>
+      </table>
+  </td>
+  <td class="mlabels-right">
+<span class="mlabels"><span class="mlabel">inline</span></span>  </td>
+  </tr>
+</table>
+</div><div class="memdoc">
+
+<p class="definition">Definition at line <a class="el" href="_furrballs_8h_source.html#l00195">195</a> of file <a class="el" href="_furrballs_8h_source.html">Furrballs.h</a>.</p>
 
 </div>
 </div>
@@ -326,7 +381,7 @@ template&lt;class Key , class Value &gt; </div>
 </table>
 </div><div class="memdoc">
 
-<p class="definition">Definition at line <a class="el" href="_furrballs_8h_source.html#l00173">173</a> of file <a class="el" href="_furrballs_8h_source.html">Furrballs.h</a>.</p>
+<p class="definition">Definition at line <a class="el" href="_furrballs_8h_source.html#l00207">207</a> of file <a class="el" href="_furrballs_8h_source.html">Furrballs.h</a>.</p>
 
 </div>
 </div>

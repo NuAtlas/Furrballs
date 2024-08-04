@@ -1,4 +1,4 @@
 var searchData=
 [
-  ['touch_0',['touch',['../class_furrball_1_1_a_r_c_policy.html#a107cc96d89ec81d940bf78c154c438e8',1,'Furrball::ARCPolicy']]]
+  ['protectmemory_0',['ProtectMemory',['../class_furrball_1_1_memory_manager.html#a4ef20a25d37f3435884104f89f0dfb9e',1,'Furrball::MemoryManager']]]
 ];
