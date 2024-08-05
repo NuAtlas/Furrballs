@@ -11,7 +11,7 @@
 #include <ctime>
 #include <memory>
 
-namespace Furrball{
+namespace NuAtlas{
     enum class LogLevel {
         Debug,
         Info,

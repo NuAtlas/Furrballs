@@ -14,9 +14,7 @@
 #include <filesystem>
 #include <thread>
 #include <atomic>
-#include <rocksdb/db.h>
-#include <rocksdb/options.h>
-#include <rocksdb/advanced_cache.h>
+#include <functional>
 #include <unordered_map>
 #include <type_traits>
 #include <Logger.h>
@@ -30,7 +28,7 @@
 #endif
 
 //Furrball, compact and filled with spit !
-namespace Furrball {
+namespace NuAtlas {
     class MemoryManager {
     private:
         inline static std::mutex FreeingMutex;
@@ -120,7 +118,18 @@ namespace Furrball {
             return maxBlockSize;
         }
     };
-
+    template<class Key, class Value>
+    class Cache {
+    protected: 
+        virtual void evict() = 0;
+    public:
+        typedef void(*EvictionCallback)(Key&);
+        virtual bool contains(const Key& key)const noexcept = 0;
+        virtual void touch(const Key& key)noexcept = 0;
+        virtual void add(const Key& key, const Value& value) = 0;
+        virtual Value get(const Key& key) = 0;
+        virtual void set(const Key& key, const Value& value) = 0;
+    };
     /**
      * @brief Implements the ARC eviction policy
      * TODO: Implement Adaptive Memory Pooling (AMP)
@@ -130,17 +139,15 @@ namespace Furrball {
      * @see LFUPolicy
      */
     template<class Key, class Value>
-    class ARCPolicy {
-    public:
-        typedef void(*EvictionCallback)(Key&);
+    class ARCPolicy final : public Cache<Key, Value> {
     private:
         std::list<Key> t1;  // Recently added
         std::list<Key> t2;  // Recently used
         std::list<Key> b1;  // Ghost entries for t1
         std::list<Key> b2;  // Ghost entries for t2
         std::unordered_map<Key, Value> map;  // Key to value mapping
-        std::list<Key> Window; // t1 + t2 (the cache)
-        std::list<Key> GhostEntries; // b1 + b2 Ghost entries
+        //std::list<Key> Window; // t1 + t2 (the cache)
+        //std::list<Key> GhostEntries; // b1 + b2 Ghost entries
         size_t capacity;
         size_t p;  // Target size for t1
         EvictionCallback evictionCallback = [](Key&) {};//NO-OP by default.
@@ -162,25 +169,24 @@ namespace Furrball {
             }
         }
 
-        void evict() {
-            evictionCallback();
+        void evict() override {
             if (t1.size() + b1.size() >= capacity) {
                 if (t1.size() < capacity) {
-                    evictionCallback(b1.back())
+                    evictionCallback(b1.back());
                     b1.pop_back();
                 }
                 else {
-                    evictionCallback(t1.back())
+                    evictionCallback(t1.back());
                     t1.pop_back();
                 }
             }
             if (t1.size() + t2.size() + b1.size() + b2.size() >= 2 * capacity) {
                 if (t2.size() + b2.size() > capacity) {
-                    evictionCallback(b2.back())
+                    evictionCallback(b2.back());
                     b2.pop_back();
                 }
                 else {
-                    evictionCallback(t2.back())
+                    evictionCallback(t2.back());
                     t2.pop_back();
                 }
             }
@@ -199,13 +205,13 @@ namespace Furrball {
         /**
          * @return true if the key exists.
          */
-        bool contains(const Key& key) const {
+        bool contains(const Key& key)const noexcept override {
             return map.find(key) != map.end();
         }
         /**
          * @brief Promotes a Key.
          */
-        void touch(const Key& key) {
+        void touch(const Key& key)noexcept override {
             if (std::find(t1.begin(), t1.end(), key) != t1.end()) {
                 t1.remove(key);
                 t2.push_front(key);
@@ -215,7 +221,7 @@ namespace Furrball {
             }
             else if (std::find(b1.begin(), b1.end(), key) != b1.end()) {
                 // Case when the key is in b1
-                p = std::min(capacity, p + std::max(b2.size() / b1.size(), 1UL));
+                p = min(capacity, p + max(b2.size() / b1.size(), 1UL));
                 replace(key);
                 b1.remove(key);
                 t2.push_front(key);
@@ -223,7 +229,7 @@ namespace Furrball {
             }
             else if (std::find(b2.begin(), b2.end(), key) != b2.end()) {
                 // Case when the key is in b2
-                p = std::max(0, static_cast<int>(p) - std::max(b1.size() / b2.size(), 1UL));
+                p = max(0, static_cast<int>(p) - max(b1.size() / b2.size(), 1UL));
                 replace(key);
                 b2.remove(key);
                 t2.push_front(key);
@@ -233,7 +239,7 @@ namespace Furrball {
         /**
          * @brief Adds a Key-Value Pair the the cache.
          */
-        void add(const Key& key, const Value& value) {
+        void add(const Key& key, const Value& value) override {
             if (map.size() >= capacity) {
                 evict();
             }
@@ -243,14 +249,14 @@ namespace Furrball {
         /**
          * @brief Gets a value from the cache.
          */
-        Value get(const Key& key) {
+        Value get(const Key& key) override {
             touch(key);
             return map[key];
         }
         /**
          * @brief Changes a value if it exsits or adds it.
          */
-        void set(const Key& key, const Value& value) {
+        void set(const Key& key, const Value& value) override {
             if (contains(key)) {
                 map[key] = value;
                 touch(key);
@@ -269,7 +275,7 @@ namespace Furrball {
      * @see LFUPolicy
      */
     template<class Key, class Value>
-    class S3FIFOPolicy final {
+    class S3FIFOPolicy final : public Cache<Key, Value> {
     private:
         std::list<Key> queue;
         std::unordered_map<Key, Value> map;
@@ -286,7 +292,7 @@ namespace Furrball {
      * @see LFUPolicy
      */
     template<class Key, class Value>
-    class LRUPolicy final {
+    class LRUPolicy final : public Cache<Key, Value> {
 
     };
     /**
@@ -298,11 +304,11 @@ namespace Furrball {
      * @see S3FIFOPolicy
      */
     template<class Key, class Value>
-    class LFUPolicy final {
+    class LFUPolicy final : public Cache<Key, Value> {
 
     };
 
-    struct FurrConfig {
+    struct FurrConfig final {
         /**
          * @brief The limit size after which the AMP will not allocate more pages. 1MB by default
          */
@@ -383,7 +389,7 @@ namespace Furrball {
          *        avoid requiring the user's build system to locate RocksDB headers.
          */
         struct ImplDetail;
-        std::unique_ptr<ImplDetail> DataMembers;
+        ImplDetail* DataMembers;
 
         size_t PageSize;
         //Must remain POD.
@@ -391,15 +397,15 @@ namespace Furrball {
          * \brief Page Metadata.
          */
         struct Page {
-            void* ptr = nullptr;
+            void* PagePtr = nullptr;
             size_t PageIndex = 0;
 
-            Page() {
+            Page(void* ptr, size_t pageIndex) : PagePtr(ptr), PageIndex(pageIndex) {
 
             }
             virtual void* get(void* offset) {
                 //it's the job of furrballs to validate offset passed here.
-                return (char*)ptr + reinterpret_cast<size_t>(offset);
+                return (char*)PagePtr + reinterpret_cast<size_t>(offset);
             }
             virtual bool IsLockable()const noexcept { return false; };
 
@@ -409,6 +415,9 @@ namespace Furrball {
         };
         struct LockablePage : public Page {
             std::mutex mutex;
+
+            LockablePage(void* ptr, size_t pageIndex) : Page(ptr, PageIndex) {};
+
             virtual bool IsLockable()const noexcept { return true; };
             virtual void* get(void* vptr) {
                 std::lock_guard<std::mutex> lock(mutex);
@@ -437,7 +446,6 @@ namespace Furrball {
         //ARCPolicy<size_t,void*> ARC = ARCPolicy<size_t,void*>();
 
         FurrBall(const FurrConfig& config)noexcept;
-        FurrBall(std::unique_ptr<ImplDetail>)noexcept;
 
         void OnEvict(size_t key)noexcept;
 
@@ -463,7 +471,7 @@ namespace Furrball {
         * @param overwrite If DBpath points to an existing DB and this is true it will be overwritten instead of Loaded.
         * @see ARCPolicy
         */
-        static FurrBall* CreateBall(const std::string& DBpath,const FurrConfig& config, bool overwrite = false)noexcept;
+        static FurrBall* CreateBall(const std::string& DBpath,const FurrConfig& config = FurrConfig(), bool overwrite = false)noexcept;
         /**
          * Returns a pointer to the page that contains the vAddress. if vAddress is not found and is far from all pages available
          * Get() doesn't create an entry and considers the vAddress to be invalid to preserve "contingency".

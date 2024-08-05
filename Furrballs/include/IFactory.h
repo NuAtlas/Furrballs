@@ -12,7 +12,7 @@
 #include <iostream>
 
 
- namespace Furrball {
+ namespace NuAtlas {
      /**
       * \brief Base class for factories.
       */

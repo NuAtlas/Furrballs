@@ -1,3 +1,5 @@
-﻿// Sandbox.h : Header file for your target.
+﻿#pragma once
+#include "Furrballs.h"
 
-#pragma once
+using namespace NuAtlas;
+

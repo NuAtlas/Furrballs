@@ -23,6 +23,9 @@ message(STATUS "C++ Standard: ${CMAKE_CXX_STANDARD}")
 # Link to library
 target_link_libraries(Furrballs PRIVATE lz4::lz4)
 target_link_libraries(Furrballs PRIVATE RocksDB::rocksdb)
-target_include_directories(Furrballs PRIVATE
+target_include_directories(Furrballs 
+PUBLIC
     ${CMAKE_SOURCE_DIR}/Furrballs/include
+PRIVATE
+    ${CMAKE_SOURCE_DIR}/Furrballs/src
 )

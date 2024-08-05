@@ -3,7 +3,11 @@
 
 #include "Sandbox.h"
 
-int main()
-{
-	return 0;
+int main() {
+	FurrBall* fb = FurrBall::CreateBall("TestDB");
+	if (!fb) {
+		std::cerr << "Error: Furrball has not initialized";
+		return -1;
+	}
+
 }
