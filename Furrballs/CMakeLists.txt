@@ -1,7 +1,8 @@
 ﻿add_library(Furrballs STATIC "src/Furrballs.cpp" "include/Furrballs.h")
 
-#set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 # List source files
 set(SOURCES
     src/Furrballs.cpp
@@ -21,8 +22,7 @@ find_package(RocksDB CONFIG REQUIRED)
 message(STATUS "C++ Standard: ${CMAKE_CXX_STANDARD}")
 
 # Link to library
-target_link_libraries(Furrballs PRIVATE lz4::lz4)
-target_link_libraries(Furrballs PRIVATE RocksDB::rocksdb)
+target_link_libraries(Furrballs PRIVATE lz4::lz4 RocksDB::rocksdb)
 target_include_directories(Furrballs 
 PUBLIC
     ${CMAKE_SOURCE_DIR}/Furrballs/include

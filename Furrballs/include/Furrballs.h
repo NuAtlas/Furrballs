@@ -19,6 +19,7 @@
 #include <type_traits>
 #include <Logger.h>
 #include <mutex>
+#include <list>
 #include <optional>
 
 #ifdef _WIN32
@@ -29,11 +30,47 @@
 
 //Furrball, compact and filled with spit !
 namespace NuAtlas {
+    /**
+     * @brief Main Memory Allocator/Manager. Now Adding NUMA-Awareness.
+     */
     class MemoryManager {
     private:
         inline static std::mutex FreeingMutex;
         inline static std::mutex ProtectMutex;
+
+        static int getCurrentNumaNode() {
+#ifdef _WIN32
+            ULONG highestNodeNumber;
+            GetNumaHighestNodeNumber(&highestNodeNumber);
+            return GetCurrentProcessorNumber() % (highestNodeNumber + 1);
+#else
+            return numa_node_of_cpu(sched_getcpu());
+#endif
+        }
+
     public:
+        /**
+         * @brief NUMA-Aware allocator.
+         */
+        static void* AllocateMemoryNUMA(size_t totalSize) {
+#ifdef _WIN32
+            int node = getCurrentNumaNode();
+            void* buffer = VirtualAllocExNuma(GetCurrentProcess(), nullptr, totalSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE, node);
+            if (!buffer) {
+                return nullptr;
+            }
+#else
+            int node = getCurrentNumaNode();
+            void* buffer = numa_alloc_onnode(totalSize, node);
+            if (!buffer) {
+                return nullptr;
+            }
+#endif
+            return buffer;
+        }
+        /**
+         * @brief Allocates Memory using Platform Specific calls.
+         */
         static void* AllocateMemory(size_t totalSize) {
 #ifdef _WIN32
             void* buffer = VirtualAlloc(nullptr, totalSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
@@ -50,7 +87,7 @@ namespace NuAtlas {
             return buffer;
         }
         /**
-         * .
+         * @brief Protects the provided memory buffer.
          */
         static bool ProtectMemory(void* buffer, const size_t& size) {
             std::lock_guard<std::mutex> lock(ProtectMutex);
@@ -118,17 +155,19 @@ namespace NuAtlas {
             return maxBlockSize;
         }
     };
+    //TODO: Add a clear function.
     template<class Key, class Value>
     class Cache {
     protected: 
         virtual void evict() = 0;
     public:
-        typedef void(*EvictionCallback)(Key&);
+        using EvictionCallback = std::function<void(const Key&, Value&)>;
         virtual bool contains(const Key& key)const noexcept = 0;
         virtual void touch(const Key& key)noexcept = 0;
         virtual void add(const Key& key, const Value& value) = 0;
         virtual Value get(const Key& key) = 0;
         virtual void set(const Key& key, const Value& value) = 0;
+        virtual void setEvictionCallback(EvictionCallback cb) = 0;
     };
     /**
      * @brief Implements the ARC eviction policy
@@ -150,7 +189,7 @@ namespace NuAtlas {
         //std::list<Key> GhostEntries; // b1 + b2 Ghost entries
         size_t capacity;
         size_t p;  // Target size for t1
-        EvictionCallback evictionCallback = [](Key&) {};//NO-OP by default.
+        EvictionCallback evictionCallback = [](const Key&, Value&) {};//NO-OP by default.
 
         void replace(const Key& key) {
             if (!t1.empty() && (t1.size() > p || (std::find(b2.begin(), b2.end(), key) != b2.end() && t1.size() == p))) {
@@ -172,21 +211,25 @@ namespace NuAtlas {
         void evict() override {
             if (t1.size() + b1.size() >= capacity) {
                 if (t1.size() < capacity) {
-                    evictionCallback(b1.back());
+                    //auto key = b1.back();
+                    //evictionCallback(key, map[key]);
                     b1.pop_back();
                 }
                 else {
-                    evictionCallback(t1.back());
+                    auto key = t1.back();
+                    evictionCallback(key, map[key]);
                     t1.pop_back();
                 }
             }
             if (t1.size() + t2.size() + b1.size() + b2.size() >= 2 * capacity) {
                 if (t2.size() + b2.size() > capacity) {
-                    evictionCallback(b2.back());
+                    //auto key = b2.back();
+                    //evictionCallback(key, map[key]);
                     b2.pop_back();
                 }
                 else {
-                    evictionCallback(t2.back());
+                    auto key = t2.back();
+                    evictionCallback(key, map[key]);
                     t2.pop_back();
                 }
             }
@@ -199,7 +242,7 @@ namespace NuAtlas {
          */
         ARCPolicy(size_t cap) : capacity(cap), p(1) {}
 
-        void setEvictionCallback(EvictionCallback cb) {
+        void setEvictionCallback(EvictionCallback cb) override {
             evictionCallback = cb;
         };
         /**
@@ -326,7 +369,7 @@ namespace NuAtlas {
         /**
          * @brief Sets the eviction callback.
          */
-        ARCPolicy<size_t, void*>::EvictionCallback evictionCallback = [](size_t&) {};
+        Cache<size_t, void*>::EvictionCallback evictionCallback = [](const size_t&, void*&) {};
 
         /**
          * @brief Sets the hash function for cache validation.
@@ -377,7 +420,41 @@ namespace NuAtlas {
             uint8_t flags = 0; // For convenience in handling all flags at once, 0 by default.
         };
     };
+    /**
+     * \brief Page Metadata.
+     */
+    struct Page {
+        void* MemoryBlock = nullptr;
+        size_t PageIndex = 0;
+        size_t PageSize = 0;
 
+        Page(void* ptr, size_t pageSize, size_t pageIndex)noexcept : MemoryBlock(ptr), PageSize(pageSize), PageIndex(pageIndex) {
+
+        }
+        virtual void* get(void* offset) {
+            //it's the job of furrballs to validate offset passed here.
+            return (char*)MemoryBlock + reinterpret_cast<size_t>(offset);
+        }
+        virtual bool IsLockable()const noexcept { return false; };
+
+        ~Page() {
+
+        }
+    };
+    /**
+     * @brief A page has a lock.
+     */
+    struct LockablePage : public Page {
+        std::mutex mutex;
+
+        LockablePage(void* ptr, size_t pageSize, size_t pageIndex)noexcept : Page(ptr, pageSize, PageIndex) {};
+
+        virtual bool IsLockable()const noexcept { return true; };
+        virtual void* get(void* vptr) {
+            std::lock_guard<std::mutex> lock(mutex);
+            return Page::get(vptr);
+        }
+    };
     /**
     * @class FurrBall
     * @brief Furrballs are a LZ4 Compressed DB using RocksDB with Cache and Paging Logic.
@@ -390,40 +467,16 @@ namespace NuAtlas {
          */
         struct ImplDetail;
         ImplDetail* DataMembers;
-
-        size_t PageSize;
-        //Must remain POD.
         /**
-         * \brief Page Metadata.
+         * @brief Backing Cache of the Furrball.
          */
-        struct Page {
-            void* PagePtr = nullptr;
-            size_t PageIndex = 0;
+        ARCPolicy<size_t, void*> cache;
+        /**
+         * @brief The Furrball has a eviction hook that calls this.
+         */
+        Cache<size_t, void*>::EvictionCallback clientEvictCallback;
+        size_t PageSize;
 
-            Page(void* ptr, size_t pageIndex) : PagePtr(ptr), PageIndex(pageIndex) {
-
-            }
-            virtual void* get(void* offset) {
-                //it's the job of furrballs to validate offset passed here.
-                return (char*)PagePtr + reinterpret_cast<size_t>(offset);
-            }
-            virtual bool IsLockable()const noexcept { return false; };
-
-            ~Page() {
-
-            }
-        };
-        struct LockablePage : public Page {
-            std::mutex mutex;
-
-            LockablePage(void* ptr, size_t pageIndex) : Page(ptr, PageIndex) {};
-
-            virtual bool IsLockable()const noexcept { return true; };
-            virtual void* get(void* vptr) {
-                std::lock_guard<std::mutex> lock(mutex);
-                return Page::get(vptr);
-            }
-        };
         std::list<Page> PageList;
 
         /**
@@ -431,7 +484,7 @@ namespace NuAtlas {
          *
          * See AMP in readme for description of the mechanism.
          */
-        std::atomic_int amp_ExpansionCounter;
+        std::atomic_int amp_ExpansionCounter = 0;
 
         /**
          * @brief .
@@ -445,19 +498,16 @@ namespace NuAtlas {
          */
         //ARCPolicy<size_t,void*> ARC = ARCPolicy<size_t,void*>();
 
-        FurrBall(const FurrConfig& config)noexcept;
+        FurrBall(const FurrConfig& config, ARCPolicy<size_t, void*> pageCache)noexcept;
 
-        void OnEvict(size_t key)noexcept;
+        void OnEvict(const size_t& key, void*& value)noexcept;
 
         constexpr size_t floorAddress(size_t address)const noexcept {
             return address & ~(PageSize - 1);
         }
     public:
         FurrBall(const FurrBall& cpy) = delete;
-        FurrBall(FurrBall&& mv)noexcept {
-            //std::swap(options, mv.options);
-            //ARC = std::move(mv.ARC);
-        }
+        FurrBall(FurrBall&& mv)noexcept;
         /**
         * @brief Constructs a DB and allocates the Cache (with it's pages).
         * 
@@ -486,6 +536,7 @@ namespace NuAtlas {
             //if present return it
             //reload page from db and push into cache
         }
+        //Cache<size_t, void*> GetBackingCache() noexcept;
         /**
          * @brief Large data is stored seperate and a pointer to it is added to the cache
          * @param buffer The original data, a pointer to it is stored in the cache to avoid copying and moving data. Do not free.

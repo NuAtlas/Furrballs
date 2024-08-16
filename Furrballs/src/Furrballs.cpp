@@ -6,6 +6,8 @@
  *********************************************************************/
 
 #include "Furrballs.h"
+#undef max
+#undef min
 #include <string_view>
 #include <rocksdb/db.h>
 #include <rocksdb/advanced_options.h>
@@ -16,13 +18,15 @@ struct ::NuAtlas::FurrBall::ImplDetail{
     rocksdb::DB* db = nullptr;
 };
 
-NuAtlas::FurrBall::FurrBall(const FurrConfig& config) noexcept : PageSize(config.PageSize),
-    SizeLimit(config.CapacityLimit ? config.CapacityLimit : 1 * 1024 * 1024 * sizeof(char)), DataMembers(new ImplDetail())
+NuAtlas::FurrBall::FurrBall(const FurrConfig& config, ARCPolicy<size_t, void*> pageCache) noexcept : PageSize(config.PageSize),
+    SizeLimit(config.CapacityLimit ? config.CapacityLimit : 1 * 1024 * 1024 * sizeof(char)), DataMembers(new ImplDetail()),
+    cache(pageCache)
 {
 }
 
-void NuAtlas::FurrBall::OnEvict(size_t key) noexcept
+void NuAtlas::FurrBall::OnEvict(const size_t& key, void*& value) noexcept
 {
+
 }
 
 FurrBall* FurrBall::CreateBall(const std::string& DBpath, const FurrConfig& config, bool overwrite) noexcept
@@ -58,13 +62,14 @@ FurrBall* FurrBall::CreateBall(const std::string& DBpath, const FurrConfig& conf
         //for now return nullptr
         return nullptr;
     }
-    FurrBall* fb = new FurrBall(config);
+    FurrBall* fb = new FurrBall(config, Cache);
     fb->DataMembers->db = db;
     size_t PagePointer = 0;
     for (int i = 0; i < numPages; i++) {
         Cache.add(PagePointer, slab + PagePointer);
-        fb->PageList.push_back((config.LockablePages ? LockablePage(slab + PagePointer, i) : Page(slab + PagePointer, i)));
+        fb->PageList.push_back((config.LockablePages ? LockablePage(slab + PagePointer, config.PageSize, i) : Page(slab + PagePointer, config.PageSize, i)));
     }
+    Cache.setEvictionCallback([&fb](const size_t& k, void*& v)->void {fb->OnEvict(k, v); });
     return fb;
 }
 

@@ -62,8 +62,16 @@ namespace NuAtlas{
         std::string getCurrentTime() {
             std::time_t now = std::time(nullptr);
             char buf[20];
-            std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
-            return buf;
+            struct tm timeInfo;
+            // Use localtime_s for thread-safe local time conversion
+            if (localtime_s(&timeInfo, &now) == 0) {
+                std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &timeInfo);
+                return buf;
+            }
+            else {
+                // Handle error case if localtime_s fails
+                return "Error getting time";
+            }
         }
 
         std::string logLevelToString(LogLevel level) {
