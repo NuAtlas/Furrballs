@@ -1,4 +1,4 @@
-﻿add_library(Furrballs STATIC "src/Furrballs.cpp" "include/Furrballs.h")
+﻿add_library(Furrballs STATIC "src/Furrballs.cpp" "include/Furrballs.h" "include/MemoryManager.h")
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

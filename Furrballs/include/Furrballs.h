@@ -16,6 +16,7 @@
 #include <atomic>
 #include <functional>
 #include <unordered_map>
+#include <unordered_set>
 #include <type_traits>
 #include <Logger.h>
 #include <mutex>
@@ -27,134 +28,12 @@
 #else
 #include <unistd.h>
 #endif
+#ifdef _DEBUG
+#define DEBUG
+#endif
 
 //Furrball, compact and filled with spit !
 namespace NuAtlas {
-    /**
-     * @brief Main Memory Allocator/Manager. Now Adding NUMA-Awareness.
-     */
-    class MemoryManager {
-    private:
-        inline static std::mutex FreeingMutex;
-        inline static std::mutex ProtectMutex;
-
-        static int getCurrentNumaNode() {
-#ifdef _WIN32
-            ULONG highestNodeNumber;
-            GetNumaHighestNodeNumber(&highestNodeNumber);
-            return GetCurrentProcessorNumber() % (highestNodeNumber + 1);
-#else
-            return numa_node_of_cpu(sched_getcpu());
-#endif
-        }
-
-    public:
-        /**
-         * @brief NUMA-Aware allocator.
-         */
-        static void* AllocateMemoryNUMA(size_t totalSize) {
-#ifdef _WIN32
-            int node = getCurrentNumaNode();
-            void* buffer = VirtualAllocExNuma(GetCurrentProcess(), nullptr, totalSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE, node);
-            if (!buffer) {
-                return nullptr;
-            }
-#else
-            int node = getCurrentNumaNode();
-            void* buffer = numa_alloc_onnode(totalSize, node);
-            if (!buffer) {
-                return nullptr;
-            }
-#endif
-            return buffer;
-        }
-        /**
-         * @brief Allocates Memory using Platform Specific calls.
-         */
-        static void* AllocateMemory(size_t totalSize) {
-#ifdef _WIN32
-            void* buffer = VirtualAlloc(nullptr, totalSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-            if (!buffer) {
-                return nullptr;
-            }
-#else
-            size_t pageSize = sysconf(_SC_PAGESIZE);
-            void* buffer = nullptr;
-            if (posix_memalign(&buffer, pageSize, totalSize) != 0) {
-                return nullptr;
-            }
-#endif
-            return buffer;
-        }
-        /**
-         * @brief Protects the provided memory buffer.
-         */
-        static bool ProtectMemory(void* buffer, const size_t& size) {
-            std::lock_guard<std::mutex> lock(ProtectMutex);
-#ifdef _WIN32
-            DWORD oldProtect;
-            if (!VirtualProtect(buffer, size, PAGE_READWRITE, &oldProtect)) {
-                Logger::getInstance().error("Failed to set memory protection on Windows");
-                return false;
-            }
-#else
-            if (mprotect(buffer, size, PROT_READ | PROT_WRITE) != 0) {
-                Logger::getInstance().error("Failed to set memory protection on Linux");
-                return false;
-            }
-#endif
-            return true;
-        }
-        /**
-         * @brief Frees allocated buffer.
-         * 
-         * FreeMemory is a blocking operation.
-         */
-        static void FreeMemory(void* buffer) {
-            std::lock_guard<std::mutex> lock(FreeingMutex);
-#ifdef _WIN32
-            VirtualFree(buffer, 0, MEM_RELEASE);
-#else
-            free(buffer);
-#endif
-        }
-        /**
-         * @brief Returns the available memory, works for both Windows and Unix
-         */
-        static size_t GetAvailableMemory() {
-#ifdef _WIN32
-            MEMORYSTATUSEX status;
-            status.dwLength = sizeof(status);
-            GlobalMemoryStatusEx(&status);
-            return status.ullAvailPhys;
-#else
-            long pages = sysconf(_SC_AVPHYS_PAGES);
-            long page_size = sysconf(_SC_PAGE_SIZE);
-            return pages * page_size;
-#endif
-        }
-        /**
-         * @brief Attempts to allocate increasingly larger blocks of memory until it fails, then returns the size of the largest successful allocation.
-         */
-        static size_t GetLargestContiguousBlock() {
-            size_t step = 1024 * 1024; // Start with 1MB
-            size_t maxBlockSize = 0;
-            void* buffer = nullptr;
-
-            while (true) {
-                buffer = AllocateMemory(maxBlockSize + step);
-                if (buffer) {
-                    FreeMemory(buffer);
-                    maxBlockSize += step;
-                }
-                else {
-                    break;
-                }
-            }
-
-            return maxBlockSize;
-        }
-    };
     //TODO: Add a clear function.
     template<class Key, class Value>
     class Cache {
@@ -416,6 +295,10 @@ namespace NuAtlas {
                  * @brief Enables or disables burst mode for parallel processing. false by default.
                  */
                 bool EnableBurstMode : 1;
+                /**
+                 * @brief The Furrball allocates memory using support NUMA. 
+                 */
+                bool EnableNUMA : 1;
             };
             uint8_t flags = 0; // For convenience in handling all flags at once, 0 by default.
         };
@@ -493,6 +376,8 @@ namespace NuAtlas {
 
         const size_t SizeLimit = 1 * 1024 * 1024 * sizeof(char);
 
+        static std::list<FurrBall*> OpenBalls;
+
         /**
          * @brief Cache Object.
          */
@@ -522,6 +407,8 @@ namespace NuAtlas {
         * @see ARCPolicy
         */
         static FurrBall* CreateBall(const std::string& DBpath,const FurrConfig& config = FurrConfig(), bool overwrite = false)noexcept;
+
+        static void RegisterThreadForNUMA(const std::thread::id& tID) noexcept;
         /**
          * Returns a pointer to the page that contains the vAddress. if vAddress is not found and is far from all pages available
          * Get() doesn't create an entry and considers the vAddress to be invalid to preserve "contingency".

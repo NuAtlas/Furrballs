@@ -18,6 +18,10 @@ dependencies)
 
 **-64-bit System**
 
+**-libnuma-dev for linux \*<sup>1</sup>**
+
+<sup>*1</sup>: Build with NO_NUMA flag to avoid the requirement. *(Removes NUMA support)*
+
 # AMP (Adaptive Memory Pooling): 
 
 AMP employs a counter that increments on eviction when a cache entry is accessed. 

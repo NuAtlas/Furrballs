@@ -70,7 +70,14 @@ FurrBall* FurrBall::CreateBall(const std::string& DBpath, const FurrConfig& conf
         fb->PageList.push_back((config.LockablePages ? LockablePage(slab + PagePointer, config.PageSize, i) : Page(slab + PagePointer, config.PageSize, i)));
     }
     Cache.setEvictionCallback([&fb](const size_t& k, void*& v)->void {fb->OnEvict(k, v); });
+
+    FurrBall::OpenBalls.push_back(fb);
     return fb;
+}
+
+void NuAtlas::FurrBall::RegisterThreadFromNUMA(const std::thread::id& tID) noexcept
+{
+    NuAtlas::MemoryManager::
 }
 
 void NuAtlas::FurrBall::StoreLargeData(void* buffer, size_t size)
