@@ -11,6 +11,15 @@
 #include <string_view>
 #include <rocksdb/db.h>
 #include <rocksdb/advanced_options.h>
+#include "MemoryManager.h"
+
+#ifdef _WIN32
+#define unlikely(cond) (cond)
+#define assume(cond) __assume(cond)
+#else
+#define unlikely(cond) (__builtin_expect(cond, 0))
+#define assume(cond) ((void)0)
+#endif
 
 using namespace NuAtlas;
 
@@ -29,13 +38,24 @@ void NuAtlas::FurrBall::OnEvict(const size_t& key, void*& value) noexcept
 
 }
 
+void NuAtlas::FurrBall::SlaveLoop()
+{
+}
+
 FurrBall* FurrBall::CreateBall(const std::string& DBpath, const FurrConfig& config, bool overwrite) noexcept
 {
+    assume(HasThreadInit);
+    if(unlikely(!HasThreadInit, 0)){
+        FurrSlave = std::thread(&FurrBall::SlaveLoop);
+        HasThreadInit = true;
+    }
+
     rocksdb::Options options;
     rocksdb::DB* db;
     options.compression = rocksdb::kLZ4Compression;
     //fb.options.OptimizeForPointLookup();
     options.create_if_missing = true;
+    options.optimize_filters_for_hits = true;
     rocksdb::Status status =
         rocksdb::DB::Open(options, DBpath, &db);
     if (!status.ok()) {
@@ -63,21 +83,23 @@ FurrBall* FurrBall::CreateBall(const std::string& DBpath, const FurrConfig& conf
         return nullptr;
     }
     FurrBall* fb = new FurrBall(config, Cache);
+    fb->Stats.PreallocatedSlabSize = config.PageSize * numPages;
+    fb->Stats.UsedMemory = config.PageSize * numPages;
     fb->DataMembers->db = db;
     size_t PagePointer = 0;
     for (int i = 0; i < numPages; i++) {
-        Cache.add(PagePointer, slab + PagePointer);
-        fb->PageList.push_back((config.LockablePages ? LockablePage(slab + PagePointer, config.PageSize, i) : Page(slab + PagePointer, config.PageSize, i)));
+        Cache.Add(PagePointer, slab + PagePointer);
+        //Page type depends on config.
+        fb->VPageList.push_back(
+            std::variant<Page, LockablePage>(config.LockablePages ? 
+            LockablePage(slab + PagePointer, config.PageSize, i) : 
+            Page(slab + PagePointer, config.PageSize, i)));
     }
-    Cache.setEvictionCallback([&fb](const size_t& k, void*& v)->void {fb->OnEvict(k, v); });
+    Cache.SetEvictionCallback([&fb](const size_t& k, void*& v)->void {fb->OnEvict(k, v); });
 
-    FurrBall::OpenBalls.push_back(fb);
+    OpenBalls.push_back(fb);
+
     return fb;
-}
-
-void NuAtlas::FurrBall::RegisterThreadFromNUMA(const std::thread::id& tID) noexcept
-{
-    NuAtlas::MemoryManager::
 }
 
 void NuAtlas::FurrBall::StoreLargeData(void* buffer, size_t size)

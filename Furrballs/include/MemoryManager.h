@@ -13,7 +13,6 @@
 #include <string>
 #include <thread>
 #include <atomic>
-#include <unordered_map>
 #include <unordered_set>
 #include <type_traits>
 #include <Logger.h>
@@ -37,7 +36,7 @@ namespace NuAtlas {
     /**
      * @brief Main Memory Allocator/Manager. Now Adding NUMA-Awareness.
      *
-     * MemoryManager uses 2 Mutexes each to protect Freeing Memory (Critical) and Memory Protection. (on ProtectMemory call).
+     * MemoryManager uses 2 Mutexes each to protect Freeing Memory (Critical) and Memory Protection (ProtectMemory call).
      * Allocation on the other hand is not locking nor protected.
      */
     class MemoryManager {
@@ -46,7 +45,7 @@ namespace NuAtlas {
         inline static std::mutex ProtectMutex;
 
         static thread_local std::unordered_set<void*> ThreadBuffers;
-
+#ifndef NO_NUMA
         static int GetCurrentNumaNode() {
 #ifdef _WIN32
             ULONG highestNodeNumber;
@@ -56,6 +55,7 @@ namespace NuAtlas {
             return numa_node_of_cpu(sched_getcpu());
 #endif
         }
+#endif //NO_NUMA
 
     public:
 #ifndef NO_NUMA
@@ -64,8 +64,8 @@ namespace NuAtlas {
          */
         static void* AllocateMemoryNUMA(size_t totalSize) {
 #ifdef _WIN32
-            
-            
+
+
             int node = GetCurrentNumaNode();
             void* buffer = VirtualAllocExNuma(GetCurrentProcess(), nullptr, totalSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE, node);
             if (!buffer) {
@@ -219,3 +219,4 @@ namespace NuAtlas {
 #endif  //_WIN32
         }
     };
+};

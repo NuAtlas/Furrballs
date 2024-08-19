@@ -17,11 +17,13 @@
 #include <functional>
 #include <unordered_map>
 #include <unordered_set>
+#include <queue>
 #include <type_traits>
 #include <Logger.h>
 #include <mutex>
 #include <list>
 #include <optional>
+#include <variant>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -41,16 +43,17 @@ namespace NuAtlas {
         virtual void evict() = 0;
     public:
         using EvictionCallback = std::function<void(const Key&, Value&)>;
-        virtual bool contains(const Key& key)const noexcept = 0;
-        virtual void touch(const Key& key)noexcept = 0;
-        virtual void add(const Key& key, const Value& value) = 0;
-        virtual Value get(const Key& key) = 0;
-        virtual void set(const Key& key, const Value& value) = 0;
-        virtual void setEvictionCallback(EvictionCallback cb) = 0;
+        virtual bool Contains(const Key& key)const noexcept = 0;
+        virtual void Touch(const Key& key)noexcept = 0;
+        virtual void Add(const Key& key, const Value& value) = 0;
+        virtual Value Get(const Key& key) = 0;
+        virtual void Set(const Key& key, const Value& value) = 0;
+        virtual void SetEvictionCallback(EvictionCallback cb) = 0;
+        //virtual void Merge(Cache<Key,Value>) = 0;
     };
     /**
      * @brief Implements the ARC eviction policy
-     * TODO: Implement Adaptive Memory Pooling (AMP)
+     * TODO: Implement Cache merging.
      * You can create and manage your own cache separately by instantiating a Policy object and using it.
      * @see S3FIFOPolicy
      * @see LRUPolicy
@@ -121,19 +124,19 @@ namespace NuAtlas {
          */
         ARCPolicy(size_t cap) : capacity(cap), p(1) {}
 
-        void setEvictionCallback(EvictionCallback cb) override {
+        void SetEvictionCallback(EvictionCallback cb) override {
             evictionCallback = cb;
         };
         /**
          * @return true if the key exists.
          */
-        bool contains(const Key& key)const noexcept override {
+        bool Contains(const Key& key)const noexcept override {
             return map.find(key) != map.end();
         }
         /**
          * @brief Promotes a Key.
          */
-        void touch(const Key& key)noexcept override {
+        void Touch(const Key& key)noexcept override {
             if (std::find(t1.begin(), t1.end(), key) != t1.end()) {
                 t1.remove(key);
                 t2.push_front(key);
@@ -161,7 +164,7 @@ namespace NuAtlas {
         /**
          * @brief Adds a Key-Value Pair the the cache.
          */
-        void add(const Key& key, const Value& value) override {
+        void Add(const Key& key, const Value& value) override {
             if (map.size() >= capacity) {
                 evict();
             }
@@ -171,20 +174,20 @@ namespace NuAtlas {
         /**
          * @brief Gets a value from the cache.
          */
-        Value get(const Key& key) override {
-            touch(key);
+        Value Get(const Key& key) override {
+            Touch(key);
             return map[key];
         }
         /**
          * @brief Changes a value if it exsits or adds it.
          */
-        void set(const Key& key, const Value& value) override {
-            if (contains(key)) {
+        void Set(const Key& key, const Value& value) override {
+            if (Contains(key)) {
                 map[key] = value;
-                touch(key);
+                Touch(key);
             }
             else {
-                add(key, value);
+                Add(key, value);
             }
         }
     };
@@ -232,7 +235,7 @@ namespace NuAtlas {
 
     struct FurrConfig final {
         /**
-         * @brief The limit size after which the AMP will not allocate more pages. 1MB by default
+         * @brief The limit size after which the AMP will not allocate more pages to cache. 1MB by default
          */
         size_t CapacityLimit = 1024 * 1024 * sizeof(char);
 
@@ -265,20 +268,17 @@ namespace NuAtlas {
          */
         size_t ResizeThreshold = 4;
 
-        /**
-         * @brief The number of threads to use in burrst mode.
-         */
-        size_t BurrstThreadCount = 4;
-
-        union {
+        union{
             struct {
                 /**
                  * @brief Indicates whether to use hybrid page sizes. false by default.
+                 * Will be implemented later, as it complicates the paging majorly.
                  */
                 bool UseHybridPages : 1;
                 /**
                  * @brief Indicates whether the Furrballs are volatile.
-                 * Volatile Furrballs are not persistent caches, meaning if the page is evicted, data is lost. You can use an eviction callback.
+                 * Volatile Furrballs are not persistent caches, meaning if the page is evicted, data is lost. 
+                 * You still can use an eviction callback.
                  * false by default.
                  */
                 bool IsVolatile : 1;
@@ -296,7 +296,7 @@ namespace NuAtlas {
                  */
                 bool EnableBurstMode : 1;
                 /**
-                 * @brief The Furrball allocates memory using support NUMA. 
+                 * @brief The Furrball allocates memory using support NUMA. false by default
                  */
                 bool EnableNUMA : 1;
             };
@@ -314,7 +314,7 @@ namespace NuAtlas {
         Page(void* ptr, size_t pageSize, size_t pageIndex)noexcept : MemoryBlock(ptr), PageSize(pageSize), PageIndex(pageIndex) {
 
         }
-        virtual void* get(void* offset) {
+        virtual void* Get(void* offset) {
             //it's the job of furrballs to validate offset passed here.
             return (char*)MemoryBlock + reinterpret_cast<size_t>(offset);
         }
@@ -333,11 +333,12 @@ namespace NuAtlas {
         LockablePage(void* ptr, size_t pageSize, size_t pageIndex)noexcept : Page(ptr, pageSize, PageIndex) {};
 
         virtual bool IsLockable()const noexcept { return true; };
-        virtual void* get(void* vptr) {
+        virtual void* Get(void* vptr) {
             std::lock_guard<std::mutex> lock(mutex);
-            return Page::get(vptr);
+            return Page::Get(vptr);
         }
     };
+
     /**
     * @class FurrBall
     * @brief Furrballs are a LZ4 Compressed DB using RocksDB with Cache and Paging Logic.
@@ -361,6 +362,7 @@ namespace NuAtlas {
         size_t PageSize;
 
         std::list<Page> PageList;
+        std::list<std::variant<Page, LockablePage>> VPageList;
 
         /**
          * @brief AMP Expansion counter, when the counter reaches the threshold, live memory is expanded (amp_ExpansionMultiplier * page are allocated).
@@ -370,13 +372,18 @@ namespace NuAtlas {
         std::atomic_int amp_ExpansionCounter = 0;
 
         /**
-         * @brief .
+         * @brief This indicates the number of pages allocated on each expansion.
          */
         std::atomic_int amp_ExpansionMultiplier = 1;
 
-        const size_t SizeLimit = 1 * 1024 * 1024 * sizeof(char);
+        size_t SizeLimit = 1 * 1024 * 1024 * sizeof(char);
 
-        static std::list<FurrBall*> OpenBalls;
+        inline static std::list<FurrBall*> OpenBalls = std::list<FurrBall*>();
+
+        static std::mutex JobMutex;
+        static std::queue<std::function<void()>> JobQueue;
+        static inline std::thread FurrSlave;
+        static inline bool HasThreadInit = false;
 
         /**
          * @brief Cache Object.
@@ -387,12 +394,73 @@ namespace NuAtlas {
 
         void OnEvict(const size_t& key, void*& value)noexcept;
 
+        static void SlaveLoop();
+
+        static void QueueJobForSlave(std::function<void()> job);
+
         constexpr size_t floorAddress(size_t address)const noexcept {
             return address & ~(PageSize - 1);
         }
     public:
+        /**
+         * @brief This class holds all information about the current Furrball.
+         */
+        class Statistics{
+            friend FurrBall;
+        private:
+            std::atomic<size_t> UsedMemory;
+            size_t PreallocatedSlabSize;
+            std::atomic<unsigned int> EvictionCount;
+            std::atomic<unsigned int> HitCount;
+            std::atomic<unsigned int> MissCount;
+            std::atomic<size_t> FlushedBufferSize;
+            Statistics()noexcept = default;
+            Statistics& operator=(const Statistics&) = delete;
+            Statistics& operator=(Statistics&&) = delete;
+        public:
+            size_t GetUsedMemory()const noexcept{
+                return UsedMemory;
+            }
+            unsigned int GetEvictionCount()const noexcept{
+                return EvictionCount.load();
+            }
+            unsigned int GetPreAllocatedSlabSize()const noexcept{
+                return PreallocatedSlabSize;
+            }
+            unsigned int GetHitCount()const noexcept{
+                return HitCount.load();
+            }
+            unsigned int GetMissCount()const noexcept{
+                return MissCount.load();
+            }
+            size_t GetFlushedBufferSize()const noexcept{
+                return FlushedBufferSize.load();
+            }
+            const std::list<void*>& GetFlushedPageVAddress()const noexcept{
+
+            }
+            double GetAvgIOTime()const noexcept{
+
+            }
+            double GetAvgFetchTime()const noexcept{
+
+            }
+            double GetAvgWriteTime()const noexcept{
+
+            }
+            double GetAvgReloadTime()const noexcept{
+
+            }
+            double GetAvgPointerRedirectTime() const noexcept{
+
+            }
+            double GetAvgPageExpandTime()const noexcept{
+
+            }
+        }Stats;
+
         FurrBall(const FurrBall& cpy) = delete;
-        FurrBall(FurrBall&& mv)noexcept;
+        //FurrBall(FurrBall&& mv)noexcept;
         /**
         * @brief Constructs a DB and allocates the Cache (with it's pages).
         * 
@@ -408,7 +476,16 @@ namespace NuAtlas {
         */
         static FurrBall* CreateBall(const std::string& DBpath,const FurrConfig& config = FurrConfig(), bool overwrite = false)noexcept;
 
+#ifndef NO_NUMA
+        /**
+         * @brief Registers thread (by it's id) and prepares a TLS/NUMA stack.
+         */
         static void RegisterThreadForNUMA(const std::thread::id& tID) noexcept;
+#endif //NO_NUMA
+        /**
+         * @brief Registers thread (by it's id) and prepares a TLS stack.
+         */
+        static void RegisterThread(const std::thread::id& tID) noexcept;
         /**
          * Returns a pointer to the page that contains the vAddress. if vAddress is not found and is far from all pages available
          * Get() doesn't create an entry and considers the vAddress to be invalid to preserve "contingency".
@@ -423,7 +500,9 @@ namespace NuAtlas {
             //if present return it
             //reload page from db and push into cache
         }
-        //Cache<size_t, void*> GetBackingCache() noexcept;
+        const Cache<size_t, void*>& GetBackingCache()const noexcept {
+            return cache;
+        }
         /**
          * @brief Large data is stored seperate and a pointer to it is added to the cache
          * @param buffer The original data, a pointer to it is stored in the cache to avoid copying and moving data. Do not free.

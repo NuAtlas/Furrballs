@@ -38,7 +38,7 @@
       private:
           template<std::size_t... Is>
           void* createImpl(std::index_sequence<Is...>) const {
-              return new Value(func_(std::get<Is>(args_)...));
+              return new Value(func_(std::Get<Is>(args_)...));
           }
 
           std::function<Value(Args...)> func_;

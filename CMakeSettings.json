@@ -1,16 +1,22 @@
 ﻿{
   "configurations": [
     {
-      "name": "x64-Debug",
-      "generator": "Visual Studio 17 2022 Win64",
-      "configurationType": "Debug",
-      "inheritEnvironments": [ "msvc_x64_x64" ],
-      "buildRoot": "${projectDir}\\out\\build\\${name}",
-      "installRoot": "${projectDir}\\out\\install\\${name}",
-      "cmakeCommandArgs": "",
       "buildCommandArgs": "",
+      "buildRoot": "${projectDir}\\out\\build\\${name}",
+      "cmakeCommandArgs": "",
+      "configurationType": "Debug",
       "ctestCommandArgs": "",
-      "intelliSenseMode": "windows-msvc-x64"
+      "generator": "Visual Studio 17 2022 Win64",
+      "inheritEnvironments": [ "msvc_x64_x64" ],
+      "installRoot": "${projectDir}\\out\\install\\${name}",
+      "intelliSenseMode": "windows-msvc-x64",
+      "name": "x64-Debug",
+      "variables": [
+        {
+          "name": "CMAKE_CXX_STANDARD",
+          "value": "17"
+        }
+      ]
     },
     {
       "name": "Linux-GCC-Debug",

@@ -1,3 +1,4 @@
+#pragma once
 /*****************************************************************//**
  * \file   Logger.h
  * \brief  Logger for Furrballs.
