@@ -9,6 +9,8 @@
  * \date   July 2024
  *********************************************************************/
 #pragma once
+#undef max
+#include <list>
 #include <memory>
 #include <string>
 #include <filesystem>
@@ -24,11 +26,11 @@
 #include <list>
 #include <optional>
 #include <variant>
-
 #ifdef _WIN32
 #include <windows.h>
 #else
 #include <unistd.h>
+#include <sys/mman.h>
 #endif
 #ifdef _DEBUG
 #define DEBUG
@@ -61,6 +63,8 @@ namespace NuAtlas {
      */
     template<class Key, class Value>
     class ARCPolicy final : public Cache<Key, Value> {
+    public:
+        using typename Cache<Key, Value>::EvictionCallback;
     private:
         std::list<Key> t1;  // Recently added
         std::list<Key> t2;  // Recently used
@@ -146,7 +150,7 @@ namespace NuAtlas {
             }
             else if (std::find(b1.begin(), b1.end(), key) != b1.end()) {
                 // Case when the key is in b1
-                p = min(capacity, p + max(b2.size() / b1.size(), 1UL));
+                p = std::min(capacity, p + std::max(b2.size() / b1.size(), 1UL));
                 replace(key);
                 b1.remove(key);
                 t2.push_front(key);
@@ -154,7 +158,7 @@ namespace NuAtlas {
             }
             else if (std::find(b2.begin(), b2.end(), key) != b2.end()) {
                 // Case when the key is in b2
-                p = max(0, static_cast<int>(p) - max(b1.size() / b2.size(), 1UL));
+                p = std::max(0ul, (static_cast<size_t>(p) - std::max(b1.size() / b2.size(), 1UL)));
                 replace(key);
                 b2.remove(key);
                 t2.push_front(key);
