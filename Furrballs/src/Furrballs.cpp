@@ -52,7 +52,7 @@ FurrBall* FurrBall::CreateBall(const std::string& DBpath, const FurrConfig& conf
 
     rocksdb::Options options;
     rocksdb::DB* db;
-    options.compression = rocksdb::kLZ4Compression;
+    // options.compression = rocksdb::kLZ4Compression;
     //fb.options.OptimizeForPointLookup();
     options.create_if_missing = true;
     options.optimize_filters_for_hits = true;
@@ -104,7 +104,6 @@ FurrBall* FurrBall::CreateBall(const std::string& DBpath, const FurrConfig& conf
 
 void NuAtlas::FurrBall::StoreLargeData(void* buffer, size_t size)
 {
-
 }
 
 NuAtlas::FurrBall::~FurrBall() noexcept

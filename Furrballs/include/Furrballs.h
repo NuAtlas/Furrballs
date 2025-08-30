@@ -9,7 +9,7 @@
  * \date   July 2024
  *********************************************************************/
 #pragma once
-#undef max
+
 #include <list>
 #include <memory>
 #include <string>
@@ -26,11 +26,13 @@
 #include <list>
 #include <optional>
 #include <variant>
+#include <algorithm>
 #ifdef _WIN32
 #include <windows.h>
+#undef max
+#undef min
 #else
 #include <unistd.h>
-#include <sys/mman.h>
 #endif
 #ifdef _DEBUG
 #define DEBUG
@@ -150,7 +152,7 @@ namespace NuAtlas {
             }
             else if (std::find(b1.begin(), b1.end(), key) != b1.end()) {
                 // Case when the key is in b1
-                p = std::min(capacity, p + std::max(b2.size() / b1.size(), 1UL));
+                p = std::min(capacity, p + std::max(b2.size() / b1.size(), (size_t)1));
                 replace(key);
                 b1.remove(key);
                 t2.push_front(key);
@@ -158,7 +160,7 @@ namespace NuAtlas {
             }
             else if (std::find(b2.begin(), b2.end(), key) != b2.end()) {
                 // Case when the key is in b2
-                p = std::max(0ul, (static_cast<size_t>(p) - std::max(b1.size() / b2.size(), 1UL)));
+                p = std::max((size_t)0, (static_cast<size_t>(p) - std::max(b1.size() / b2.size(), (size_t)1)));
                 replace(key);
                 b2.remove(key);
                 t2.push_front(key);
@@ -485,7 +487,7 @@ namespace NuAtlas {
          * @brief Registers thread (by it's id) and prepares a TLS/NUMA stack.
          */
         static void RegisterThreadForNUMA(const std::thread::id& tID) noexcept;
-#endif //NO_NUMA
+#endif
         /**
          * @brief Registers thread (by it's id) and prepares a TLS stack.
          */
