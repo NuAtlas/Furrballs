@@ -9,5 +9,5 @@ int main() {
 		std::cerr << "Error: Furrball has not initialized";
 		return -1;
 	}
-
+	
 }

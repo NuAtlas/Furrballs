@@ -9,7 +9,7 @@
  * \date   July 2024
  *********************************************************************/
 #pragma once
-#undef max
+
 #include <list>
 #include <memory>
 #include <string>
@@ -22,8 +22,11 @@
 #include <Logger.h>
 #include <mutex>
 #include <optional>
+#include <algorithm>
 #ifdef _WIN32
 #include <windows.h>
+#undef max
+#undef min
 #else
 #include <unistd.h>
 #include <sys/mman.h>
@@ -225,7 +228,7 @@ namespace NuAtlas {
             }
             else if (std::find(b1.begin(), b1.end(), key) != b1.end()) {
                 // Case when the key is in b1
-                p = std::min(capacity, p + std::max(b2.size() / b1.size(), 1UL));
+                p = std::min(capacity, p + std::max(b2.size() / b1.size(), (size_t)1));
                 replace(key);
                 b1.remove(key);
                 t2.push_front(key);
@@ -233,7 +236,7 @@ namespace NuAtlas {
             }
             else if (std::find(b2.begin(), b2.end(), key) != b2.end()) {
                 // Case when the key is in b2
-                p = std::max(0ul, (static_cast<size_t>(p) - std::max(b1.size() / b2.size(), 1UL)));
+                p = std::max((size_t)0, (static_cast<size_t>(p) - std::max(b1.size() / b2.size(), (size_t)1)));
                 replace(key);
                 b2.remove(key);
                 t2.push_front(key);
@@ -476,6 +479,8 @@ namespace NuAtlas {
         * @see ARCPolicy
         */
         static FurrBall* CreateBall(const std::string& DBpath,const FurrConfig& config = FurrConfig(), bool overwrite = false)noexcept;
+
+        static void* Set(void* Data, size_t size);
         /**
          * Returns a pointer to the page that contains the vAddress. if vAddress is not found and is far from all pages available
          * Get() doesn't create an entry and considers the vAddress to be invalid to preserve "contingency".
