@@ -1,0 +1,845 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.9.36">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+<meta name="author" content="NuAtlas">
+<meta name="dcterms.date" content="2026-04-09">
+
+<title>Furrballs: A NUMA-Aware, High-Performance Data Platform for Low-Latency Server Workloads</title>
+<style>
+/* Default styles provided by pandoc.
+** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+*/
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+</style>
+
+
+<script src="whitepaper_files/libs/clipboard/clipboard.min.js"></script>
+<script src="whitepaper_files/libs/quarto-html/quarto.js" type="module"></script>
+<script src="whitepaper_files/libs/quarto-html/tabsets/tabsets.js" type="module"></script>
+<script src="whitepaper_files/libs/quarto-html/popper.min.js"></script>
+<script src="whitepaper_files/libs/quarto-html/tippy.umd.min.js"></script>
+<script src="whitepaper_files/libs/quarto-html/anchor.min.js"></script>
+<link href="whitepaper_files/libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="whitepaper_files/libs/quarto-html/quarto-syntax-highlighting-845c23b38eaddc0f92fda52bfe77a8c8.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="whitepaper_files/libs/bootstrap/bootstrap.min.js"></script>
+<link href="whitepaper_files/libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="whitepaper_files/libs/bootstrap/bootstrap-d77254ed4acd840f61fc7d661c8368a5.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+
+
+</head>
+
+<body class="quarto-light">
+
+<div id="quarto-content" class="page-columns page-rows-contents page-layout-article">
+<div id="quarto-margin-sidebar" class="sidebar margin-sidebar">
+  <nav id="TOC" role="doc-toc" class="toc-active">
+    <h2 id="toc-title">Table of contents</h2>
+   
+  <ul>
+  <li><a href="#status" id="toc-status" class="nav-link active" data-scroll-target="#status"><span class="header-section-number">1</span> Status</a></li>
+  <li><a href="#abstract" id="toc-abstract" class="nav-link" data-scroll-target="#abstract"><span class="header-section-number">2</span> Abstract</a></li>
+  <li><a href="#project-narrative-and-rescoping" id="toc-project-narrative-and-rescoping" class="nav-link" data-scroll-target="#project-narrative-and-rescoping"><span class="header-section-number">3</span> Project Narrative and Rescoping</a></li>
+  <li><a href="#problem-statement" id="toc-problem-statement" class="nav-link" data-scroll-target="#problem-statement"><span class="header-section-number">4</span> 1. Problem Statement</a></li>
+  <li><a href="#goals-and-non-goals" id="toc-goals-and-non-goals" class="nav-link" data-scroll-target="#goals-and-non-goals"><span class="header-section-number">5</span> 2. Goals and Non-Goals</a>
+  <ul class="collapse">
+  <li><a href="#goals" id="toc-goals" class="nav-link" data-scroll-target="#goals"><span class="header-section-number">5.1</span> Goals</a></li>
+  <li><a href="#non-goals-current-phase" id="toc-non-goals-current-phase" class="nav-link" data-scroll-target="#non-goals-current-phase"><span class="header-section-number">5.2</span> Non-Goals (current phase)</a></li>
+  </ul></li>
+  <li><a href="#design-principles" id="toc-design-principles" class="nav-link" data-scroll-target="#design-principles"><span class="header-section-number">6</span> 3. Design Principles</a></li>
+  <li><a href="#high-level-architecture" id="toc-high-level-architecture" class="nav-link" data-scroll-target="#high-level-architecture"><span class="header-section-number">7</span> 4. High-Level Architecture</a>
+  <ul class="collapse">
+  <li><a href="#layer-boundaries" id="toc-layer-boundaries" class="nav-link" data-scroll-target="#layer-boundaries"><span class="header-section-number">7.1</span> Layer boundaries</a></li>
+  <li><a href="#core-components" id="toc-core-components" class="nav-link" data-scroll-target="#core-components"><span class="header-section-number">7.2</span> Core components</a></li>
+  <li><a href="#data-path-conceptual" id="toc-data-path-conceptual" class="nav-link" data-scroll-target="#data-path-conceptual"><span class="header-section-number">7.3</span> Data path (conceptual)</a></li>
+  </ul></li>
+  <li><a href="#numa-aware-direction" id="toc-numa-aware-direction" class="nav-link" data-scroll-target="#numa-aware-direction"><span class="header-section-number">8</span> 5. NUMA-Aware Direction</a></li>
+  <li><a href="#serverclient-expansion-plan" id="toc-serverclient-expansion-plan" class="nav-link" data-scroll-target="#serverclient-expansion-plan"><span class="header-section-number">9</span> 6. Server/Client Expansion Plan</a>
+  <ul class="collapse">
+  <li><a href="#server-responsibilities" id="toc-server-responsibilities" class="nav-link" data-scroll-target="#server-responsibilities"><span class="header-section-number">9.1</span> Server responsibilities</a></li>
+  <li><a href="#client-responsibilities" id="toc-client-responsibilities" class="nav-link" data-scroll-target="#client-responsibilities"><span class="header-section-number">9.2</span> Client responsibilities</a></li>
+  <li><a href="#protocol-concerns" id="toc-protocol-concerns" class="nav-link" data-scroll-target="#protocol-concerns"><span class="header-section-number">9.3</span> Protocol concerns</a></li>
+  </ul></li>
+  <li><a href="#evaluation-methodology" id="toc-evaluation-methodology" class="nav-link" data-scroll-target="#evaluation-methodology"><span class="header-section-number">10</span> 7. Evaluation Methodology</a>
+  <ul class="collapse">
+  <li><a href="#metrics" id="toc-metrics" class="nav-link" data-scroll-target="#metrics"><span class="header-section-number">10.1</span> 7.1 Metrics</a></li>
+  <li><a href="#workload-profiles" id="toc-workload-profiles" class="nav-link" data-scroll-target="#workload-profiles"><span class="header-section-number">10.2</span> 7.2 Workload Profiles</a></li>
+  <li><a href="#benchmark-matrix" id="toc-benchmark-matrix" class="nav-link" data-scroll-target="#benchmark-matrix"><span class="header-section-number">10.3</span> 7.3 Benchmark Matrix</a></li>
+  <li><a href="#reproducibility-requirements" id="toc-reproducibility-requirements" class="nav-link" data-scroll-target="#reproducibility-requirements"><span class="header-section-number">10.4</span> 7.4 Reproducibility Requirements</a></li>
+  </ul></li>
+  <li><a href="#claims-and-evidence-policy" id="toc-claims-and-evidence-policy" class="nav-link" data-scroll-target="#claims-and-evidence-policy"><span class="header-section-number">11</span> 8. Claims and Evidence Policy</a></li>
+  <li><a href="#current-status-snapshot" id="toc-current-status-snapshot" class="nav-link" data-scroll-target="#current-status-snapshot"><span class="header-section-number">12</span> 9. Current Status Snapshot</a></li>
+  <li><a href="#risks-and-open-questions" id="toc-risks-and-open-questions" class="nav-link" data-scroll-target="#risks-and-open-questions"><span class="header-section-number">13</span> 10. Risks and Open Questions</a></li>
+  <li><a href="#milestone-driven-roadmap" id="toc-milestone-driven-roadmap" class="nav-link" data-scroll-target="#milestone-driven-roadmap"><span class="header-section-number">14</span> 11. Milestone-Driven Roadmap</a>
+  <ul class="collapse">
+  <li><a href="#phase-1-furrballs-core-for-game-engines" id="toc-phase-1-furrballs-core-for-game-engines" class="nav-link" data-scroll-target="#phase-1-furrballs-core-for-game-engines"><span class="header-section-number">14.1</span> Phase 1: Furrballs Core for game engines</a></li>
+  <li><a href="#phase-2-feature-complete-library-evolution" id="toc-phase-2-feature-complete-library-evolution" class="nav-link" data-scroll-target="#phase-2-feature-complete-library-evolution"><span class="header-section-number">14.2</span> Phase 2: Feature-complete library evolution</a></li>
+  <li><a href="#phase-3-server-client-protocol" id="toc-phase-3-server-client-protocol" class="nav-link" data-scroll-target="#phase-3-server-client-protocol"><span class="header-section-number">14.3</span> Phase 3: Server + Client + Protocol</a></li>
+  <li><a href="#phase-4-numa-focused-optimization-and-publication" id="toc-phase-4-numa-focused-optimization-and-publication" class="nav-link" data-scroll-target="#phase-4-numa-focused-optimization-and-publication"><span class="header-section-number">14.4</span> Phase 4: NUMA-focused optimization and publication</a></li>
+  </ul></li>
+  <li><a href="#conclusion" id="toc-conclusion" class="nav-link" data-scroll-target="#conclusion"><span class="header-section-number">15</span> 12. Conclusion</a></li>
+  <li><a href="#appendix-a-results-table-template" id="toc-appendix-a-results-table-template" class="nav-link" data-scroll-target="#appendix-a-results-table-template"><span class="header-section-number">16</span> Appendix A: Results Table Template</a></li>
+  <li><a href="#appendix-b-environment-template" id="toc-appendix-b-environment-template" class="nav-link" data-scroll-target="#appendix-b-environment-template"><span class="header-section-number">17</span> Appendix B: Environment Template</a></li>
+  </ul>
+<div class="quarto-alternate-formats"><h2>Other Formats</h2><ul><li><a href="whitepaper.pdf"><i class="bi bi-file-pdf"></i>PDF</a></li><li><a href="whitepaper.docx"><i class="bi bi-file-word"></i>MS Word</a></li></ul></div></nav>
+</div>
+<main class="content" id="quarto-document-content">
+
+<header id="title-block-header" class="quarto-title-block default">
+<div class="quarto-title">
+<h1 class="title">Furrballs: A NUMA-Aware, High-Performance Data Platform for Low-Latency Server Workloads</h1>
+<p class="subtitle lead">White Paper Draft</p>
+</div>
+
+
+
+<div class="quarto-title-meta">
+
+    <div>
+    <div class="quarto-title-meta-heading">Author</div>
+    <div class="quarto-title-meta-contents">
+             <p>NuAtlas </p>
+          </div>
+  </div>
+    
+    <div>
+    <div class="quarto-title-meta-heading">Published</div>
+    <div class="quarto-title-meta-contents">
+      <p class="date">April 9, 2026</p>
+    </div>
+  </div>
+  
+    
+  </div>
+  
+
+
+</header>
+
+
+<section id="status" class="level2" data-number="1">
+<h2 data-number="1" class="anchored" data-anchor-id="status"><span class="header-section-number">1</span> Status</h2>
+<p>Draft v0.2 (living document)</p>
+</section>
+<section id="abstract" class="level2" data-number="2">
+<h2 data-number="2" class="anchored" data-anchor-id="abstract"><span class="header-section-number">2</span> Abstract</h2>
+<p>Furrballs is a high-performance data platform designed for latency-sensitive workloads where memory hierarchy behavior, CPU locality, and throughput consistency are critical. The project combines a modular cache architecture, compression-aware storage integration, and an evolving NUMA-aware memory strategy intended to reduce cross-node penalties and stabilize tail latency under load. Development is intentionally phased: first a game-engine-focused core library, then a more feature-complete general library, then a server/client system with an explicit protocol.</p>
+<p>This white paper defines the problem space, design goals, architecture boundaries, and measurement plan for Furrballs. It also documents project rescoping history, current implementation status, planned capabilities, and a reproducible benchmarking approach focused on p95/p99 latency, throughput, memory efficiency, and NUMA locality effects.</p>
+</section>
+<section id="project-narrative-and-rescoping" class="level2" data-number="3">
+<h2 data-number="3" class="anchored" data-anchor-id="project-narrative-and-rescoping"><span class="header-section-number">3</span> Project Narrative and Rescoping</h2>
+<p>Furrballs evolved through several scope changes that matter for both technical context and decision traceability:</p>
+<ol type="1">
+<li>Initial motivation: investigate NUMA-aware caching after observing that popular systems such as Redis are not strongly NUMA-aware for all deployment scenarios.</li>
+<li>Practical inspiration: build a cache-first library influenced by Ristretto’s simplicity and performance-oriented design goals.</li>
+<li>Constraint phase: no direct access to NUMA hardware, so the idea expanded into simulating distribution pressure by spreading cache behavior across multiple machines.</li>
+<li>Downscope phase: temporary shift toward game-engine use cases (the author’s strongest domain) to ensure continuous progress and ship a usable core.</li>
+<li>Current rescope: return to the larger high-performance objective with NUMA-awareness as the primary long-term focus.</li>
+</ol>
+<p>This narrative is intentional, not accidental. Each scope change reduced risk, increased implementation confidence, or unlocked a clearer path to validation.</p>
+</section>
+<section id="problem-statement" class="level2" data-number="4">
+<h2 data-number="4" class="anchored" data-anchor-id="problem-statement"><span class="header-section-number">4</span> 1. Problem Statement</h2>
+<p>Modern low-latency services often degrade under memory pressure, irregular access patterns, and multi-socket contention. Typical bottlenecks include:</p>
+<ul>
+<li>Tail-latency spikes from cache misses and allocator fragmentation.</li>
+<li>Performance loss from non-local NUMA memory access.</li>
+<li>Operational complexity in combining cache, compression, and persistence layers.</li>
+<li>Difficulty validating behavior consistently across different hardware and deployment models.</li>
+</ul>
+<p>Furrballs targets these bottlenecks with an architecture that prioritizes locality, predictable behavior, and modular policy design.</p>
+</section>
+<section id="goals-and-non-goals" class="level2" data-number="5">
+<h2 data-number="5" class="anchored" data-anchor-id="goals-and-non-goals"><span class="header-section-number">5</span> 2. Goals and Non-Goals</h2>
+<section id="goals" class="level3" data-number="5.1">
+<h3 data-number="5.1" class="anchored" data-anchor-id="goals"><span class="header-section-number">5.1</span> Goals</h3>
+<ul>
+<li>Low and stable latency under mixed read/write load.</li>
+<li>NUMA-aware allocation and access behavior.</li>
+<li>Modular cache policy layer with pluggable eviction strategies.</li>
+<li>Progressive delivery through phased architecture evolution.</li>
+<li>Reproducible performance evaluation and transparent tradeoff reporting.</li>
+</ul>
+</section>
+<section id="non-goals-current-phase" class="level3" data-number="5.2">
+<h3 data-number="5.2" class="anchored" data-anchor-id="non-goals-current-phase"><span class="header-section-number">5.2</span> Non-Goals (current phase)</h3>
+<ul>
+<li>General-purpose database replacement.</li>
+<li>Broad feature parity with large data platforms.</li>
+<li>Platform-specific tuning for all operating systems at once.</li>
+</ul>
+</section>
+</section>
+<section id="design-principles" class="level2" data-number="6">
+<h2 data-number="6" class="anchored" data-anchor-id="design-principles"><span class="header-section-number">6</span> 3. Design Principles</h2>
+<ul>
+<li>Locality first: optimize for CPU and memory locality before adding features.</li>
+<li>Explicit tradeoffs: prefer clear, measurable behavior over opaque heuristics.</li>
+<li>Incremental validation: every subsystem change should map to benchmark deltas.</li>
+<li>Modularity: cache policies, memory strategies, and transport should evolve independently.</li>
+</ul>
+</section>
+<section id="high-level-architecture" class="level2" data-number="7">
+<h2 data-number="7" class="anchored" data-anchor-id="high-level-architecture"><span class="header-section-number">7</span> 4. High-Level Architecture</h2>
+<section id="layer-boundaries" class="level3" data-number="7.1">
+<h3 data-number="7.1" class="anchored" data-anchor-id="layer-boundaries"><span class="header-section-number">7.1</span> Layer boundaries</h3>
+<ul>
+<li>Furrballs Core (library): owns memory management, cache policy mechanics, compression integration, and storage interactions.</li>
+<li>Furrballs Server (wrapper layer): hosts the active cache runtime, wraps Core functionality, and exposes network-facing operations.</li>
+<li>Furrballs Client (interface layer): communicates with the Server through protocol-defined requests and does not host cache state.</li>
+</ul>
+<p>Only the Server hosts and mutates cache state. The Client is intentionally thin and transport-oriented.</p>
+</section>
+<section id="core-components" class="level3" data-number="7.2">
+<h3 data-number="7.2" class="anchored" data-anchor-id="core-components"><span class="header-section-number">7.2</span> Core components</h3>
+<ul>
+<li>Memory layer: page-oriented allocation and management, evolving toward NUMA-aware placement.</li>
+<li>Cache layer: policy-driven in-memory caching with extensible eviction behavior.</li>
+<li>Storage layer: persistent backing integration with compression support.</li>
+<li>Runtime layer: server process, client protocol/API, and operational instrumentation.</li>
+</ul>
+</section>
+<section id="data-path-conceptual" class="level3" data-number="7.3">
+<h3 data-number="7.3" class="anchored" data-anchor-id="data-path-conceptual"><span class="header-section-number">7.3</span> Data path (conceptual)</h3>
+<ol type="1">
+<li>Client request arrives at the Server through the protocol boundary.</li>
+<li>Server routes the request through Core cache and locality-aware lookup path.</li>
+<li>Miss path loads or reconstructs data from backing store via Core.</li>
+<li>Returned data is inserted/promoted by Server-hosted cache policy and memory placement rules.</li>
+<li>Telemetry captures latency, locality, and resource counters.</li>
+</ol>
+</section>
+</section>
+<section id="numa-aware-direction" class="level2" data-number="8">
+<h2 data-number="8" class="anchored" data-anchor-id="numa-aware-direction"><span class="header-section-number">8</span> 5. NUMA-Aware Direction</h2>
+<p>Planned NUMA-awareness work includes:</p>
+<ul>
+<li>Node-aware allocation policies to reduce remote memory traffic.</li>
+<li>Affinity-aware worker scheduling where practical.</li>
+<li>Topology-aware cache partitioning or sharding exploration.</li>
+<li>Local/remote access ratio instrumentation.</li>
+</ul>
+<p>Key hypothesis: locality-aware placement and scheduling can improve p99 latency and reduce jitter at equivalent throughput.</p>
+</section>
+<section id="serverclient-expansion-plan" class="level2" data-number="9">
+<h2 data-number="9" class="anchored" data-anchor-id="serverclient-expansion-plan"><span class="header-section-number">9</span> 6. Server/Client Expansion Plan</h2>
+<section id="server-responsibilities" class="level3" data-number="9.1">
+<h3 data-number="9.1" class="anchored" data-anchor-id="server-responsibilities"><span class="header-section-number">9.1</span> Server responsibilities</h3>
+<ul>
+<li>Request handling, cache management, and persistence coordination through Core.</li>
+<li>Concurrency control and worker model.</li>
+<li>Metrics and health endpoints.</li>
+</ul>
+</section>
+<section id="client-responsibilities" class="level3" data-number="9.2">
+<h3 data-number="9.2" class="anchored" data-anchor-id="client-responsibilities"><span class="header-section-number">9.2</span> Client responsibilities</h3>
+<ul>
+<li>Connection management and request batching options.</li>
+<li>Retry/backoff strategy (policy-defined).</li>
+<li>Latency and error instrumentation hooks.</li>
+<li>No in-process cache ownership.</li>
+</ul>
+</section>
+<section id="protocol-concerns" class="level3" data-number="9.3">
+<h3 data-number="9.3" class="anchored" data-anchor-id="protocol-concerns"><span class="header-section-number">9.3</span> Protocol concerns</h3>
+<ul>
+<li>Message framing and versioning.</li>
+<li>Backpressure behavior.</li>
+<li>Fault handling and timeout semantics.</li>
+</ul>
+</section>
+</section>
+<section id="evaluation-methodology" class="level2" data-number="10">
+<h2 data-number="10" class="anchored" data-anchor-id="evaluation-methodology"><span class="header-section-number">10</span> 7. Evaluation Methodology</h2>
+<section id="metrics" class="level3" data-number="10.1">
+<h3 data-number="10.1" class="anchored" data-anchor-id="metrics"><span class="header-section-number">10.1</span> 7.1 Metrics</h3>
+<p>Primary metrics: - Read latency: p50, p95, p99. - Write latency: p50, p95, p99. - Throughput: operations per second. - Cache hit ratio. - Compression ratio and CPU overhead. - Memory overhead and fragmentation behavior. - NUMA locality indicators (local vs remote memory access where measurable).</p>
+</section>
+<section id="workload-profiles" class="level3" data-number="10.2">
+<h3 data-number="10.2" class="anchored" data-anchor-id="workload-profiles"><span class="header-section-number">10.2</span> 7.2 Workload Profiles</h3>
+<ul>
+<li>Read-heavy steady-state.</li>
+<li>Write-heavy burst.</li>
+<li>Mixed workload with skewed key popularity.</li>
+<li>Large-object stress path.</li>
+<li>Multi-client concurrency scaling.</li>
+</ul>
+</section>
+<section id="benchmark-matrix" class="level3" data-number="10.3">
+<h3 data-number="10.3" class="anchored" data-anchor-id="benchmark-matrix"><span class="header-section-number">10.3</span> 7.3 Benchmark Matrix</h3>
+<ul>
+<li>Single-socket vs multi-socket host.</li>
+<li>NUMA policy variations.</li>
+<li>Cache policy variations.</li>
+<li>Compression on/off.</li>
+<li>Thread count scaling sweep.</li>
+</ul>
+</section>
+<section id="reproducibility-requirements" class="level3" data-number="10.4">
+<h3 data-number="10.4" class="anchored" data-anchor-id="reproducibility-requirements"><span class="header-section-number">10.4</span> 7.4 Reproducibility Requirements</h3>
+<ul>
+<li>Fixed build configuration per benchmark run.</li>
+<li>Logged hardware and kernel/runtime metadata.</li>
+<li>Versioned benchmark scripts and datasets.</li>
+<li>Raw results retained with timestamp and commit identifier.</li>
+</ul>
+</section>
+</section>
+<section id="claims-and-evidence-policy" class="level2" data-number="11">
+<h2 data-number="11" class="anchored" data-anchor-id="claims-and-evidence-policy"><span class="header-section-number">11</span> 8. Claims and Evidence Policy</h2>
+<p>Any performance claim in this white paper should include: - The exact workload profile. - The hardware/software test environment. - Comparison baseline and configuration parity. - Statistical summary from repeated runs.</p>
+</section>
+<section id="current-status-snapshot" class="level2" data-number="12">
+<h2 data-number="12" class="anchored" data-anchor-id="current-status-snapshot"><span class="header-section-number">12</span> 9. Current Status Snapshot</h2>
+<p>Current implementation includes foundational cache/storage abstractions and early integration points. Development is currently centered on strengthening Furrballs Core for game-engine-relevant workloads as Phase 1. Several advanced components are still under active development, especially around full NUMA strategy, server/client protocol maturity, and end-to-end benchmark coverage.</p>
+<p>This white paper is intentionally structured as a living technical document and should be updated alongside implementation milestones.</p>
+</section>
+<section id="risks-and-open-questions" class="level2" data-number="13">
+<h2 data-number="13" class="anchored" data-anchor-id="risks-and-open-questions"><span class="header-section-number">13</span> 10. Risks and Open Questions</h2>
+<ul>
+<li>Which NUMA strategies provide best p99 gains for your target workload mix?</li>
+<li>What is the throughput vs tail-latency tradeoff at high concurrency?</li>
+<li>How should cache policy adapt under rapidly changing access distributions?</li>
+<li>What observability granularity is required without adding excessive overhead?</li>
+</ul>
+</section>
+<section id="milestone-driven-roadmap" class="level2" data-number="14">
+<h2 data-number="14" class="anchored" data-anchor-id="milestone-driven-roadmap"><span class="header-section-number">14</span> 11. Milestone-Driven Roadmap</h2>
+<section id="phase-1-furrballs-core-for-game-engines" class="level3" data-number="14.1">
+<h3 data-number="14.1" class="anchored" data-anchor-id="phase-1-furrballs-core-for-game-engines"><span class="header-section-number">14.1</span> Phase 1: Furrballs Core for game engines</h3>
+<ul>
+<li>Deliver a stable, documented cache/compression/storage core library.</li>
+<li>Validate low-latency behavior on representative game-engine-style access patterns.</li>
+<li>Build correctness and regression coverage around core APIs.</li>
+</ul>
+</section>
+<section id="phase-2-feature-complete-library-evolution" class="level3" data-number="14.2">
+<h3 data-number="14.2" class="anchored" data-anchor-id="phase-2-feature-complete-library-evolution"><span class="header-section-number">14.2</span> Phase 2: Feature-complete library evolution</h3>
+<ul>
+<li>Expand policy surface, observability hooks, and integration ergonomics.</li>
+<li>Improve memory strategy and prepare NUMA-related interfaces and metrics.</li>
+<li>Broaden benchmark coverage and improve reproducibility on VPS and local systems.</li>
+</ul>
+</section>
+<section id="phase-3-server-client-protocol" class="level3" data-number="14.3">
+<h3 data-number="14.3" class="anchored" data-anchor-id="phase-3-server-client-protocol"><span class="header-section-number">14.3</span> Phase 3: Server + Client + Protocol</h3>
+<ul>
+<li>Introduce Furrballs Server that wraps Core and hosts cache state.</li>
+<li>Introduce Furrballs Client that interfaces with Server only.</li>
+<li>Define protocol framing, versioning, backpressure, and error semantics.</li>
+<li>Validate throughput/latency behavior in distributed and multi-client scenarios.</li>
+</ul>
+</section>
+<section id="phase-4-numa-focused-optimization-and-publication" class="level3" data-number="14.4">
+<h3 data-number="14.4" class="anchored" data-anchor-id="phase-4-numa-focused-optimization-and-publication"><span class="header-section-number">14.4</span> Phase 4: NUMA-focused optimization and publication</h3>
+<ul>
+<li>Implement and compare NUMA-aware allocation/scheduling strategies.</li>
+<li>Publish controlled benchmark comparisons across topology and policy variants.</li>
+<li>Finalize white paper v1.0 with reproducible evidence.</li>
+</ul>
+</section>
+</section>
+<section id="conclusion" class="level2" data-number="15">
+<h2 data-number="15" class="anchored" data-anchor-id="conclusion"><span class="header-section-number">15</span> 12. Conclusion</h2>
+<p>Furrballs aims to become a practical, locality-aware platform for high-performance workloads where predictable latency matters more than broad feature breadth. The project now follows an explicit path: ship a strong Core first, expand library capabilities second, then build Server/Client protocol layers that wrap and expose Core safely. This phased strategy preserves delivery velocity while keeping the long-term NUMA-aware objective central.</p>
+</section>
+<section id="appendix-a-results-table-template" class="level2" data-number="16">
+<h2 data-number="16" class="anchored" data-anchor-id="appendix-a-results-table-template"><span class="header-section-number">16</span> Appendix A: Results Table Template</h2>
+<table class="caption-top table">
+<colgroup>
+<col style="width: 9%">
+<col style="width: 12%">
+<col style="width: 9%">
+<col style="width: 9%">
+<col style="width: 12%">
+<col style="width: 12%">
+<col style="width: 12%">
+<col style="width: 12%">
+<col style="width: 9%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>Scenario</th>
+<th style="text-align: right;">Threads</th>
+<th>Compression</th>
+<th>NUMA Policy</th>
+<th style="text-align: right;">Read p99 (ms)</th>
+<th style="text-align: right;">Write p99 (ms)</th>
+<th style="text-align: right;">Throughput (ops/s)</th>
+<th style="text-align: right;">Hit Ratio</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Baseline</td>
+<td style="text-align: right;"></td>
+<td></td>
+<td></td>
+<td style="text-align: right;"></td>
+<td style="text-align: right;"></td>
+<td style="text-align: right;"></td>
+<td style="text-align: right;"></td>
+<td></td>
+</tr>
+<tr class="even">
+<td>Variant A</td>
+<td style="text-align: right;"></td>
+<td></td>
+<td></td>
+<td style="text-align: right;"></td>
+<td style="text-align: right;"></td>
+<td style="text-align: right;"></td>
+<td style="text-align: right;"></td>
+<td></td>
+</tr>
+<tr class="odd">
+<td>Variant B</td>
+<td style="text-align: right;"></td>
+<td></td>
+<td></td>
+<td style="text-align: right;"></td>
+<td style="text-align: right;"></td>
+<td style="text-align: right;"></td>
+<td style="text-align: right;"></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="appendix-b-environment-template" class="level2" data-number="17">
+<h2 data-number="17" class="anchored" data-anchor-id="appendix-b-environment-template"><span class="header-section-number">17</span> Appendix B: Environment Template</h2>
+<ul>
+<li>CPU model and socket count:</li>
+<li>NUMA node topology:</li>
+<li>RAM size and speed:</li>
+<li>Kernel and OS version:</li>
+<li>Compiler and flags:</li>
+<li>Build type:</li>
+<li>Dataset profile:</li>
+<li>Commit identifier:</li>
+</ul>
+</section>
+
+</main>
+<!-- /main column -->
+<script id="quarto-html-after-body" type="application/javascript">
+  window.document.addEventListener("DOMContentLoaded", function (event) {
+    const icon = "";
+    const anchorJS = new window.AnchorJS();
+    anchorJS.options = {
+      placement: 'right',
+      icon: icon
+    };
+    anchorJS.add('.anchored');
+    const isCodeAnnotation = (el) => {
+      for (const clz of el.classList) {
+        if (clz.startsWith('code-annotation-')) {                     
+          return true;
+        }
+      }
+      return false;
+    }
+    const onCopySuccess = function(e) {
+      // button target
+      const button = e.trigger;
+      // don't keep focus
+      button.blur();
+      // flash "checked"
+      button.classList.add('code-copy-button-checked');
+      var currentTitle = button.getAttribute("title");
+      button.setAttribute("title", "Copied!");
+      let tooltip;
+      if (window.bootstrap) {
+        button.setAttribute("data-bs-toggle", "tooltip");
+        button.setAttribute("data-bs-placement", "left");
+        button.setAttribute("data-bs-title", "Copied!");
+        tooltip = new bootstrap.Tooltip(button, 
+          { trigger: "manual", 
+            customClass: "code-copy-button-tooltip",
+            offset: [0, -8]});
+        tooltip.show();    
+      }
+      setTimeout(function() {
+        if (tooltip) {
+          tooltip.hide();
+          button.removeAttribute("data-bs-title");
+          button.removeAttribute("data-bs-toggle");
+          button.removeAttribute("data-bs-placement");
+        }
+        button.setAttribute("title", currentTitle);
+        button.classList.remove('code-copy-button-checked');
+      }, 1000);
+      // clear code selection
+      e.clearSelection();
+    }
+    const getTextToCopy = function(trigger) {
+      const outerScaffold = trigger.parentElement.cloneNode(true);
+      const codeEl = outerScaffold.querySelector('code');
+      for (const childEl of codeEl.children) {
+        if (isCodeAnnotation(childEl)) {
+          childEl.remove();
+        }
+      }
+      return codeEl.innerText;
+    }
+    const clipboard = new window.ClipboardJS('.code-copy-button:not([data-in-quarto-modal])', {
+      text: getTextToCopy
+    });
+    clipboard.on('success', onCopySuccess);
+    if (window.document.getElementById('quarto-embedded-source-code-modal')) {
+      const clipboardModal = new window.ClipboardJS('.code-copy-button[data-in-quarto-modal]', {
+        text: getTextToCopy,
+        container: window.document.getElementById('quarto-embedded-source-code-modal')
+      });
+      clipboardModal.on('success', onCopySuccess);
+    }
+      var localhostRegex = new RegExp(/^(?:http|https):\/\/localhost\:?[0-9]*\//);
+      var mailtoRegex = new RegExp(/^mailto:/);
+        var filterRegex = new RegExp('/' + window.location.host + '/');
+      var isInternal = (href) => {
+          return filterRegex.test(href) || localhostRegex.test(href) || mailtoRegex.test(href);
+      }
+      // Inspect non-navigation links and adorn them if external
+     var links = window.document.querySelectorAll('a[href]:not(.nav-link):not(.navbar-brand):not(.toc-action):not(.sidebar-link):not(.sidebar-item-toggle):not(.pagination-link):not(.no-external):not([aria-hidden]):not(.dropdown-item):not(.quarto-navigation-tool):not(.about-link)');
+      for (var i=0; i<links.length; i++) {
+        const link = links[i];
+        if (!isInternal(link.href)) {
+          // undo the damage that might have been done by quarto-nav.js in the case of
+          // links that we want to consider external
+          if (link.dataset.originalHref !== undefined) {
+            link.href = link.dataset.originalHref;
+          }
+        }
+      }
+    function tippyHover(el, contentFn, onTriggerFn, onUntriggerFn) {
+      const config = {
+        allowHTML: true,
+        maxWidth: 500,
+        delay: 100,
+        arrow: false,
+        appendTo: function(el) {
+            return el.parentElement;
+        },
+        interactive: true,
+        interactiveBorder: 10,
+        theme: 'quarto',
+        placement: 'bottom-start',
+      };
+      if (contentFn) {
+        config.content = contentFn;
+      }
+      if (onTriggerFn) {
+        config.onTrigger = onTriggerFn;
+      }
+      if (onUntriggerFn) {
+        config.onUntrigger = onUntriggerFn;
+      }
+      window.tippy(el, config); 
+    }
+    const noterefs = window.document.querySelectorAll('a[role="doc-noteref"]');
+    for (var i=0; i<noterefs.length; i++) {
+      const ref = noterefs[i];
+      tippyHover(ref, function() {
+        // use id or data attribute instead here
+        let href = ref.getAttribute('data-footnote-href') || ref.getAttribute('href');
+        try { href = new URL(href).hash; } catch {}
+        const id = href.replace(/^#\/?/, "");
+        const note = window.document.getElementById(id);
+        if (note) {
+          return note.innerHTML;
+        } else {
+          return "";
+        }
+      });
+    }
+    const xrefs = window.document.querySelectorAll('a.quarto-xref');
+    const processXRef = (id, note) => {
+      // Strip column container classes
+      const stripColumnClz = (el) => {
+        el.classList.remove("page-full", "page-columns");
+        if (el.children) {
+          for (const child of el.children) {
+            stripColumnClz(child);
+          }
+        }
+      }
+      stripColumnClz(note)
+      if (id === null || id.startsWith('sec-')) {
+        // Special case sections, only their first couple elements
+        const container = document.createElement("div");
+        if (note.children && note.children.length > 2) {
+          container.appendChild(note.children[0].cloneNode(true));
+          for (let i = 1; i < note.children.length; i++) {
+            const child = note.children[i];
+            if (child.tagName === "P" && child.innerText === "") {
+              continue;
+            } else {
+              container.appendChild(child.cloneNode(true));
+              break;
+            }
+          }
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(container);
+          }
+          return container.innerHTML
+        } else {
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(note);
+          }
+          return note.innerHTML;
+        }
+      } else {
+        // Remove any anchor links if they are present
+        const anchorLink = note.querySelector('a.anchorjs-link');
+        if (anchorLink) {
+          anchorLink.remove();
+        }
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(note);
+        }
+        if (note.classList.contains("callout")) {
+          return note.outerHTML;
+        } else {
+          return note.innerHTML;
+        }
+      }
+    }
+    for (var i=0; i<xrefs.length; i++) {
+      const xref = xrefs[i];
+      tippyHover(xref, undefined, function(instance) {
+        instance.disable();
+        let url = xref.getAttribute('href');
+        let hash = undefined; 
+        if (url.startsWith('#')) {
+          hash = url;
+        } else {
+          try { hash = new URL(url).hash; } catch {}
+        }
+        if (hash) {
+          const id = hash.replace(/^#\/?/, "");
+          const note = window.document.getElementById(id);
+          if (note !== null) {
+            try {
+              const html = processXRef(id, note.cloneNode(true));
+              instance.setContent(html);
+            } finally {
+              instance.enable();
+              instance.show();
+            }
+          } else {
+            // See if we can fetch this
+            fetch(url.split('#')[0])
+            .then(res => res.text())
+            .then(html => {
+              const parser = new DOMParser();
+              const htmlDoc = parser.parseFromString(html, "text/html");
+              const note = htmlDoc.getElementById(id);
+              if (note !== null) {
+                const html = processXRef(id, note);
+                instance.setContent(html);
+              } 
+            }).finally(() => {
+              instance.enable();
+              instance.show();
+            });
+          }
+        } else {
+          // See if we can fetch a full url (with no hash to target)
+          // This is a special case and we should probably do some content thinning / targeting
+          fetch(url)
+          .then(res => res.text())
+          .then(html => {
+            const parser = new DOMParser();
+            const htmlDoc = parser.parseFromString(html, "text/html");
+            const note = htmlDoc.querySelector('main.content');
+            if (note !== null) {
+              // This should only happen for chapter cross references
+              // (since there is no id in the URL)
+              // remove the first header
+              if (note.children.length > 0 && note.children[0].tagName === "HEADER") {
+                note.children[0].remove();
+              }
+              const html = processXRef(null, note);
+              instance.setContent(html);
+            } 
+          }).finally(() => {
+            instance.enable();
+            instance.show();
+          });
+        }
+      }, function(instance) {
+      });
+    }
+        let selectedAnnoteEl;
+        const selectorForAnnotation = ( cell, annotation) => {
+          let cellAttr = 'data-code-cell="' + cell + '"';
+          let lineAttr = 'data-code-annotation="' +  annotation + '"';
+          const selector = 'span[' + cellAttr + '][' + lineAttr + ']';
+          return selector;
+        }
+        const selectCodeLines = (annoteEl) => {
+          const doc = window.document;
+          const targetCell = annoteEl.getAttribute("data-target-cell");
+          const targetAnnotation = annoteEl.getAttribute("data-target-annotation");
+          const annoteSpan = window.document.querySelector(selectorForAnnotation(targetCell, targetAnnotation));
+          const lines = annoteSpan.getAttribute("data-code-lines").split(",");
+          const lineIds = lines.map((line) => {
+            return targetCell + "-" + line;
+          })
+          let top = null;
+          let height = null;
+          let parent = null;
+          if (lineIds.length > 0) {
+              //compute the position of the single el (top and bottom and make a div)
+              const el = window.document.getElementById(lineIds[0]);
+              top = el.offsetTop;
+              height = el.offsetHeight;
+              parent = el.parentElement.parentElement;
+            if (lineIds.length > 1) {
+              const lastEl = window.document.getElementById(lineIds[lineIds.length - 1]);
+              const bottom = lastEl.offsetTop + lastEl.offsetHeight;
+              height = bottom - top;
+            }
+            if (top !== null && height !== null && parent !== null) {
+              // cook up a div (if necessary) and position it 
+              let div = window.document.getElementById("code-annotation-line-highlight");
+              if (div === null) {
+                div = window.document.createElement("div");
+                div.setAttribute("id", "code-annotation-line-highlight");
+                div.style.position = 'absolute';
+                parent.appendChild(div);
+              }
+              div.style.top = top - 2 + "px";
+              div.style.height = height + 4 + "px";
+              div.style.left = 0;
+              let gutterDiv = window.document.getElementById("code-annotation-line-highlight-gutter");
+              if (gutterDiv === null) {
+                gutterDiv = window.document.createElement("div");
+                gutterDiv.setAttribute("id", "code-annotation-line-highlight-gutter");
+                gutterDiv.style.position = 'absolute';
+                const codeCell = window.document.getElementById(targetCell);
+                const gutter = codeCell.querySelector('.code-annotation-gutter');
+                gutter.appendChild(gutterDiv);
+              }
+              gutterDiv.style.top = top - 2 + "px";
+              gutterDiv.style.height = height + 4 + "px";
+            }
+            selectedAnnoteEl = annoteEl;
+          }
+        };
+        const unselectCodeLines = () => {
+          const elementsIds = ["code-annotation-line-highlight", "code-annotation-line-highlight-gutter"];
+          elementsIds.forEach((elId) => {
+            const div = window.document.getElementById(elId);
+            if (div) {
+              div.remove();
+            }
+          });
+          selectedAnnoteEl = undefined;
+        };
+          // Handle positioning of the toggle
+      window.addEventListener(
+        "resize",
+        throttle(() => {
+          elRect = undefined;
+          if (selectedAnnoteEl) {
+            selectCodeLines(selectedAnnoteEl);
+          }
+        }, 10)
+      );
+      function throttle(fn, ms) {
+      let throttle = false;
+      let timer;
+        return (...args) => {
+          if(!throttle) { // first call gets through
+              fn.apply(this, args);
+              throttle = true;
+          } else { // all the others get throttled
+              if(timer) clearTimeout(timer); // cancel #2
+              timer = setTimeout(() => {
+                fn.apply(this, args);
+                timer = throttle = false;
+              }, ms);
+          }
+        };
+      }
+        // Attach click handler to the DT
+        const annoteDls = window.document.querySelectorAll('dt[data-target-cell]');
+        for (const annoteDlNode of annoteDls) {
+          annoteDlNode.addEventListener('click', (event) => {
+            const clickedEl = event.target;
+            if (clickedEl !== selectedAnnoteEl) {
+              unselectCodeLines();
+              const activeEl = window.document.querySelector('dt[data-target-cell].code-annotation-active');
+              if (activeEl) {
+                activeEl.classList.remove('code-annotation-active');
+              }
+              selectCodeLines(clickedEl);
+              clickedEl.classList.add('code-annotation-active');
+            } else {
+              // Unselect the line
+              unselectCodeLines();
+              clickedEl.classList.remove('code-annotation-active');
+            }
+          });
+        }
+    const findCites = (el) => {
+      const parentEl = el.parentElement;
+      if (parentEl) {
+        const cites = parentEl.dataset.cites;
+        if (cites) {
+          return {
+            el,
+            cites: cites.split(' ')
+          };
+        } else {
+          return findCites(el.parentElement)
+        }
+      } else {
+        return undefined;
+      }
+    };
+    var bibliorefs = window.document.querySelectorAll('a[role="doc-biblioref"]');
+    for (var i=0; i<bibliorefs.length; i++) {
+      const ref = bibliorefs[i];
+      const citeInfo = findCites(ref);
+      if (citeInfo) {
+        tippyHover(citeInfo.el, function() {
+          var popup = window.document.createElement('div');
+          citeInfo.cites.forEach(function(cite) {
+            var citeDiv = window.document.createElement('div');
+            citeDiv.classList.add('hanging-indent');
+            citeDiv.classList.add('csl-entry');
+            var biblioDiv = window.document.getElementById('ref-' + cite);
+            if (biblioDiv) {
+              citeDiv.innerHTML = biblioDiv.innerHTML;
+            }
+            popup.appendChild(citeDiv);
+          });
+          return popup.innerHTML;
+        });
+      }
+    }
+  });
+  </script>
+</div> <!-- /content -->
+
+
+
+
+</body></html>

@@ -1,0 +1,20 @@
+project:
+  type: default
+  output-dir: _output
+  render:
+    - whitepaper.qmd
+
+format:
+  html:
+    toc: true
+    number-sections: true
+    code-fold: false
+  pdf:
+    toc: true
+    number-sections: true
+  docx:
+    toc: true
+    number-sections: true
+
+execute:
+  enabled: false

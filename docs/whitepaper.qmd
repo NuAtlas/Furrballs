@@ -1,0 +1,227 @@
+---
+title: "Furrballs: A NUMA-Aware, High-Performance Data Platform for Low-Latency Server Workloads"
+subtitle: "White Paper Draft"
+author: "NuAtlas"
+date: last-modified
+lang: en
+format:
+  html:
+    toc: true
+    number-sections: true
+  pdf:
+    toc: true
+    toc-depth: 2
+    number-sections: true
+    documentclass: scrartcl
+    fontsize: 11pt
+    geometry:
+      - top=1in
+      - bottom=1in
+      - left=1in
+      - right=1in
+    linestretch: 1.12
+    colorlinks: true
+    linkcolor: blue
+    urlcolor: blue
+    include-in-header:
+      text: |
+        \usepackage{microtype}
+        \usepackage{booktabs}
+        \usepackage{caption}
+        \captionsetup{font=small,labelfont=bf}
+        \usepackage[automark]{scrlayer-scrpage}
+        \clearpairofpagestyles
+        \ihead{Furrballs White Paper}
+        \ohead{\pagemark}
+        \KOMAoptions{headsepline=true}
+  docx:
+    toc: true
+    number-sections: true
+---
+
+## Status
+Draft v0.2 (living document)
+
+## Abstract
+Furrballs is a high-performance data platform designed for latency-sensitive workloads where memory hierarchy behavior, CPU locality, and throughput consistency are critical. The project combines a modular cache architecture, compression-aware storage integration, and an evolving NUMA-aware memory strategy intended to reduce cross-node penalties and stabilize tail latency under load. Development is intentionally phased: first a game-engine-focused core library, then a more feature-complete general library, then a server/client system with an explicit protocol.
+
+This white paper defines the problem space, design goals, architecture boundaries, and measurement plan for Furrballs. It also documents project rescoping history, current implementation status, planned capabilities, and a reproducible benchmarking approach focused on p95/p99 latency, throughput, memory efficiency, and NUMA locality effects.
+
+## Project Narrative and Rescoping
+Furrballs evolved through several scope changes that matter for both technical context and decision traceability:
+
+1. Initial motivation: investigate NUMA-aware caching after observing that popular systems such as Redis are not strongly NUMA-aware for all deployment scenarios.
+2. Practical inspiration: build a cache-first library influenced by Ristretto's simplicity and performance-oriented design goals.
+3. Constraint phase: no direct access to NUMA hardware, so the idea expanded into simulating distribution pressure by spreading cache behavior across multiple machines.
+4. Downscope phase: temporary shift toward game-engine use cases (the author's strongest domain) to ensure continuous progress and ship a usable core.
+5. Current rescope: return to the larger high-performance objective with NUMA-awareness as the primary long-term focus.
+
+This narrative is intentional, not accidental. Each scope change reduced risk, increased implementation confidence, or unlocked a clearer path to validation.
+
+## 1. Problem Statement
+Modern low-latency services often degrade under memory pressure, irregular access patterns, and multi-socket contention. Typical bottlenecks include:
+
+- Tail-latency spikes from cache misses and allocator fragmentation.
+- Performance loss from non-local NUMA memory access.
+- Operational complexity in combining cache, compression, and persistence layers.
+- Difficulty validating behavior consistently across different hardware and deployment models.
+
+Furrballs targets these bottlenecks with an architecture that prioritizes locality, predictable behavior, and modular policy design.
+
+## 2. Goals and Non-Goals
+### Goals
+- Low and stable latency under mixed read/write load.
+- NUMA-aware allocation and access behavior.
+- Modular cache policy layer with pluggable eviction strategies.
+- Progressive delivery through phased architecture evolution.
+- Reproducible performance evaluation and transparent tradeoff reporting.
+
+### Non-Goals (current phase)
+- General-purpose database replacement.
+- Broad feature parity with large data platforms.
+- Platform-specific tuning for all operating systems at once.
+
+## 3. Design Principles
+- Locality first: optimize for CPU and memory locality before adding features.
+- Explicit tradeoffs: prefer clear, measurable behavior over opaque heuristics.
+- Incremental validation: every subsystem change should map to benchmark deltas.
+- Modularity: cache policies, memory strategies, and transport should evolve independently.
+
+## 4. High-Level Architecture
+### Layer boundaries
+- Furrballs Core (library): owns memory management, cache policy mechanics, compression integration, and storage interactions.
+- Furrballs Server (wrapper layer): hosts the active cache runtime, wraps Core functionality, and exposes network-facing operations.
+- Furrballs Client (interface layer): communicates with the Server through protocol-defined requests and does not host cache state.
+
+Only the Server hosts and mutates cache state. The Client is intentionally thin and transport-oriented.
+
+### Core components
+- Memory layer: page-oriented allocation and management, evolving toward NUMA-aware placement.
+- Cache layer: policy-driven in-memory caching with extensible eviction behavior.
+- Storage layer: persistent backing integration with compression support.
+- Runtime layer: server process, client protocol/API, and operational instrumentation.
+
+### Data path (conceptual)
+1. Client request arrives at the Server through the protocol boundary.
+2. Server routes the request through Core cache and locality-aware lookup path.
+3. Miss path loads or reconstructs data from backing store via Core.
+4. Returned data is inserted/promoted by Server-hosted cache policy and memory placement rules.
+5. Telemetry captures latency, locality, and resource counters.
+
+## 5. NUMA-Aware Direction
+Planned NUMA-awareness work includes:
+
+- Node-aware allocation policies to reduce remote memory traffic.
+- Affinity-aware worker scheduling where practical.
+- Topology-aware cache partitioning or sharding exploration.
+- Local/remote access ratio instrumentation.
+
+Key hypothesis: locality-aware placement and scheduling can improve p99 latency and reduce jitter at equivalent throughput.
+
+## 6. Server/Client Expansion Plan
+### Server responsibilities
+- Request handling, cache management, and persistence coordination through Core.
+- Concurrency control and worker model.
+- Metrics and health endpoints.
+
+### Client responsibilities
+- Connection management and request batching options.
+- Retry/backoff strategy (policy-defined).
+- Latency and error instrumentation hooks.
+- No in-process cache ownership.
+
+### Protocol concerns
+- Message framing and versioning.
+- Backpressure behavior.
+- Fault handling and timeout semantics.
+
+## 7. Evaluation Methodology
+### 7.1 Metrics
+Primary metrics:
+- Read latency: p50, p95, p99.
+- Write latency: p50, p95, p99.
+- Throughput: operations per second.
+- Cache hit ratio.
+- Compression ratio and CPU overhead.
+- Memory overhead and fragmentation behavior.
+- NUMA locality indicators (local vs remote memory access where measurable).
+
+### 7.2 Workload Profiles
+- Read-heavy steady-state.
+- Write-heavy burst.
+- Mixed workload with skewed key popularity.
+- Large-object stress path.
+- Multi-client concurrency scaling.
+
+### 7.3 Benchmark Matrix
+- Single-socket vs multi-socket host.
+- NUMA policy variations.
+- Cache policy variations.
+- Compression on/off.
+- Thread count scaling sweep.
+
+### 7.4 Reproducibility Requirements
+- Fixed build configuration per benchmark run.
+- Logged hardware and kernel/runtime metadata.
+- Versioned benchmark scripts and datasets.
+- Raw results retained with timestamp and commit identifier.
+
+## 8. Claims and Evidence Policy
+Any performance claim in this white paper should include:
+- The exact workload profile.
+- The hardware/software test environment.
+- Comparison baseline and configuration parity.
+- Statistical summary from repeated runs.
+
+## 9. Current Status Snapshot
+Current implementation includes foundational cache/storage abstractions and early integration points. Development is currently centered on strengthening Furrballs Core for game-engine-relevant workloads as Phase 1. Several advanced components are still under active development, especially around full NUMA strategy, server/client protocol maturity, and end-to-end benchmark coverage.
+
+This white paper is intentionally structured as a living technical document and should be updated alongside implementation milestones.
+
+## 10. Risks and Open Questions
+- Which NUMA strategies provide best p99 gains for your target workload mix?
+- What is the throughput vs tail-latency tradeoff at high concurrency?
+- How should cache policy adapt under rapidly changing access distributions?
+- What observability granularity is required without adding excessive overhead?
+
+## 11. Milestone-Driven Roadmap
+### Phase 1: Furrballs Core for game engines
+- Deliver a stable, documented cache/compression/storage core library.
+- Validate low-latency behavior on representative game-engine-style access patterns.
+- Build correctness and regression coverage around core APIs.
+
+### Phase 2: Feature-complete library evolution
+- Expand policy surface, observability hooks, and integration ergonomics.
+- Improve memory strategy and prepare NUMA-related interfaces and metrics.
+- Broaden benchmark coverage and improve reproducibility on VPS and local systems.
+
+### Phase 3: Server + Client + Protocol
+- Introduce Furrballs Server that wraps Core and hosts cache state.
+- Introduce Furrballs Client that interfaces with Server only.
+- Define protocol framing, versioning, backpressure, and error semantics.
+- Validate throughput/latency behavior in distributed and multi-client scenarios.
+
+### Phase 4: NUMA-focused optimization and publication
+- Implement and compare NUMA-aware allocation/scheduling strategies.
+- Publish controlled benchmark comparisons across topology and policy variants.
+- Finalize white paper v1.0 with reproducible evidence.
+
+## 12. Conclusion
+Furrballs aims to become a practical, locality-aware platform for high-performance workloads where predictable latency matters more than broad feature breadth. The project now follows an explicit path: ship a strong Core first, expand library capabilities second, then build Server/Client protocol layers that wrap and expose Core safely. This phased strategy preserves delivery velocity while keeping the long-term NUMA-aware objective central.
+
+## Appendix A: Results Table Template
+| Scenario | Threads | Compression | NUMA Policy | Read p99 (ms) | Write p99 (ms) | Throughput (ops/s) | Hit Ratio | Notes |
+|---|---:|---|---|---:|---:|---:|---:|---|
+| Baseline |  |  |  |  |  |  |  |  |
+| Variant A |  |  |  |  |  |  |  |  |
+| Variant B |  |  |  |  |  |  |  |  |
+
+## Appendix B: Environment Template
+- CPU model and socket count:
+- NUMA node topology:
+- RAM size and speed:
+- Kernel and OS version:
+- Compiler and flags:
+- Build type:
+- Dataset profile:
+- Commit identifier:

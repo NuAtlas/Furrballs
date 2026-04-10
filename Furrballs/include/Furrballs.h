@@ -23,7 +23,6 @@
 #include <type_traits>
 #include <Logger.h>
 #include <mutex>
-#include <list>
 #include <optional>
 #include <variant>
 #include <algorithm>
@@ -151,20 +150,20 @@ namespace NuAtlas {
                 t2.splice(t2.begin(), t2, std::find(t2.begin(), t2.end(), key));
             }
             else if (std::find(b1.begin(), b1.end(), key) != b1.end()) {
-                // Case when the key is in b1
-                p = std::min(capacity, p + std::max(b2.size() / b1.size(), (size_t)1));
+                size_t delta1 = b1.size() > 0 ? b2.size() / b1.size() : 1;
+                p = std::min(capacity, p + std::max(delta1, (size_t)1));
                 replace(key);
                 b1.remove(key);
                 t2.push_front(key);
-                map[key] = Value();  // Assuming default constructor exists
+                map[key] = Value();
             }
             else if (std::find(b2.begin(), b2.end(), key) != b2.end()) {
-                // Case when the key is in b2
-                p = std::max((size_t)0, (static_cast<size_t>(p) - std::max(b1.size() / b2.size(), (size_t)1)));
+                size_t delta2 = b2.size() > 0 ? b1.size() / b2.size() : 1;
+                p = std::max((size_t)0, static_cast<size_t>(p) - std::max(delta2, (size_t)1));
                 replace(key);
                 b2.remove(key);
                 t2.push_front(key);
-                map[key] = Value();  // Assuming default constructor exists
+                map[key] = Value();
             }
         }
         /**
@@ -367,7 +366,6 @@ namespace NuAtlas {
         Cache<size_t, void*>::EvictionCallback clientEvictCallback;
         size_t PageSize;
 
-        std::list<Page> PageList;
         std::list<std::variant<Page, LockablePage>> VPageList;
 
         /**
@@ -396,7 +394,7 @@ namespace NuAtlas {
          */
         //ARCPolicy<size_t,void*> ARC = ARCPolicy<size_t,void*>();
 
-        FurrBall(const FurrConfig& config, ARCPolicy<size_t, void*> pageCache)noexcept;
+        FurrBall(const FurrConfig& config, size_t numPages)noexcept;
 
         void OnEvict(const size_t& key, void*& value)noexcept;
 

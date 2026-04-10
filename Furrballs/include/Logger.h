@@ -11,6 +11,7 @@
 #include <string>
 #include <ctime>
 #include <memory>
+#include <mutex>
 
 namespace NuAtlas{
     enum class LogLevel {
@@ -25,9 +26,9 @@ namespace NuAtlas{
      */
     class Logger {
     private:
+        std::mutex logMutex;
         Logger() : currentLogLevel(LogLevel::Info), logOutput(&std::cout) {}
 
-        // Delete copy constructor and assignment operator to prevent copying
         Logger(const Logger&) = delete;
         Logger& operator=(const Logger&) = delete;
     public:
@@ -46,6 +47,7 @@ namespace NuAtlas{
         void log(LogLevel level, const std::string& message) {
             if (level >= currentLogLevel) {
                 std::string logMessage = getCurrentTime() + " [" + logLevelToString(level) + "] " + message;
+                std::lock_guard<std::mutex> lock(logMutex);
                 (*logOutput) << logMessage << std::endl;
             }
         }
@@ -63,16 +65,20 @@ namespace NuAtlas{
         std::string getCurrentTime() {
             std::time_t now = std::time(nullptr);
             char buf[20];
+#ifdef _WIN32
             struct tm timeInfo;
-            // Use localtime_s for thread-safe local time conversion
             if (localtime_s(&timeInfo, &now) == 0) {
                 std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &timeInfo);
                 return buf;
             }
-            else {
-                // Handle error case if localtime_s fails
-                return "Error getting time";
+#else
+            struct tm timeInfo;
+            if (localtime_r(&now, &timeInfo)) {
+                std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &timeInfo);
+                return buf;
             }
+#endif
+            return "Error getting time";
         }
 
         std::string logLevelToString(LogLevel level) {

@@ -1,9 +1,6 @@
 /*****************************************************************//**
- * \file   Furrballs.h
- * \brief Primary interface for the Furrball library.
- *
- * This file contains the main classes and functions that users will interact with when using the Furrball library.
- * The library provides a caching and database management system using RocksDB and various caching policies.
+ * \file   MemoryManager.h
+ * \brief Memory allocation and management for Furrballs.
  *
  * \author The Sphynx
  * \date   July 2024
@@ -20,28 +17,31 @@
 #include <list>
 #include <optional>
 #include <cassert>
-
+#include <iostream>
 
 #ifdef _WIN32
 #include <windows.h>
 #else
 #include <unistd.h>
+#include <sys/mman.h>
 #endif
 #ifdef _DEBUG
 #define DEBUG
 #endif
 
+#ifndef NO_NUMA
+#ifdef __linux__
+#include <numa.h>
+#include <numaif.h>
+#include <sched.h>
+#endif
+#endif
+
  //Furrball, compact and filled with spit !
 namespace NuAtlas {
-    /**
-     * @brief Main Memory Allocator/Manager. Now Adding NUMA-Awareness.
-     *
-     * MemoryManager uses 2 Mutexes each to protect Freeing Memory (Critical) and Memory Protection (ProtectMemory call).
-     * Allocation on the other hand is not locking nor protected.
-     */
     class MemoryManager {
     private:
-        inline static thread_local std::mutex FreeingMutex;
+        inline static std::mutex FreeingMutex;
         inline static std::mutex ProtectMutex;
 
         static thread_local std::unordered_set<void*> ThreadBuffers;
@@ -51,47 +51,41 @@ namespace NuAtlas {
             ULONG highestNodeNumber;
             GetNumaHighestNodeNumber(&highestNodeNumber);
             return GetCurrentProcessorNumber() % (highestNodeNumber + 1);
-#else
+#elif defined(__linux__)
             return numa_node_of_cpu(sched_getcpu());
+#else
+            return 0;
 #endif
         }
-#endif //NO_NUMA
+#endif
 
     public:
 #ifndef NO_NUMA
-        /**
-         * @brief NUMA-Aware allocator.
-         */
         static void* AllocateMemoryNUMA(size_t totalSize) {
 #ifdef _WIN32
-
-
             int node = GetCurrentNumaNode();
             void* buffer = VirtualAllocExNuma(GetCurrentProcess(), nullptr, totalSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE, node);
             if (!buffer) {
                 return nullptr;
-
             }
-#else
+#elif defined(__linux__)
             int node = GetCurrentNumaNode();
             void* buffer = numa_alloc_onnode(totalSize, node);
             if (!buffer) {
                 return nullptr;
             }
-#endif //OS
+#else
+            void* buffer = AllocateMemory(totalSize);
+#endif
 #ifdef DEBUG
-            Logger::getInstance().info("Thread " + std::to_string(std::hash<std::thread::id>{}(std::this_thread::get_id())) + "Allocated (NUMA)" + std::to_string(totalSize));
-#endif //DEBUG
+            Logger::getInstance().info("Thread " + std::to_string(std::hash<std::thread::id>{}(std::this_thread::get_id())) + " Allocated (NUMA) " + std::to_string(totalSize));
+#endif
             return buffer;
         }
-#endif //NO_NUMA
-        /**
-         * @brief Allocates Memory using Platform Specific calls.
-         */
+#endif
         static void* AllocateMemory(size_t totalSize) {
 #ifdef _WIN32
             void* buffer = VirtualAlloc(nullptr, totalSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-
             if (!buffer) {
                 return nullptr;
             }
@@ -101,24 +95,15 @@ namespace NuAtlas {
             if (posix_memalign(&buffer, pageSize, totalSize) != 0) {
                 return nullptr;
             }
-#endif //_WIN32
+#endif
 #ifdef DEBUG
-            Logger::getInstance().info("Thread " + std::to_string(std::hash<std::thread::id>{}(std::this_thread::get_id())) + "Allocated " + std::to_string(totalSize));
-#endif //DEBUG
+            Logger::getInstance().info("Thread " + std::to_string(std::hash<std::thread::id>{}(std::this_thread::get_id())) + " Allocated " + std::to_string(totalSize));
+#endif
             ThreadBuffers.insert(buffer);
             return buffer;
         }
-        /**
-         * @brief Protects the provided memory buffer.
-         */
         static bool ProtectMemory(void* buffer, const size_t& size) {
-            if (IsThreadLocal(buffer)) {
-                std::lock_guard<std::mutex> lock(ProtectMutex);
-#ifdef DEBUG
-                std::cout << ("Did you intend to Protect a non thread_local buffer ?") << std::endl;
-                DebugBreak();
-#endif //DEBUG
-            }
+            std::lock_guard<std::mutex> lock(ProtectMutex);
 #ifdef _WIN32
             DWORD oldProtect;
             if (!VirtualProtect(buffer, size, PAGE_READWRITE, &oldProtect)) {
@@ -130,39 +115,21 @@ namespace NuAtlas {
                 Logger::getInstance().error("Failed to set memory protection on Linux");
                 return false;
             }
-#endif //_WIN32
+#endif
             return true;
         }
-        /**
-         * @brief Frees allocated buffer.
-         *
-         * FreeMemory is a blocking operation for freeing memory not owned by the thread.
-         */
         static void FreeMemory(void* buffer) {
-            if (IsThreadLocal(buffer)) {
-#ifdef DEBUG
-                std::cout << ("Did you intend to Free a non thread_local buffer ?") << std::endl;
-                DebugBreak();
-#endif  //DEBUG
+            bool isOwner = IsThreadLocal(buffer);
+            if (!isOwner) {
                 std::lock_guard<std::mutex> lock(FreeingMutex);
-#ifdef _WIN32
-                VirtualFree(buffer, 0, MEM_RELEASE);
-#else
-                free(buffer);
-#endif //_WIN32
-                ThreadBuffers.erase(buffer);
-                return;
             }
-            //Lock-less since the buffer is Thread Local, Ensuring the buffer is not used elsewhere is not the responsability of the allocator.
 #ifdef _WIN32
             VirtualFree(buffer, 0, MEM_RELEASE);
 #else
             free(buffer);
-#endif  //_WIN32
+#endif
+            ThreadBuffers.erase(buffer);
         }
-        /**
-         * @brief Returns the available memory, works for both Windows and Unix
-         */
         static size_t GetAvailableMemory() {
 #ifdef _WIN32
             MEMORYSTATUSEX status;
@@ -173,13 +140,10 @@ namespace NuAtlas {
             long pages = sysconf(_SC_AVPHYS_PAGES);
             long page_size = sysconf(_SC_PAGE_SIZE);
             return pages * page_size;
-#endif  //_WIN32
+#endif
         }
-        /**
-         * @brief Utility Function: Attempts to allocate increasingly larger blocks of memory until it fails, then returns the size of the largest successful allocation.
-         */
         static size_t GetLargestContiguousBlock() {
-            size_t step = 1024 * 1024; // Start with 1MB
+            size_t step = 1024 * 1024;
             size_t maxBlockSize = 0;
             void* buffer = nullptr;
 
@@ -196,27 +160,24 @@ namespace NuAtlas {
 
             return maxBlockSize;
         }
-        /**
-         * @brief Returns true if the buffer is allocated by the calling thread.
-         */
         static inline bool IsThreadLocal(void* const& buffer) noexcept {
             return ThreadBuffers.find(buffer) != ThreadBuffers.cend();
         }
 
-        bool IsNUMASystem() {
+        static bool IsNUMASystem() {
 #ifdef NO_NUMA
             return false;
-#endif  //NO_NUMA
-#ifdef WIN32
+#elif defined(_WIN32)
             ULONG highestNodeNumber;
             if (GetNumaHighestNodeNumber(&highestNodeNumber)) {
                 return highestNodeNumber > 0;
             }
             return false;
-#elif
-            //libnuma dependency.
+#elif defined(__linux__)
             return numa_available() != -1;
-#endif  //_WIN32
+#else
+            return false;
+#endif
         }
     };
-};
+}
