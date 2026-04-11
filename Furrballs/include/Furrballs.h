@@ -1,4 +1,4 @@
-/*****************************************************************//**
+﻿/*****************************************************************//**
  * \file   Furrballs.h
  * \brief Primary interface for the Furrball library.
  *
@@ -8,7 +8,7 @@
  * \date   July 2024
  *********************************************************************/
 #pragma once
-
+#include "Error.h"
 #include <memory>
 #include <string>
 #include <thread>
@@ -204,6 +204,9 @@ namespace NuAtlas {
     class FurrBall final {
     private:
         struct ImplDetail;
+        struct KeyMeta{
+            size_t PageIndex, DataSize, DataOffset;
+        };
         ImplDetail* DataMembers;
 
         ARCPolicy<size_t, Page*> cache;
@@ -214,6 +217,7 @@ namespace NuAtlas {
         bool UseNUMA;
 
         std::vector<void*> AllocatedPages;
+        std::unordered_map<std::string, KeyMeta> KeyStore = std::unordered_map<std::string, KeyMeta>();
 
         inline static std::list<FurrBall*> OpenBalls = std::list<FurrBall*>();
 
@@ -258,6 +262,8 @@ namespace NuAtlas {
 
         void* Get(void* vAddress)noexcept;
         bool Set(void* data, size_t size, size_t vAddress)noexcept;
+        //
+        Error Set(std::string& key, void* data, size_t size)noexcept;
 
         const Cache<size_t, Page*>& GetBackingCache()const noexcept {
             return cache;

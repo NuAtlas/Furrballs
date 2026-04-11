@@ -1,4 +1,4 @@
-/*****************************************************************//**
+﻿/*****************************************************************//**
  * \file   Furrballs.cpp
  *
  * \author The Sphynx
@@ -165,6 +165,16 @@ bool NuAtlas::FurrBall::Set(void* data, size_t size, size_t vAddress) noexcept {
     page->Dirty = true;
 
     return true;
+}
+
+Error NuAtlas::FurrBall::Set(std::string &key, void *data, size_t size) noexcept
+{
+    if(!data || !size){
+        Logger::getInstance().error("Furrball::Set was called with invalid arguments");
+        return INVALID_ARG;
+    }
+    
+    return NO_ERR;
 }
 
 FurrBall* FurrBall::CreateBall(const std::string& DBpath, const FurrConfig& config, bool overwrite) noexcept {

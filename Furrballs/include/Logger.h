@@ -7,13 +7,13 @@
  * \date   July 2024
  *********************************************************************/
 #include <iostream>
-#include <fstream>
 #include <string>
 #include <ctime>
 #include <memory>
 #include <mutex>
+#include <atomic>
 
-namespace NuAtlas{
+namespace NuAtlas {
     enum class LogLevel {
         Debug,
         Info,
@@ -21,35 +21,43 @@ namespace NuAtlas{
         Error,
         Critical
     };
-    /**
-     * @brief Basic Logger.
-     */
+
     class Logger {
     private:
         std::mutex logMutex;
-        Logger() : currentLogLevel(LogLevel::Info), logOutput(&std::cout) {}
+        std::atomic<LogLevel> currentLogLevel;
+        std::shared_ptr<std::ostream> logOutput;
+
+        Logger() : currentLogLevel(LogLevel::Info), logOutput(std::make_shared<std::ostream>(std::cout.rdbuf())) {}
 
         Logger(const Logger&) = delete;
         Logger& operator=(const Logger&) = delete;
+
+        std::string getCurrentTime();
+        std::string logLevelToString(LogLevel level);
+
     public:
         static Logger& getInstance() {
             static Logger instance;
             return instance;
         }
+
         void setLogLevel(LogLevel level) {
-            currentLogLevel = level;
+            currentLogLevel.store(level, std::memory_order_relaxed);
         }
 
-        void setLogOutput(std::ostream* output) {
-            logOutput = output;
+        void setLogOutput(std::shared_ptr<std::ostream> output) {
+            std::lock_guard<std::mutex> lock(logMutex);
+            logOutput = std::move(output);
         }
 
         void log(LogLevel level, const std::string& message) {
-            if (level >= currentLogLevel) {
-                std::string logMessage = getCurrentTime() + " [" + logLevelToString(level) + "] " + message;
-                std::lock_guard<std::mutex> lock(logMutex);
-                (*logOutput) << logMessage << std::endl;
+            if (level < currentLogLevel.load(std::memory_order_relaxed)) {
+                return;
             }
+            std::lock_guard<std::mutex> lock(logMutex);
+            std::string logMessage = getCurrentTime() + " [" + logLevelToString(level) + "] " + message;
+            (*logOutput) << logMessage << std::endl;
         }
 
         void debug(const std::string& message) { log(LogLevel::Debug, message); }
@@ -57,39 +65,5 @@ namespace NuAtlas{
         void warning(const std::string& message) { log(LogLevel::Warning, message); }
         void error(const std::string& message) { log(LogLevel::Error, message); }
         void critical(const std::string& message) { log(LogLevel::Critical, message); }
-
-    private:
-        LogLevel currentLogLevel;
-        std::ostream* logOutput;
-
-        std::string getCurrentTime() {
-            std::time_t now = std::time(nullptr);
-            char buf[20];
-#ifdef _WIN32
-            struct tm timeInfo;
-            if (localtime_s(&timeInfo, &now) == 0) {
-                std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &timeInfo);
-                return buf;
-            }
-#else
-            struct tm timeInfo;
-            if (localtime_r(&now, &timeInfo)) {
-                std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &timeInfo);
-                return buf;
-            }
-#endif
-            return "Error getting time";
-        }
-
-        std::string logLevelToString(LogLevel level) {
-            switch (level) {
-            case LogLevel::Debug: return "Debug";
-            case LogLevel::Info: return "Info";
-            case LogLevel::Warning: return "Warning";
-            case LogLevel::Error: return "Error";
-            case LogLevel::Critical: return "Critical";
-            default: return "Unknown";
-            }
-        }
     };
 }

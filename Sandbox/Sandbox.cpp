@@ -1,4 +1,4 @@
-#include "Sandbox.h"
+﻿#include "Sandbox.h"
 #include <iostream>
 #include <cstring>
 
@@ -6,6 +6,7 @@ int main() {
     FurrConfig config;
     config.EnableLogging = true;
     config.InitialPageCount = 16;
+    
 
     FurrBall* fb = FurrBall::CreateBall("TestDB", config);
     if (!fb) {
