@@ -2,6 +2,7 @@ set(SOURCES
     src/Furrballs.cpp
     src/Logger.cpp
     src/Page.cpp
+    src/NodeJob.cpp
 )
 
 set(HEADERS
@@ -11,6 +12,7 @@ set(HEADERS
     include/MemoryManager.h
     include/Error.h
     include/Page.h
+    include/NodeJob.h
 )
 
 add_library(Furrballs STATIC ${SOURCES} ${HEADERS})

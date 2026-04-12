@@ -191,10 +191,10 @@ void NuAtlas::FurrBall::Bootstrap()
     if (Numatic::IsNUMAAvailable()) {
         globalNumaState.NumaNodeCount = Numatic::GetNodeCount();
         for (int i = 0; i < globalNumaState.NumaNodeCount; i++) {
-            // workers.emplace_back([i]() {
-            //     Numatic::PinCurrentThreadToNode(i);
-            //     // worker loop
-            // });
+            globalNumaState.Workers.emplace_back(std::thread([i]() {
+                Numatic::PinCurrentThreadToNode(i);
+                // worker loop
+            }));
         }
     }
 }
@@ -206,7 +206,7 @@ void NuAtlas::FurrBall::Shutdown()
         //Add a general cleanup/exit phase.
         delete fb;
     }
-    
+      
 }
 
 FurrBall *FurrBall::CreateBall(const std::string &DBpath, const FurrConfig &config, bool overwrite) noexcept
