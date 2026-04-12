@@ -1,8 +1,0 @@
-Package: tbb
-Version: 2021.13.0
-Depends: vcpkg-cmake, vcpkg-cmake-config
-Architecture: x64-linux
-Multi-Arch: same
-Abi: ce019cc84a1f76fd84c7821dd90f5e1e34d7b000c124e8fd56683246a819302e
-Description: Intel's Threading Building Blocks.
-Status: install ok half-installed

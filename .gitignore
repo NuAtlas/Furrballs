@@ -4,6 +4,10 @@
 ## Get latest from https://github.com/github/gitignore/blob/master/VisualStudio.gitignore
 
 [Bb]uild/
+[Bb]uildtest/
+
+TestDB/
+*.pid
 
 # User-specific files
 *.rsuser

@@ -26,8 +26,17 @@ using namespace NuAtlas;
 
 thread_local std::unordered_set<void*> MemoryManager::ThreadBuffers;
 
+FurrBall::GlobalNumaState FurrBall::globalNumaState;
+
+//Stubs until i start using it.
+// struct PrivateNumaState{
+//     //Add The Key-offset-map per nodes, to cleanly divide keys between nodes.
+//     //
+// };
+
 struct FurrBall::ImplDetail {
     rocksdb::DB* db = nullptr;
+    // PrivateNumaState* privateNumaState = nullptr; //< extra state for numa-specific details. I named it private since i there could potentially be a global state.
 };
 
 NuAtlas::FurrBall::FurrBall(const FurrConfig& config, size_t numPages) noexcept
@@ -167,7 +176,7 @@ bool NuAtlas::FurrBall::Set(void* data, size_t size, size_t vAddress) noexcept {
     return true;
 }
 
-Error NuAtlas::FurrBall::Set(std::string &key, void *data, size_t size) noexcept
+Error NuAtlas::FurrBall::Set(const std::string &key, void *data, size_t size) noexcept
 {
     if(!data || !size){
         Logger::getInstance().error("Furrball::Set was called with invalid arguments");
@@ -177,7 +186,31 @@ Error NuAtlas::FurrBall::Set(std::string &key, void *data, size_t size) noexcept
     return NO_ERR;
 }
 
-FurrBall* FurrBall::CreateBall(const std::string& DBpath, const FurrConfig& config, bool overwrite) noexcept {
+void NuAtlas::FurrBall::Bootstrap()
+{
+    if (Numatic::IsNUMAAvailable()) {
+        globalNumaState.NumaNodeCount = Numatic::GetNodeCount();
+        for (int i = 0; i < globalNumaState.NumaNodeCount; i++) {
+            // workers.emplace_back([i]() {
+            //     Numatic::PinCurrentThreadToNode(i);
+            //     // worker loop
+            // });
+        }
+    }
+}
+
+void NuAtlas::FurrBall::Shutdown()
+{
+    for (auto &&fb : OpenBalls)
+    {
+        //Add a general cleanup/exit phase.
+        delete fb;
+    }
+    
+}
+
+FurrBall *FurrBall::CreateBall(const std::string &DBpath, const FurrConfig &config, bool overwrite) noexcept
+{
     rocksdb::Options options;
     rocksdb::DB* db = nullptr;
 
@@ -192,6 +225,10 @@ FurrBall* FurrBall::CreateBall(const std::string& DBpath, const FurrConfig& conf
         Logger::getInstance().error("Failed to open RocksDB at " + DBpath + ": " + status.ToString());
         return nullptr;
     }
+
+    // if(config.EnableNUMA == true && ){
+        
+    // }
 
     size_t numPages = config.InitialPageCount;
     size_t availMem = MemoryManager::GetAvailableMemory();

@@ -9,6 +9,9 @@
  *********************************************************************/
 #pragma once
 #include "Error.h"
+#include "Page.h"
+#include "Logger.h"
+#include "Numatic.h"
 #include <memory>
 #include <string>
 #include <thread>
@@ -18,7 +21,6 @@
 #include <shared_mutex>
 #include <list>
 #include <type_traits>
-#include <Logger.h>
 #include <mutex>
 #include <optional>
 #include <algorithm>
@@ -173,11 +175,19 @@ namespace NuAtlas {
             }
         }
     };
+    //All default values are arbitrary for now.
+
+    struct NumaConfig{
+        short PerNodePageLimit = 2;
+        bool AllocateUsingNodePageSize = true; //< allocates with NUMA page sizes (or multiples of page sizes) instead of PageSize.
+        bool AllowNodeFallback = false; //< For now, This will be ignored (considered false)
+        //Add priority later, Add Home Node + Perferred Nodes.
+    };
 
     struct FurrConfig final {
         size_t CapacityLimit = 1024 * 1024;
         size_t InitialPageCount = 2;
-        size_t PageSize = 4096;
+        size_t PageSize = 4096; //< This is used for Logical division of the Page, The actually page may be larger (NUMA case, AMP may also expand a page, etc...)
         Cache<size_t, void*>::EvictionCallback evictionCallback = [](const size_t&, void*&) {};
 
         union {
@@ -188,17 +198,8 @@ namespace NuAtlas {
             };
             uint8_t flags = 0;
         };
-    };
 
-    struct Page {
-        void* Data = nullptr;
-        size_t PageIndex = 0;
-        size_t PageSize = 0;
-        bool Dirty = false;
-
-        Page() noexcept = default;
-        Page(void* ptr, size_t pageSize, size_t pageIndex)noexcept
-            : Data(ptr), PageIndex(pageIndex), PageSize(pageSize) {}
+        NumaConfig* numaConfig = nullptr;
     };
 
     class FurrBall final {
@@ -220,6 +221,13 @@ namespace NuAtlas {
         std::unordered_map<std::string, KeyMeta> KeyStore = std::unordered_map<std::string, KeyMeta>();
 
         inline static std::list<FurrBall*> OpenBalls = std::list<FurrBall*>();
+
+        struct GlobalNumaState {
+            std::vector<std::thread> Workers;
+            size_t SysNumaPageSize = 0;
+            int NumaNodeCount = 0;
+        };
+        static GlobalNumaState globalNumaState;
 
         FurrBall(const FurrConfig& config, size_t numPages)noexcept;
 
@@ -257,13 +265,14 @@ namespace NuAtlas {
         } Stats;
 
         FurrBall(const FurrBall& cpy) = delete;
-
+        static void Bootstrap();
+        static void Shutdown();
         static FurrBall* CreateBall(const std::string& DBpath, const FurrConfig& config = FurrConfig(), bool overwrite = false)noexcept;
 
         void* Get(void* vAddress)noexcept;
         bool Set(void* data, size_t size, size_t vAddress)noexcept;
         //
-        Error Set(std::string& key, void* data, size_t size)noexcept;
+        Error Set(const std::string& key, void* data, size_t size)noexcept;
 
         const Cache<size_t, Page*>& GetBackingCache()const noexcept {
             return cache;

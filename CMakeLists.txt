@@ -16,5 +16,6 @@ endif()
 
 project("Furrballs")
 
+add_subdirectory("numatic")
 add_subdirectory("Sandbox")
 add_subdirectory("Furrballs")

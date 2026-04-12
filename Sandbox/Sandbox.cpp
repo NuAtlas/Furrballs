@@ -3,9 +3,12 @@
 #include <cstring>
 
 int main() {
+    FurrBall::Bootstrap();
+
     FurrConfig config;
     config.EnableLogging = true;
     config.InitialPageCount = 16;
+    config.EnableNUMA = true;
     
 
     FurrBall* fb = FurrBall::CreateBall("TestDB", config);
