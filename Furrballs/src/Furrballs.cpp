@@ -190,11 +190,15 @@ void NuAtlas::FurrBall::Bootstrap()
 {
     if (Numatic::IsNUMAAvailable()) {
         globalNumaState.NumaNodeCount = Numatic::GetNodeCount();
+        globalNumaState.SysNumaPageSize = Numatic::GetNodePageSize();
+        //Preallocated buffer.
+        globalNumaState.Workers = (NodeJob*)malloc(sizeof(NodeJob) * globalNumaState.NumaNodeCount);
+        Logger::getInstance().info("Creating Node Workers");
         for (int i = 0; i < globalNumaState.NumaNodeCount; i++) {
-            globalNumaState.Workers.emplace_back(std::thread([i]() {
-                Numatic::PinCurrentThreadToNode(i);
-                // worker loop
-            }));
+            new(&globalNumaState.Workers[i]) NodeJob(i);
+            globalNumaState.Workers[i].Start([=](){
+                Logger::getInstance().info(std::string("Create a node worker pinned on NumaID: ") + std::to_string(i));
+            });
         }
     }
 }
@@ -206,7 +210,10 @@ void NuAtlas::FurrBall::Shutdown()
         //Add a general cleanup/exit phase.
         delete fb;
     }
-      
+    for(int i = 0; i < globalNumaState.NumaNodeCount; i++){
+        globalNumaState.Workers[i].~NodeJob();
+    }
+    free(globalNumaState.Workers);
 }
 
 FurrBall *FurrBall::CreateBall(const std::string &DBpath, const FurrConfig &config, bool overwrite) noexcept
@@ -225,23 +232,34 @@ FurrBall *FurrBall::CreateBall(const std::string &DBpath, const FurrConfig &conf
         Logger::getInstance().error("Failed to open RocksDB at " + DBpath + ": " + status.ToString());
         return nullptr;
     }
-
-    // if(config.EnableNUMA == true && ){
-        
-    // }
-
     size_t numPages = config.InitialPageCount;
-    size_t availMem = MemoryManager::GetAvailableMemory();
-    if (availMem < config.PageSize * numPages) {
-        while (numPages > 0 && availMem < config.PageSize * numPages) {
-            --numPages;
+    size_t pPageSize;
+    
+    if(config.EnableNUMA == true && globalNumaState.NumaNodeCount){
+        if(config.numaConfig->AllocateUsingNodePageSize){
+            pPageSize = Numatic::GetNodePageSize();
+            Logger::getInstance().info(std::string("NUMA node Page size: ") + std::to_string(pPageSize));
+
+            //Calculate Number of Logical subdivions of a NUMA page.
+            numPages = pPageSize / config.PageSize + (pPageSize % config.PageSize ? 1 : 0); //If the Page is not an exact fit, we'll allocated one more page.
+            size_t totalPhysicalPageSize = numPages * config.PageSize;
+            Logger::getInstance().info(std::string("Furrballs will allocate a ") + std::to_string(totalPhysicalPageSize) + " sized Physical Page." );
         }
-        if (numPages == 0) {
-            Logger::getInstance().error("Not enough memory for any pages");
-            delete db;
-            return nullptr;
+    }else{
+        size_t numPages = config.InitialPageCount;
+        size_t availMem = MemoryManager::GetAvailableMemory();
+        if (availMem < config.PageSize * numPages) {
+            while (numPages > 0 && availMem < config.PageSize * numPages) {
+                --numPages;
+            }
+            if (numPages == 0) {
+                Logger::getInstance().error("Not enough memory for any pages");
+                delete db;
+                return nullptr;
+            }
         }
     }
+
 
     FurrBall* fb = new FurrBall(config, numPages);
     if (!fb) {

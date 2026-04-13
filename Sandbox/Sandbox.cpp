@@ -9,7 +9,8 @@ int main() {
     config.EnableLogging = true;
     config.InitialPageCount = 16;
     config.EnableNUMA = true;
-    
+    NumaConfig numaConfig;
+    config.numaConfig = &numaConfig;
 
     FurrBall* fb = FurrBall::CreateBall("TestDB", config);
     if (!fb) {
@@ -41,5 +42,6 @@ int main() {
     std::cout << "  TotalAllocated: " << fb->Stats.GetTotalAllocated() << std::endl;
 
     delete fb;
+    FurrBall::Shutdown();
     return 0;
 }

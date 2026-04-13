@@ -11,6 +11,7 @@
 #include "Error.h"
 #include "Page.h"
 #include "Logger.h"
+#include "NodeJob.h"
 #include "Numatic.h"
 #include <memory>
 #include <string>
@@ -186,7 +187,7 @@ namespace NuAtlas {
 
     struct FurrConfig final {
         size_t CapacityLimit = 1024 * 1024;
-        size_t InitialPageCount = 2;
+        size_t InitialPageCount = 2; //< This is a hint, more (logcial) pages may be allocated. 
         size_t PageSize = 4096; //< This is used for Logical division of the Page, The actually page may be larger (NUMA case, AMP may also expand a page, etc...)
         Cache<size_t, void*>::EvictionCallback evictionCallback = [](const size_t&, void*&) {};
 
@@ -223,7 +224,7 @@ namespace NuAtlas {
         inline static std::list<FurrBall*> OpenBalls = std::list<FurrBall*>();
 
         struct GlobalNumaState {
-            std::vector<std::thread> Workers;
+            NodeJob* Workers = nullptr;
             size_t SysNumaPageSize = 0;
             int NumaNodeCount = 0;
         };

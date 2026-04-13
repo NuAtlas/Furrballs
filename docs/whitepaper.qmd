@@ -40,21 +40,21 @@ format:
 ---
 
 ## Status
-Draft v0.2 (living document)
+Draft v0.3 (living document)
 
 ## Abstract
-Furrballs is a high-performance data platform designed for latency-sensitive workloads where memory hierarchy behavior, CPU locality, and throughput consistency are critical. The project combines a modular cache architecture, compression-aware storage integration, and an evolving NUMA-aware memory strategy intended to reduce cross-node penalties and stabilize tail latency under load. Development is intentionally phased: first a game-engine-focused core library, then a more feature-complete general library, then a server/client system with an explicit protocol.
+Furrballs is a high-performance, NUMA-aware caching library designed for latency-sensitive workloads where memory locality, cache policy behavior, and tail-latency predictability are critical. The core thesis contribution is using NUMA topology as a first-class input to cache placement and eviction decisions --- an approach not found in existing systems. The library combines per-node page allocation with ARC (Adaptive Replacement Cache) eviction, backed by RocksDB persistence. Development follows a layered approach: NUMA-aware page caching as the primary contribution, with tiered intra-page optimization and adaptive memory pooling (AMP) as future extensions.
 
-This white paper defines the problem space, design goals, architecture boundaries, and measurement plan for Furrballs. It also documents project rescoping history, current implementation status, planned capabilities, and a reproducible benchmarking approach focused on p95/p99 latency, throughput, memory efficiency, and NUMA locality effects.
+This white paper documents the problem space, design decisions and their rationale, architecture, and measurement plan. It also serves as a record of design discussions and tradeoffs made during development.
 
 ## Project Narrative and Rescoping
 Furrballs evolved through several scope changes that matter for both technical context and decision traceability:
 
 1. Initial motivation: investigate NUMA-aware caching after observing that popular systems such as Redis are not strongly NUMA-aware for all deployment scenarios.
 2. Practical inspiration: build a cache-first library influenced by Ristretto's simplicity and performance-oriented design goals.
-3. Constraint phase: no direct access to NUMA hardware, so the idea expanded into simulating distribution pressure by spreading cache behavior across multiple machines.
+3. Constraint phase: no direct access to NUMA hardware, so the idea expanded into simulating distribution pressure by spreading cache behavior across multiple machines. This led to scope creep: virtual pointers, AMP, Burst mode, LockablePage, slab allocation, and S3FIFO/LRU/LFU policy variants were all designed during this phase.
 4. Downscope phase: temporary shift toward game-engine use cases (the author's strongest domain) to ensure continuous progress and ship a usable core.
-5. Current rescope: return to the larger high-performance objective with NUMA-awareness as the primary long-term focus.
+5. Current rescope (April 2026): return to the NUMA-aware objective as the primary focus. All scope-creep features were stripped. The project now has a clear, defensible thesis contribution: NUMA-aware page placement as a cache policy input.
 
 This narrative is intentional, not accidental. Each scope change reduced risk, increased implementation confidence, or unlocked a clearer path to validation.
 
@@ -62,17 +62,21 @@ This narrative is intentional, not accidental. Each scope change reduced risk, i
 Modern low-latency services often degrade under memory pressure, irregular access patterns, and multi-socket contention. Typical bottlenecks include:
 
 - Tail-latency spikes from cache misses and allocator fragmentation.
-- Performance loss from non-local NUMA memory access.
+- Performance loss from non-local NUMA memory access (remote access can be 1.2-2x slower than local).
 - Operational complexity in combining cache, compression, and persistence layers.
 - Difficulty validating behavior consistently across different hardware and deployment models.
 
 Furrballs targets these bottlenecks with an architecture that prioritizes locality, predictable behavior, and modular policy design.
 
+### 1.1 The NUMA Gap in Existing Systems
+NUMA-aware allocation exists in general-purpose allocators (TCMalloc, jemalloc) but they don't address cache eviction or page-level data management. Meta's CacheLib adds NUMA sharding (separate cache instances per node) but this is static, coarse-grained partitioning --- not adaptive per-page placement based on accessing thread locality. No published work combines NUMA topology as an input to adaptive cache eviction policy. This is Furrballs' contribution.
+
 ## 2. Goals and Non-Goals
+
 ### Goals
 - Low and stable latency under mixed read/write load.
-- NUMA-aware allocation and access behavior.
-- Modular cache policy layer with pluggable eviction strategies.
+- NUMA-aware allocation and access behavior as the primary thesis contribution.
+- Modular cache policy layer with ARC as the initial eviction strategy.
 - Progressive delivery through phased architecture evolution.
 - Reproducible performance evaluation and transparent tradeoff reporting.
 
@@ -80,141 +84,249 @@ Furrballs targets these bottlenecks with an architecture that prioritizes locali
 - General-purpose database replacement.
 - Broad feature parity with large data platforms.
 - Platform-specific tuning for all operating systems at once.
+- Protocol design or client/server architecture (deferred to a later phase).
+- In-page memory management (bump allocator, value reordering --- deferred to Layer 2).
 
 ## 3. Design Principles
 - Locality first: optimize for CPU and memory locality before adding features.
 - Explicit tradeoffs: prefer clear, measurable behavior over opaque heuristics.
 - Incremental validation: every subsystem change should map to benchmark deltas.
 - Modularity: cache policies, memory strategies, and transport should evolve independently.
+- Strip then build: remove scope creep before adding new features. Every feature must serve the NUMA thesis contribution.
 
-## 4. High-Level Architecture
-### Layer boundaries
-- Furrballs Core (library): owns memory management, cache policy mechanics, compression integration, and storage interactions.
-- Furrballs Server (wrapper layer): hosts the active cache runtime, wraps Core functionality, and exposes network-facing operations.
-- Furrballs Client (interface layer): communicates with the Server through protocol-defined requests and does not host cache state.
+## 4. Design Decisions Log
 
-Only the Server hosts and mutates cache state. The Client is intentionally thin and transport-oriented.
+This section records significant design decisions made during development, along with their rationale and any alternatives considered.
 
-### Core components
-- Memory layer: page-oriented allocation and management, evolving toward NUMA-aware placement.
-- Cache layer: policy-driven in-memory caching with extensible eviction behavior.
-- Storage layer: persistent backing integration with compression support.
-- Runtime layer: server process, client protocol/API, and operational instrumentation.
+### 4.1 Per-Page Allocation Instead of Slab Allocation
+**Decision:** Allocate pages individually via the memory manager (or NUMA-aware allocator), not as a contiguous slab.
 
-### Data path (conceptual)
-1. Client request arrives at the Server through the protocol boundary.
-2. Server routes the request through Core cache and locality-aware lookup path.
-3. Miss path loads or reconstructs data from backing store via Core.
-4. Returned data is inserted/promoted by Server-hosted cache policy and memory placement rules.
-5. Telemetry captures latency, locality, and resource counters.
+**Rationale:** Slab allocation forces all pages onto one NUMA node (contiguous memory cannot span nodes). Per-page allocation allows each page to be placed on the NUMA node of the thread that requests it. This is the mechanism that enables NUMA-aware placement. The tradeoff is loss of spatial locality guarantees between pages and slightly higher per-page allocation overhead, but this overhead is paid once per cold miss, not per request.
 
-## 5. NUMA-Aware Direction
-Planned NUMA-awareness work includes:
+**Rejected alternative:** Slab allocation with virtual pointer indirection. This was the original design but introduced complexity (address space reduction, debugging difficulty, NUMA conflicts) without serving the thesis contribution.
 
-- Node-aware allocation policies to reduce remote memory traffic.
-- Affinity-aware worker scheduling where practical.
-- Topology-aware cache partitioning or sharding exploration.
-- Local/remote access ratio instrumentation.
+### 4.2 ARC as the Sole Cache Policy (Initially)
+**Decision:** Implement ARC (Adaptive Replacement Cache) as the only eviction policy. S3FIFO, LRU, and LFU are deferred.
 
-Key hypothesis: locality-aware placement and scheduling can improve p99 latency and reduce jitter at equivalent throughput.
+**Rationale:** ARC adaptively balances between recency and frequency, which is sufficient to demonstrate the NUMA placement effect. Implementing multiple policies before having benchmark data would be premature optimization. Additional policies can be added as future work or comparison baselines.
 
-## 6. Server/Client Expansion Plan
-### Server responsibilities
-- Request handling, cache management, and persistence coordination through Core.
-- Concurrency control and worker model.
-- Metrics and health endpoints.
+### 4.3 Write-Back with Dirty Tracking
+**Decision:** Use write-back caching. `Set()` writes to the in-memory page and marks it dirty. Dirty pages are flushed to RocksDB only on eviction or explicit shutdown.
 
-### Client responsibilities
-- Connection management and request batching options.
-- Retry/backoff strategy (policy-defined).
-- Latency and error instrumentation hooks.
-- No in-process cache ownership.
+**Rationale:** Write-back minimizes disk I/O for hot data. The alternative (write-through) would make every `Set()` pay RocksDB latency, making it impossible to isolate the NUMA placement variable in benchmarks. The `IsVolatile` flag in `FurrConfig` allows skipping persistence entirely for game-engine use cases.
 
-### Protocol concerns
-- Message framing and versioning.
-- Backpressure behavior.
-- Fault handling and timeout semantics.
+### 4.4 RocksDB Block Cache Disabled
+**Decision:** Set RocksDB's block cache to size 0. Furrballs owns all caching responsibility.
 
-## 7. Evaluation Methodology
-### 7.1 Metrics
+**Rationale:** Having two cache layers (Furrballs' ARC + RocksDB's internal LRU) means caching cached data, adding unnecessary lookup overhead and making it impossible to attribute latency improvements to the NUMA placement. By disabling RocksDB's cache, the only cache behavior is Furrballs' own.
+
+### 4.5 Key-Based API (In Progress)
+**Decision:** The public API uses string keys: `Set(string key, void* data, size_t size)` and `Get(string key)`. The old virtual-address-based API is retained internally but deprecated for user-facing code.
+
+**Rationale:** Virtual addresses are an implementation detail. Users think in terms of keys. The key-to-page mapping is handled internally by the `KeyStore` (an in-memory `unordered_map<string, KeyMeta>`) and persisted to RocksDB for recovery.
+
+### 4.6 Multi-Value Pages with Bump Allocator (Planned)
+**Decision:** A single page can hold multiple key-value pairs. Values are packed sequentially via a bump allocator (page header tracks `used_bytes`, new values append from the start). `KeyMeta` stores `{PageIndex, DataSize, DataOffset}` for each key.
+
+**Rationale:** One key per page wastes memory (a 64-byte value in a 4KB page = 98.4% waste). Multi-value pages amortize allocation overhead and exploit spatial locality. The bump allocator is chosen for simplicity --- write-once/read-many workloads don't need in-page free lists or compaction initially.
+
+**Deferred to Layer 2:** Value reordering within pages (frequency-based clustering), cold value migration between pages, and in-page compaction.
+
+### 4.7 Internal Thread Pool (NodeJob)
+**Decision:** Furrballs spawns and manages its own worker threads internally via the `NodeJob` class. One worker per NUMA node, pinned via `Numatic::PinCurrentThreadToNode()` at thread start. Users do not interact with `NodeJob` directly.
+
+**Rationale:** External `numactl` pinning is a benchmark tool, not a deployment strategy. The library should handle NUMA pinning internally so users get correct behavior by default. The `NodeJob` class is non-copyable, non-movable, and its lifetime is bounded by `Bootstrap()` to `Shutdown()`.
+
+### 4.8 Numatic: Platform Abstraction Layer
+**Decision:** NUMA operations are abstracted behind `Numatic`, a separate, stateless, functional-style library within the project. Furrballs calls `Numatic::PinCurrentThreadToNode()`, `Numatic::AllocateOnNode()`, etc. --- no `#ifdef _WIN32` or platform-specific code in Furrballs itself.
+
+**Rationale:** Platform-specific code (libnuma on Linux, Windows NUMA APIs) is isolated into `NumaticUnix.cpp` and `NumaticWin.cpp`, selected by CMake. This keeps Furrballs' code platform-agnostic. Numatic uses free functions (no classes) because NUMA operations are stateless system-level queries with no object to encapsulate. A future extraction to a standalone library is planned.
+
+### 4.9 Logical vs Physical Page Size
+**Decision:** `FurrConfig::PageSize` is purely logical --- it defines how data is divided and how keys map to pages. The physical allocation size can differ: when `NumaConfig::AllocateUsingNodePageSize = true`, the allocator uses `numa_pagesize()` (2MB with huge pages) instead of `FurrConfig::PageSize`. Multiple logical pages fit inside one physical allocation.
+
+**Rationale:** Separating logical and physical page size means `PageSize` controls data organization while NUMA controls memory granularity. This gives the best of both: fine-grained key mapping and large, TLB-efficient physical allocations on servers.
+
+### 4.10 NumaConfig as Stack-Allocated Pointer (Vulkan-Style)
+**Decision:** `FurrConfig` holds `NumaConfig* numaConfig`, where the user passes a pointer to their stack-allocated `NumaConfig`. Furrballs copies the values it needs during `CreateBall()` and never stores the pointer.
+
+**Rationale:** `NumaConfig` is read-once at creation time. No heap allocation needed, no lifetime concerns. The pattern mirrors Vulkan's `VkInstanceCreateInfo` approach.
+
+### 4.11 Shared Mutex for Read/Write Concurrency
+**Decision:** `FurrBall` uses `std::shared_mutex`. `Get()` takes a shared lock (multiple readers). `Set()` and miss-path allocation take exclusive locks.
+
+**Rationale:** In the current blocking design, shared reads allow concurrent cache lookups without contention. The lock is per-FurrBall instance, not per-page, to avoid the overhead of thousands of mutexes at 4KB granularity.
+
+### 4.12 Error Codes Over Exceptions
+**Decision:** The new key-based API returns `Error` enum values (e.g., `NO_ERR`, `INVALID_ARG`, `OUT_OF_MEM`). No exceptions in the public API.
+
+**Rationale:** Consistent with game-engine and systems programming conventions. The `Error` enum is organized by category (general, initialization, memory, cache, storage, compression, threading, I/O) for easy filtering.
+
+## 5. High-Level Architecture
+
+### 5.1 Layered Cache Model
+Furrballs implements a tiered cache hierarchy:
+
+- **L1 (Hot, in-memory):** ARC-managed pages with NUMA-aware allocation. Values are packed into pages via bump allocator. This is the primary thesis contribution.
+- **L2 (Cold, persisted):** RocksDB backing store. Fast enough to not dominate benchmark overhead, provides durability and the cold-read path.
+
+L1 is the NUMA-aware layer. L2 is the persistence layer. The benchmark comparison isolates the NUMA variable: same ARC, same RocksDB, same workload --- only the allocation policy differs.
+
+### 5.2 Future Layers (Documented, Not Implemented)
+- **L1 value demotion:** Instead of evicting an entire page, demote low-priority values within the page first. Requires value-level frequency tracking in `KeyMeta`.
+- **L2 page eviction:** Flush entire pages to RocksDB when the page is mostly cold.
+- **L3 adaptive memory pooling (AMP):** Dynamically grow/shrink the page pool based on eviction pressure. Track eviction rate, expand pool when pressure is high, contract when idle.
+
+Each layer is independently measurable, which is required for the thesis structure.
+
+### 5.3 Core Components
+- **Memory layer:** Per-page allocation via `MemoryManager` with thread-local tracking and NUMA-aware placement through Numatic.
+- **Cache layer:** ARC policy with write-back dirty tracking. Key-to-page mapping via `KeyStore`.
+- **Storage layer:** RocksDB with block cache disabled. Furrballs owns all caching.
+- **Threading layer:** `NodeJob` per NUMA node with condition-variable-based job dispatch. Workers pinned at startup.
+
+### 5.4 Data Path (Key-Based)
+1. User calls `Set(key, data, size)` or `Get(key)`.
+2. `KeyStore` maps the key to `KeyMeta {PageIndex, DataSize, DataOffset}`.
+3. If page is in ARC cache (hit), return data at offset. NUMA-local access.
+4. If page is not in cache (miss), allocate a new page on the current thread's NUMA node, load from RocksDB if persisted data exists, insert into ARC.
+5. On eviction, dirty pages are flushed to RocksDB. Key metadata is persisted.
+
+## 6. NUMA-Aware Design
+
+### 6.1 Approach
+The core hypothesis: per-page NUMA-aware placement, where each page is allocated on the NUMA node of the thread that first accesses it, produces measurable p99 improvement over naive allocation.
+
+### 6.2 Mechanism
+- `Bootstrap()` detects topology via `Numatic::GetNodeCount()`.
+- One `NodeJob` worker is spawned per NUMA node, pinned to that node.
+- `AllocatePage()` uses `Numatic::AllocateOnNode()` with the current thread's node.
+- `AllocateMemoryNUMA()` allocates on the calling thread's node via `numa_alloc_onnode()`.
+- All subsequent accesses to that page from the same node are local (distance 10). Cross-node accesses incur distance 20 (2x latency in QEMU; 1.2-1.5x on real hardware).
+
+### 6.3 Benchmark Isolation
+The NUMA variable is isolated by comparing:
+- **NUMA-aware**: Pages allocated on the owning node via `AllocateMemoryNUMA()`.
+- **Naive baseline**: Pages allocated via regular `AllocateMemory()` (no NUMA preference, OS decides placement).
+
+Same ARC, same RocksDB, same workload, same thread count. Only the allocation policy differs.
+
+### 6.4 NUMA Simulation
+Development uses QEMU with a 2-node topology:
+```
+Node 0: CPUs 0-2, 2GB RAM
+Node 1: CPUs 3-5, 2GB RAM
+Node distances: local=10, remote=20
+```
+This provides correct NUMA semantics for code-path validation. Real hardware benchmarks are needed for publishable performance numbers.
+
+### 6.5 Related Work Comparison
+| System | NUMA Approach | Difference from Furrballs |
+|---|---|---|
+| TCMalloc | NUMA-aware allocation | Allocator only; no cache eviction or page management |
+| jemalloc | NUMA-aware arenas | Allocator only; no cache policy |
+| CacheLib (Meta) | Static sharding per node | Coarse-grained; entire cache instance per node, not adaptive per-page |
+| Redis | No NUMA awareness | Baseline comparison point |
+| Furrballs | Per-page placement + ARC | Fine-grained, adaptive, page-level NUMA locality as policy input |
+
+## 7. Server/Client Expansion Plan (Deferred)
+Protocol, server, and client layers are deferred to a later phase. The current focus is proving the NUMA thesis with the library core. When implemented:
+- Server wraps Core and hosts cache state.
+- Client communicates via a minimal binary protocol (fixed-size opcodes: GET, SET, DELETE, etc.).
+- Protocol is a thin transport layer, not a research contribution.
+
+## 8. Evaluation Methodology
+
+### 8.1 Metrics
 Primary metrics:
 - Read latency: p50, p95, p99.
 - Write latency: p50, p95, p99.
 - Throughput: operations per second.
 - Cache hit ratio.
-- Compression ratio and CPU overhead.
 - Memory overhead and fragmentation behavior.
-- NUMA locality indicators (local vs remote memory access where measurable).
+- NUMA locality indicators (local vs remote memory access ratio).
 
-### 7.2 Workload Profiles
+### 8.2 Workload Profiles
 - Read-heavy steady-state.
 - Write-heavy burst.
 - Mixed workload with skewed key popularity.
-- Large-object stress path.
-- Multi-client concurrency scaling.
+- Multi-threaded access with threads pinned to different NUMA nodes.
 
-### 7.3 Benchmark Matrix
-- Single-socket vs multi-socket host.
-- NUMA policy variations.
-- Cache policy variations.
-- Compression on/off.
+### 8.3 Benchmark Matrix
+- NUMA-aware allocation vs naive allocation (primary comparison).
+- Single-node vs multi-node access patterns.
+- Cache capacity pressure (varying ARC capacity).
 - Thread count scaling sweep.
 
-### 7.4 Reproducibility Requirements
+### 8.4 Reproducibility Requirements
 - Fixed build configuration per benchmark run.
 - Logged hardware and kernel/runtime metadata.
 - Versioned benchmark scripts and datasets.
 - Raw results retained with timestamp and commit identifier.
 
-## 8. Claims and Evidence Policy
+## 9. Claims and Evidence Policy
 Any performance claim in this white paper should include:
 - The exact workload profile.
 - The hardware/software test environment.
 - Comparison baseline and configuration parity.
 - Statistical summary from repeated runs.
 
-## 9. Current Status Snapshot
-Current implementation includes foundational cache/storage abstractions and early integration points. Development is currently centered on strengthening Furrballs Core for game-engine-relevant workloads as Phase 1. Several advanced components are still under active development, especially around full NUMA strategy, server/client protocol maturity, and end-to-end benchmark coverage.
+## 10. Current Status
+Core library compiles and runs with:
+- ARC cache policy with eviction callback and dirty page flushing.
+- Per-page allocation with NUMA-aware path.
+- RocksDB persistence with block cache disabled.
+- Numatic platform abstraction layer (Linux implementation complete).
+- NodeJob per-node worker threading (in progress).
+- Key-based Set/Get API (stub, awaiting bump allocator).
 
-This white paper is intentionally structured as a living technical document and should be updated alongside implementation milestones.
+The project is on the `numa-focus` branch. Development and testing use a QEMU NUMA VM (2 nodes, 6 vCPUs, 4GB RAM).
 
-## 10. Risks and Open Questions
-- Which NUMA strategies provide best p99 gains for your target workload mix?
+## 11. Risks and Open Questions
+- Which NUMA strategies provide best p99 gains for the target workload mix?
 - What is the throughput vs tail-latency tradeoff at high concurrency?
+- Can QEMU NUMA simulation produce meaningful latency differentials, or is real hardware required for publishable results?
 - How should cache policy adapt under rapidly changing access distributions?
-- What observability granularity is required without adding excessive overhead?
+- Is per-page NUMA placement sufficient, or is request routing (forwarding operations to the owning node's worker) necessary for additional gains?
 
-## 11. Milestone-Driven Roadmap
-### Phase 1: Furrballs Core for game engines
-- Deliver a stable, documented cache/compression/storage core library.
-- Validate low-latency behavior on representative game-engine-style access patterns.
-- Build correctness and regression coverage around core APIs.
+## 12. Milestone-Driven Roadmap
 
-### Phase 2: Feature-complete library evolution
-- Expand policy surface, observability hooks, and integration ergonomics.
-- Improve memory strategy and prepare NUMA-related interfaces and metrics.
-- Broaden benchmark coverage and improve reproducibility on VPS and local systems.
+### Phase 1: NUMA-Aware Core (Current)
+- Per-page NUMA-aware allocation and caching.
+- Key-based Set/Get with bump allocator.
+- Worker thread spawning and pinning per NUMA node.
+- Benchmark harness comparing NUMA-aware vs naive allocation.
+- Target: reproducible p99 numbers on QEMU NUMA VM.
 
-### Phase 3: Server + Client + Protocol
-- Introduce Furrballs Server that wraps Core and hosts cache state.
-- Introduce Furrballs Client that interfaces with Server only.
-- Define protocol framing, versioning, backpressure, and error semantics.
-- Validate throughput/latency behavior in distributed and multi-client scenarios.
+### Phase 2: Per-Page Optimization
+- Value reordering within pages (frequency-based clustering).
+- Cold value migration between pages.
+- In-page compaction.
+- Comparison: ordered vs unordered pages, same workload.
 
-### Phase 4: NUMA-focused optimization and publication
-- Implement and compare NUMA-aware allocation/scheduling strategies.
-- Publish controlled benchmark comparisons across topology and policy variants.
-- Finalize white paper v1.0 with reproducible evidence.
+### Phase 3: Adaptive Memory Pooling (AMP)
+- Dynamic page pool growth/contraction under eviction pressure.
+- Pages as cache tiers (L1 hot, L2 warm, evicted = RocksDB).
+- Comparison: static pool vs AMP, same workload.
 
-## 12. Conclusion
-Furrballs aims to become a practical, locality-aware platform for high-performance workloads where predictable latency matters more than broad feature breadth. The project now follows an explicit path: ship a strong Core first, expand library capabilities second, then build Server/Client protocol layers that wrap and expose Core safely. This phased strategy preserves delivery velocity while keeping the long-term NUMA-aware objective central.
+### Phase 4: Server + Client + Protocol
+- Furrballs Server wrapping Core.
+- Furrballs Client with minimal binary protocol.
+- Cross-process NUMA benchmarks.
+
+### Phase 5: Publication
+- Formalize benchmark results.
+- Write thesis/paper with reproducible evidence.
+
+## 13. Conclusion
+Furrballs aims to demonstrate that explicit NUMA-aware page placement in a cache system produces measurable p99 improvement over naive allocation. The contribution is not a new allocator (TCMalloc, jemalloc exist) or a new cache policy (ARC is well-studied) --- it is the combination of NUMA topology as a first-class input to cache placement and eviction decisions at the page level. No published work addresses this specific intersection. The tiered architecture (per-value, per-page, pool-level) provides multiple independently measurable optimization layers, supporting a structured thesis narrative.
 
 ## Appendix A: Results Table Template
-| Scenario | Threads | Compression | NUMA Policy | Read p99 (ms) | Write p99 (ms) | Throughput (ops/s) | Hit Ratio | Notes |
-|---|---:|---|---|---:|---:|---:|---:|---|
-| Baseline |  |  |  |  |  |  |  |  |
-| Variant A |  |  |  |  |  |  |  |  |
-| Variant B |  |  |  |  |  |  |  |  |
+| Scenario | Threads | NUMA Policy | Read p99 (us) | Write p99 (us) | Throughput (ops/s) | Hit Ratio | Local/Remote Ratio | Notes |
+|---|---:|---|---:|---:|---:|---:|---:|---|
+| Baseline (naive alloc) |  | None |  |  |  |  |  |  |
+| NUMA-aware |  | Per-page |  |  |  |  |  |  |
+| NUMA-aware + huge pages |  | Per-page + node page size |  |  |  |  |  |  |
 
 ## Appendix B: Environment Template
 - CPU model and socket count:
@@ -225,3 +337,29 @@ Furrballs aims to become a practical, locality-aware platform for high-performan
 - Build type:
 - Dataset profile:
 - Commit identifier:
+
+## Appendix C: Repository Structure
+```
+Furrballs/
+  Furrballs/          # Core library
+    include/
+      Furrballs.h     # Public API, ARC policy, configs
+      Page.h          # Page data structure
+      Logger.h        # Thread-safe logging
+      Error.h         # Error code enum
+      NodeJob.h       # Per-node worker threading
+      IFactory.h      # Factory pattern utility
+      MemoryManager.h # Allocation with thread-local tracking
+    src/
+      Furrballs.cpp   # Core implementation
+      Page.cpp        # (Future: bump allocator)
+      Logger.cpp      # Platform-safe time formatting
+      NodeJob.cpp     # Worker loop and job dispatch
+  numatic/            # NUMA platform abstraction
+    include/Numatic.h
+    src/NumaticUnix.cpp
+    src/NumaticWin.cpp
+  Sandbox/            # Test executable
+  docs/               # White paper and documentation
+  vm/                 # QEMU NUMA simulation scripts
+```

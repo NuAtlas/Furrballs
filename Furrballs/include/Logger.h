@@ -12,6 +12,8 @@
 #include <memory>
 #include <mutex>
 #include <atomic>
+#include <thread>
+#include <sstream>
 
 namespace NuAtlas {
     enum class LogLevel {
@@ -56,8 +58,10 @@ namespace NuAtlas {
                 return;
             }
             std::lock_guard<std::mutex> lock(logMutex);
-            std::string logMessage = getCurrentTime() + " [" + logLevelToString(level) + "] " + message;
-            (*logOutput) << logMessage << std::endl;
+            std::ostringstream logMessage;
+            logMessage << getCurrentTime() << " [" << logLevelToString(level) << "] "
+                       << "(ThreadID: " << std::this_thread::get_id() << ") " << message;
+            (*logOutput) << logMessage.str() << std::endl;
         }
 
         void debug(const std::string& message) { log(LogLevel::Debug, message); }
