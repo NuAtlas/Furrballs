@@ -3,6 +3,8 @@
 #include <numaif.h>
 #include <sched.h>
 #include <unistd.h>
+#include <sys/mman.h>
+#include <vector>
 
 namespace NuAtlas::Numatic {
 
@@ -35,6 +37,10 @@ namespace NuAtlas::Numatic {
         return numa_alloc_onnode(size, nodeId);
     }
 
+    void* AllocateLocal(size_t size) noexcept {
+        return numa_alloc_local(size);
+    }
+
     void FreeNUMA(void* ptr, size_t size) noexcept {
         numa_free(ptr, size);
     }
@@ -48,6 +54,46 @@ namespace NuAtlas::Numatic {
         }
         numa_bitmask_free(mask);
         return count;
+    }
+
+    int GetDistance(int nodeA, int nodeB) noexcept {
+        if (!IsNUMAAvailable()) return 0;
+        return numa_distance(nodeA, nodeB);
+    }
+
+    bool MovePages(void** pages, int count, int targetNode, int* status) noexcept {
+        if (!pages || count <= 0 || !status) return false;
+        std::vector<int> nodes(count, targetNode);
+        long ret = numa_move_pages(0, count, pages, nodes.data(), status, 0);
+        return ret == 0;
+    }
+
+    bool MigratePages(int pid, const unsigned long* oldNodeMask, const unsigned long* newNodeMask) noexcept {
+        if (!oldNodeMask || !newNodeMask) return false;
+        int maxnode = GetNodeCount();
+        bitmask* from = numa_bitmask_alloc(maxnode);
+        bitmask* to = numa_bitmask_alloc(maxnode);
+        for (int i = 0; i < maxnode; i++) {
+            if (oldNodeMask[i / (sizeof(unsigned long) * 8)] & (1UL << (i % (sizeof(unsigned long) * 8)))) {
+                numa_bitmask_setbit(from, i);
+            }
+            if (newNodeMask[i / (sizeof(unsigned long) * 8)] & (1UL << (i % (sizeof(unsigned long) * 8)))) {
+                numa_bitmask_setbit(to, i);
+            }
+        }
+        long ret = numa_migrate_pages(pid, from, to);
+        numa_bitmask_free(from);
+        numa_bitmask_free(to);
+        return ret == 0;
+    }
+
+    int GetPageNode(void* page) noexcept {
+        if (!page) return -1;
+        int status = -1;
+        void* addr = page;
+        long ret = numa_move_pages(0, 1, &addr, nullptr, &status, 0);
+        if (ret != 0) return -1;
+        return status;
     }
 
 }

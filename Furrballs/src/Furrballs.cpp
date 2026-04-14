@@ -9,6 +9,7 @@
 #undef max
 #undef min
 #include <cstring>
+#include <chrono>
 #include <rocksdb/db.h>
 #include <rocksdb/advanced_options.h>
 #include <rocksdb/options.h>
@@ -29,14 +30,24 @@ thread_local std::unordered_set<void*> MemoryManager::ThreadBuffers;
 FurrBall::GlobalNumaState FurrBall::globalNumaState;
 
 //Stubs until i start using it.
-// struct PrivateNumaState{
-//     //Add The Key-offset-map per nodes, to cleanly divide keys between nodes.
-//     //
-// };
+
+
+struct PerNodeDetails{
+    std::shared_mutex rwMutex;
+    Numatic::NumaLocalMemoryResource nodeMR;
+    std::pmr::vector<Page> NodePages;
+    void* PhysicalPageInNode = nullptr;
+
+    PerNodeDetails() : NodePages(&nodeMR) {}
+};
+
+struct PrivateNumaState{
+    PerNodeDetails** NodeDetails;
+};
 
 struct FurrBall::ImplDetail {
     rocksdb::DB* db = nullptr;
-    // PrivateNumaState* privateNumaState = nullptr; //< extra state for numa-specific details. I named it private since i there could potentially be a global state.
+    PrivateNumaState* privateNumaState = nullptr; //< extra state for numa-specific details. I named it private since i there could potentially be a global state.
 };
 
 NuAtlas::FurrBall::FurrBall(const FurrConfig& config, size_t numPages) noexcept
@@ -52,9 +63,7 @@ NuAtlas::FurrBall::FurrBall(const FurrConfig& config, size_t numPages) noexcept
 Page* NuAtlas::FurrBall::AllocatePage(size_t pageIndex) noexcept {
     void* memory = nullptr;
     if (UseNUMA) {
-#ifndef NO_NUMA
-        memory = MemoryManager::AllocateMemoryNUMA(PageSize);
-#endif
+        memory = Numatic::AllocateOnNode(PageSize, Numatic::GetCurrentNode());
     }
     if (!memory) {
         memory = MemoryManager::AllocateMemory(PageSize);
@@ -220,6 +229,7 @@ FurrBall *FurrBall::CreateBall(const std::string &DBpath, const FurrConfig &conf
 {
     rocksdb::Options options;
     rocksdb::DB* db = nullptr;
+    PrivateNumaState* pNumaState = nullptr;
 
     rocksdb::BlockBasedTableOptions tableOptions;
     tableOptions.block_cache = rocksdb::NewLRUCache(0);
@@ -232,21 +242,68 @@ FurrBall *FurrBall::CreateBall(const std::string &DBpath, const FurrConfig &conf
         Logger::getInstance().error("Failed to open RocksDB at " + DBpath + ": " + status.ToString());
         return nullptr;
     }
+
     size_t numPages = config.InitialPageCount;
     size_t pPageSize;
-    
+    size_t totalPhysicalPageSize = numPages * config.PageSize; //Default. Allocates a "slab" divided into two logical pages.
+
     if(config.EnableNUMA == true && globalNumaState.NumaNodeCount){
+        //Allocate Per-ball Numa State.
+        pNumaState = new PrivateNumaState();
+        // pNumaState->NodeDetails.reserve(globalNumaState.NumaNodeCount);
+        pNumaState->NodeDetails = (PerNodeDetails**)malloc(sizeof(PerNodeDetails*) * globalNumaState.NumaNodeCount);
+
+        //Recalculate Physical Page and page count only if we are using NodePageSize as the Physical Size.
         if(config.numaConfig->AllocateUsingNodePageSize){
             pPageSize = Numatic::GetNodePageSize();
             Logger::getInstance().info(std::string("NUMA node Page size: ") + std::to_string(pPageSize));
 
             //Calculate Number of Logical subdivions of a NUMA page.
             numPages = pPageSize / config.PageSize + (pPageSize % config.PageSize ? 1 : 0); //If the Page is not an exact fit, we'll allocated one more page.
-            size_t totalPhysicalPageSize = numPages * config.PageSize;
-            Logger::getInstance().info(std::string("Furrballs will allocate a ") + std::to_string(totalPhysicalPageSize) + " sized Physical Page." );
+            totalPhysicalPageSize = numPages * config.PageSize;
         }
+        
+        Logger::getInstance().info(std::string("Furrballs will allocate a ") + std::to_string(totalPhysicalPageSize) + " bytes sized Physical Page." );
+        
+        StreamLine::WaitGroup<std::mutex> wg;
+        wg.Add(globalNumaState.NumaNodeCount);
+        
+        for(int i = 0; i < globalNumaState.NumaNodeCount; i++){
+
+            {
+                globalNumaState.Workers[i].Submit([&wg, pNumaState, totalPhysicalPageSize, numPages, &config, i]() {
+                    void* ptr = Numatic::AllocateLocal(totalPhysicalPageSize);
+                    if(!ptr){
+                        Logger::getInstance().info("NUMA Node page allocator failed.");
+                    }
+                    //Allocate Per-node state on the Node itself. This may be premature optimization.
+                    void* auxD = (void*)Numatic::AllocateLocal(sizeof(PerNodeDetails));
+                    PerNodeDetails* details = new(auxD)PerNodeDetails();
+
+                    details->PhysicalPageInNode = ptr;
+                    details->NodePages.reserve(numPages);
+                    
+                    //Carve Page
+                    for(int pageC = 0; pageC < numPages; pageC++){
+                        details->NodePages.push_back(Page(static_cast<char*>(ptr) + (config.PageSize * pageC), config.PageSize, pageC));
+                    }
+                    
+                    pNumaState->NodeDetails[i] = details;
+                    
+                    wg.Done();
+                    Logger::getInstance().info("NUMA Node page allocator called WaitGroup::Done().");
+                });
+            }
+        }
+        if(!wg.WaitFor(std::chrono::seconds(8))){
+            //Wait for 8 seconds. Overkill but enough time for any worker to clear up.
+            //This worth throwing, but i don't know.
+            Logger::getInstance().critical("WaitGroup timed out. At Phase one, we'll simply fail and terminate");
+            std::exit(-1); //All-or-nothing, but needs to be improved later on.
+        }
+
     }else{
-        size_t numPages = config.InitialPageCount;
+        numPages = config.InitialPageCount;
         size_t availMem = MemoryManager::GetAvailableMemory();
         if (availMem < config.PageSize * numPages) {
             while (numPages > 0 && availMem < config.PageSize * numPages) {
@@ -268,6 +325,7 @@ FurrBall *FurrBall::CreateBall(const std::string &DBpath, const FurrConfig &conf
     }
 
     fb->DataMembers->db = db;
+    fb->DataMembers->privateNumaState = pNumaState;
     fb->cache.SetEvictionCallback([fb](const size_t& k, Page*& v)->void { fb->OnEvict(k, v); });
 
     OpenBalls.push_back(fb);
@@ -287,11 +345,31 @@ NuAtlas::FurrBall::~FurrBall() noexcept {
         if (!status.ok()) {
             Logger::getInstance().error("Failed to close RocksDB: " + status.ToString());
         }
+
+        if (DataMembers->privateNumaState) {
+            PrivateNumaState* pns = DataMembers->privateNumaState;
+            if (pns->NodeDetails) {
+                for (int i = 0; i < globalNumaState.NumaNodeCount; i++) {
+                    PerNodeDetails* details = pns->NodeDetails[i];
+                    if (details) {
+                        details->~PerNodeDetails();
+                        Numatic::FreeNUMA(details, sizeof(PerNodeDetails));
+                    }
+                }
+                free(pns->NodeDetails);
+            }
+            delete pns;
+        }
+
         delete DataMembers;
     }
 
     for (void* mem : AllocatedPages) {
-        MemoryManager::FreeMemory(mem);
+        if (UseNUMA) {
+            Numatic::FreeNUMA(mem, PageSize);
+        } else {
+            MemoryManager::FreeMemory(mem);
+        }
     }
 
     OpenBalls.remove(this);

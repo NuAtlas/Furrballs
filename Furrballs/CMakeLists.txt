@@ -13,6 +13,11 @@ set(HEADERS
     include/Error.h
     include/Page.h
     include/NodeJob.h
+#STREAMLINE SPECIFIC HEADERS.
+    include/Concept.h
+    include/Barrier.h
+    include/Latch.h
+    include/WaitGroup.h
 )
 
 add_library(Furrballs STATIC ${SOURCES} ${HEADERS})

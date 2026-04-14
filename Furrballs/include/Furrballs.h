@@ -13,6 +13,7 @@
 #include "Logger.h"
 #include "NodeJob.h"
 #include "Numatic.h"
+#include "WaitGroup.h"
 #include <memory>
 #include <string>
 #include <thread>
@@ -176,6 +177,24 @@ namespace NuAtlas {
             }
         }
     };
+
+    template<bool use_atomic>
+    struct RoundRobin{
+    private:
+        int n;
+        std::conditional_t<use_atomic, std::atomic_uint, unsigned int> counter = 0;
+    public:
+        RoundRobin(int _n) : n(_n) {};
+        ~RoundRobin() = default;
+        int GetAndInc(int step = 1){
+            if constexpr (use_atomic){
+                return counter.fetch_add(step, std::memory_order_relaxed) % n;
+            }else{
+
+                return counter++ % n;
+            }
+        }
+    };
     //All default values are arbitrary for now.
 
     struct NumaConfig{
@@ -208,6 +227,7 @@ namespace NuAtlas {
         struct ImplDetail;
         struct KeyMeta{
             size_t PageIndex, DataSize, DataOffset;
+            int NodeID;
         };
         ImplDetail* DataMembers;
 

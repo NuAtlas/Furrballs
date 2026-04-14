@@ -1,6 +1,7 @@
 /*****************************************************************//**
  * \file   MemoryManager.h
- * \brief Memory allocation and management for Furrballs.
+ * \brief General-purpose memory allocation and management for Furrballs.
+ *        NUMA-aware allocation is handled by Numatic.
  *
  * \author The Sphynx
  * \date   July 2024
@@ -11,13 +12,7 @@
 #include <thread>
 #include <atomic>
 #include <unordered_set>
-#include <type_traits>
-#include <Logger.h>
 #include <mutex>
-#include <list>
-#include <optional>
-#include <cassert>
-#include <iostream>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -29,61 +24,27 @@
 #define DEBUG
 #endif
 
-#ifndef NO_NUMA
-#ifdef __linux__
-#include <numa.h>
-#include <numaif.h>
-#include <sched.h>
-#endif
-#endif
+#include "Logger.h"
 
- //Furrball, compact and filled with spit !
 namespace NuAtlas {
+
+    template<typename T>
+    consteval size_t padded_size() {
+        return (sizeof(T) + alignof(T) - 1) & ~(alignof(T) - 1);
+    }
+
+    constexpr size_t padded_size_to(size_t size, size_t alignment) {
+        return (size + alignment - 1) & ~(alignment - 1);
+    }
+
     class MemoryManager {
     private:
         inline static std::mutex FreeingMutex;
         inline static std::mutex ProtectMutex;
-
         static thread_local std::unordered_set<void*> ThreadBuffers;
-#ifndef NO_NUMA
-        static int GetCurrentNumaNode() {
-#ifdef _WIN32
-            ULONG highestNodeNumber;
-            GetNumaHighestNodeNumber(&highestNodeNumber);
-            return GetCurrentProcessorNumber() % (highestNodeNumber + 1);
-#elif defined(__linux__)
-            return numa_node_of_cpu(sched_getcpu());
-#else
-            return 0;
-#endif
-        }
-#endif
 
     public:
-#ifndef NO_NUMA
-        static void* AllocateMemoryNUMA(size_t totalSize) {
-#ifdef _WIN32
-            int node = GetCurrentNumaNode();
-            void* buffer = VirtualAllocExNuma(GetCurrentProcess(), nullptr, totalSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE, node);
-            if (!buffer) {
-                return nullptr;
-            }
-#elif defined(__linux__)
-            int node = GetCurrentNumaNode();
-            void* buffer = numa_alloc_onnode(totalSize, node);
-            if (!buffer) {
-                return nullptr;
-            }
-#else
-            void* buffer = AllocateMemory(totalSize);
-#endif
-#ifdef DEBUG
-            Logger::getInstance().info("Thread " + std::to_string(std::hash<std::thread::id>{}(std::this_thread::get_id())) + " Allocated (NUMA) " + std::to_string(totalSize));
-#endif
-            return buffer;
-        }
-#endif
-        static void* AllocateMemory(size_t totalSize) {
+        [[nodiscard]] static void* AllocateMemory(size_t totalSize) {
 #ifdef _WIN32
             void* buffer = VirtualAlloc(nullptr, totalSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
             if (!buffer) {
@@ -102,7 +63,8 @@ namespace NuAtlas {
             ThreadBuffers.insert(buffer);
             return buffer;
         }
-        static bool ProtectMemory(void* buffer, const size_t& size) {
+
+        [[nodiscard]] static bool ProtectMemory(void* buffer, const size_t& size) {
             std::lock_guard<std::mutex> lock(ProtectMutex);
 #ifdef _WIN32
             DWORD oldProtect;
@@ -118,6 +80,7 @@ namespace NuAtlas {
 #endif
             return true;
         }
+
         static void FreeMemory(void* buffer) {
             bool isOwner = IsThreadLocal(buffer);
             if (!isOwner) {
@@ -130,6 +93,7 @@ namespace NuAtlas {
 #endif
             ThreadBuffers.erase(buffer);
         }
+
         static size_t GetAvailableMemory() {
 #ifdef _WIN32
             MEMORYSTATUSEX status;
@@ -142,6 +106,7 @@ namespace NuAtlas {
             return pages * page_size;
 #endif
         }
+
         static size_t GetLargestContiguousBlock() {
             size_t step = 1024 * 1024;
             size_t maxBlockSize = 0;
@@ -160,24 +125,9 @@ namespace NuAtlas {
 
             return maxBlockSize;
         }
+
         static inline bool IsThreadLocal(void* const& buffer) noexcept {
             return ThreadBuffers.find(buffer) != ThreadBuffers.cend();
-        }
-
-        static bool IsNUMASystem() {
-#ifdef NO_NUMA
-            return false;
-#elif defined(_WIN32)
-            ULONG highestNodeNumber;
-            if (GetNumaHighestNodeNumber(&highestNodeNumber)) {
-                return highestNodeNumber > 0;
-            }
-            return false;
-#elif defined(__linux__)
-            return numa_available() != -1;
-#else
-            return false;
-#endif
         }
     };
 }

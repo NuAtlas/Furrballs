@@ -17,6 +17,7 @@ void NuAtlas::NodeJob::Stop()
     IsRunning.store(false);
     condition.notify_all();
     Worker.join();
+    Logger::getInstance().info("Worker Joined.");
 }
 
 void NuAtlas::NodeJob::Loop()
