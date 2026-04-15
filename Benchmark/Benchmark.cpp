@@ -1,5 +1,6 @@
 #include "Furrballs.h"
 #include "Numatic.h"
+#include "BaselineCache.h"
 #include <iostream>
 #include <vector>
 #include <string>
@@ -610,6 +611,185 @@ int main() {
             delete fb_tl;
         } else {
             std::cout << "Failed to create thread-local routing FurrBall" << std::endl;
+        }
+    }
+
+    // --- BASELINE COMPARISON ---
+    if (numNodes >= 2) {
+        std::cout << std::string(110, '=') << std::endl;
+        std::cout << "BASELINE COMPARISON: Furrballs vs Non-NUMA Cache (" << iterations << " iterations)" << std::endl;
+        std::cout << "Same SeqLock reads, same bump allocator. Difference: per-node allocation + sharding." << std::endl;
+        std::cout << std::string(110, '=') << std::endl;
+
+        BaselineCache baseline(4096, 4096);
+
+        auto benchBaselineST = [&](bool doSet, size_t numOps, size_t valueSize) -> IterationResult {
+            return runIterations(fb, [&](FurrBall*) -> BenchResult {
+                BenchResult r;
+                r.name = doSet ? "Set" : "Get";
+                r.ops = numOps;
+                std::vector<char> value(valueSize, 'X');
+                std::vector<char> outBuf(valueSize + 64);
+                std::vector<ns> latencies(numOps);
+
+                if (!doSet) {
+                    for (size_t i = 0; i < numOps; i++)
+                        baseline.Set("bl_" + std::to_string(i), value.data(), valueSize);
+                }
+
+                for (size_t i = 0; i < numOps; i++) {
+                    std::string key = "bl_" + std::to_string(i);
+                    if (doSet) {
+                        auto t0 = Clock::now();
+                        baseline.Set(key, value.data(), valueSize);
+                        latencies[i] = Clock::now() - t0;
+                    } else {
+                        size_t outSize = 0;
+                        auto t0 = Clock::now();
+                        baseline.Get(key, outBuf.data(), outBuf.size(), outSize);
+                        latencies[i] = Clock::now() - t0;
+                    }
+                }
+
+                std::sort(latencies.begin(), latencies.end());
+                double totalNs = 0;
+                for (auto& l : latencies) totalNs += l.count();
+                r.durationMs = totalNs / 1e6;
+                r.opsPerSec = (r.durationMs > 0) ? (numOps / (r.durationMs / 1000.0)) : 0;
+                r.avgLatencyNs = totalNs / numOps;
+                r.p50Ns = latencies[numOps / 2].count();
+                r.p99Ns = latencies[numOps * 99 / 100].count();
+                r.stddevNs = computeStddev(latencies, r.avgLatencyNs);
+                return r;
+            }, iterations);
+        };
+
+        {
+            auto fSet = runIterations(fb, [&](FurrBall* b){ return benchSingleThread(b, "bl64", 10000, 64, true); }, iterations);
+            auto bSet = benchBaselineST(true, 10000, 64);
+            auto fGet = runIterations(fb, [&](FurrBall* b){ return benchSingleThread(b, "bl64", 10000, 64, false); }, iterations);
+            auto bGet = benchBaselineST(false, 10000, 64);
+
+            std::cout << std::endl;
+            std::cout << "Single-threaded 64B (5 iterations averaged):" << std::endl;
+            std::cout << std::left << std::setw(20) << "Implementation" << " | "
+                      << std::right << std::setw(14) << "Set ops/s" << " | "
+                      << std::setw(10) << "Set p50" << " | "
+                      << std::setw(14) << "Get ops/s" << " | "
+                      << std::setw(10) << "Get p50" << " | "
+                      << std::setw(10) << "Get p99"
+                      << std::endl;
+            std::cout << std::string(110, '-') << std::endl;
+            std::cout << std::left << std::setw(20) << "Furrballs" << " | "
+                      << std::right << std::fixed << std::setprecision(0)
+                      << std::setw(14) << fSet.avgOpsPerSec << " | "
+                      << std::setw(8) << fSet.avgP50 << " ns | "
+                      << std::setw(14) << fGet.avgOpsPerSec << " | "
+                      << std::setw(8) << fGet.avgP50 << " ns | "
+                      << std::setw(8) << fGet.avgP99 << " ns"
+                      << std::endl;
+            std::cout << std::left << std::setw(20) << "Baseline (no NUMA)" << " | "
+                      << std::right << std::fixed << std::setprecision(0)
+                      << std::setw(14) << bSet.avgOpsPerSec << " | "
+                      << std::setw(8) << bSet.avgP50 << " ns | "
+                      << std::setw(14) << bGet.avgOpsPerSec << " | "
+                      << std::setw(8) << bGet.avgP50 << " ns | "
+                      << std::setw(8) << bGet.avgP99 << " ns"
+                      << std::endl;
+
+            double setDelta = (bSet.avgP50 > 0) ? ((bSet.avgP50 - fSet.avgP50) / bSet.avgP50 * 100.0) : 0;
+            double getDelta = (bGet.avgP50 > 0) ? ((bGet.avgP50 - fGet.avgP50) / bGet.avgP50 * 100.0) : 0;
+            std::cout << std::endl;
+            std::cout << "Furrballs Set delta: " << std::fixed << std::setprecision(1) << setDelta << "% vs baseline" << std::endl;
+            std::cout << "Furrballs Get delta: " << std::fixed << std::setprecision(1) << getDelta << "% vs baseline" << std::endl;
+        }
+
+        {
+            std::cout << std::endl;
+            std::cout << "Concurrent throughput (4 threads, 2500 keys/thread, 64B):" << std::endl;
+
+            double blSetOpsSum = 0, blGetOpsSum = 0;
+            double fSetOpsSum = 0, fGetOpsSum = 0;
+
+            for (int i = 0; i < iterations; i++) {
+                auto fSet = benchMultiThread(fb, "Set", 4, numNodes, 2500, 64, true, false);
+                auto fGet = benchMultiThread(fb, "Get", 4, numNodes, 2500, 64, false, false);
+                fSetOpsSum += fSet.opsPerSec;
+                fGetOpsSum += fGet.opsPerSec;
+
+                {
+                    std::vector<ThreadArg> args(4);
+                    std::vector<std::thread> threads(4);
+                    std::vector<std::vector<ns>> setLat(4);
+                    for (int t = 0; t < 4; t++) {
+                        args[t].fb = nullptr;
+                        args[t].startKey = t * 2500;
+                        args[t].endKey = args[t].startKey + 2500;
+                        args[t].valueSize = 64;
+                        args[t].doSet = true;
+                        args[t].latencies = &setLat[t];
+                        args[t].pinNode = t % numNodes;
+                    }
+                    auto t0 = Clock::now();
+                    for (int t = 0; t < 4; t++) {
+                        threads[t] = std::thread([&baseline, &args, t]() {
+                            if (args[t].pinNode >= 0) Numatic::PinCurrentThreadToNode(args[t].pinNode);
+                            std::vector<char> val(64, 'X');
+                            size_t n = args[t].endKey - args[t].startKey;
+                            args[t].latencies->resize(n);
+                            for (size_t i = 0; i < n; i++) {
+                                baseline.Set("bl_" + std::to_string(args[t].startKey + i), val.data(), 64);
+                            }
+                        });
+                    }
+                    for (auto& th : threads) th.join();
+                    auto t1 = Clock::now();
+                    blSetOpsSum += (4 * 2500) / std::chrono::duration<double, std::milli>(t1 - t0).count() * 1000.0;
+                }
+
+                {
+                    auto t0 = Clock::now();
+                    std::vector<std::thread> threads(4);
+                    for (int t = 0; t < 4; t++) {
+                        threads[t] = std::thread([&baseline, t, numNodes]() {
+                            Numatic::PinCurrentThreadToNode(t % numNodes);
+                            std::vector<char> outBuf(128);
+                            for (size_t i = 0; i < 2500; i++) {
+                                size_t outSize = 0;
+                                auto t0 = Clock::now();
+                                baseline.Get("bl_" + std::to_string(t * 2500 + i), outBuf.data(), outBuf.size(), outSize);
+                                volatile auto t1 = Clock::now();
+                                (void)t1;
+                            }
+                        });
+                    }
+                    for (auto& th : threads) th.join();
+                    auto t1 = Clock::now();
+                    blGetOpsSum += (4 * 2500) / std::chrono::duration<double, std::milli>(t1 - t0).count() * 1000.0;
+                }
+            }
+
+            std::cout << std::left << std::setw(20) << "Implementation" << " | "
+                      << std::right << std::setw(14) << "Set ops/s" << " | "
+                      << std::setw(14) << "Get ops/s"
+                      << std::endl;
+            std::cout << std::string(60, '-') << std::endl;
+            std::cout << std::left << std::setw(20) << "Furrballs" << " | "
+                      << std::right << std::fixed << std::setprecision(0)
+                      << std::setw(14) << fSetOpsSum / iterations << " | "
+                      << std::setw(14) << fGetOpsSum / iterations
+                      << std::endl;
+            std::cout << std::left << std::setw(20) << "Baseline (no NUMA)" << " | "
+                      << std::right << std::fixed << std::setprecision(0)
+                      << std::setw(14) << blSetOpsSum / iterations << " | "
+                      << std::setw(14) << blGetOpsSum / iterations
+                      << std::endl;
+
+            double setSpeedup = (blSetOpsSum > 0) ? ((fSetOpsSum / iterations) / (blSetOpsSum / iterations)) : 0;
+            double getSpeedup = (blGetOpsSum > 0) ? ((fGetOpsSum / iterations) / (blGetOpsSum / iterations)) : 0;
+            std::cout << std::endl;
+            std::cout << "Furrballs concurrent Set speedup: " << std::fixed << std::setprecision(2) << setSpeedup << "x vs baseline" << std::endl;
+            std::cout << "Furrballs concurrent Get speedup: " << std::fixed << std::setprecision(2) << getSpeedup << "x vs baseline" << std::endl;
         }
     }
 

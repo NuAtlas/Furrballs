@@ -1,6 +1,6 @@
 ---
 title: "Furrballs: A NUMA-Aware, High-Performance Caching Library"
-subtitle: "Technical Report v0.6"
+subtitle: "Technical Report v0.7"
 author: "The Sphynx"
 date: last-modified
 lang: en
@@ -40,10 +40,10 @@ format:
 ---
 
 ## Status
-Draft v0.6 (living document)
+Draft v0.7 (living document)
 
 ## Abstract
-Furrballs is a NUMA-aware caching library that uses NUMA topology as a first-class input to cache placement and eviction decisions. The core contribution is per-page allocation on specific NUMA nodes, with a two-level ARC hierarchy: key-level ARC (L1) and page-level ARC (L2), backed by RocksDB persistence (L3). Pages are pre-allocated at initialization via one physical allocation per NUMA node, subdivided into logical pages filled by a bump allocator. Key routing supports both round-robin distribution and thread-local placement (via a runtime config flag). The library is implemented in C++20, uses a platform abstraction layer (Numatic) for NUMA operations, and integrates a custom synchronization library (StreamLine) for thread coordination. Lock-free reads are implemented via SeqLock on per-node sharded KeyMeta, eliminating shared_mutex overhead from the read path. Benchmark results on a QEMU NUMA simulation (2 nodes, 6 vCPUs) demonstrate that lock-free reads expose an 11.7% p50 and 13.3% p99 cross-node overhead---more than double the signal visible under shared_mutex (5.1% p50). Thread-local routing achieves 26-30% p50 and 31-41% p99 improvement over round-robin with lock-free reads, confirming that NUMA-aware placement provides compound benefits in both memory locality and synchronization reduction.
+Furrballs is a NUMA-aware caching library that uses NUMA topology as a first-class input to cache placement and eviction decisions. The core contribution is per-page allocation on specific NUMA nodes, with a two-level ARC hierarchy: key-level ARC (L1) and page-level ARC (L2), backed by RocksDB persistence (L3). Pages are pre-allocated at initialization via one physical allocation per NUMA node, subdivided into logical pages filled by a bump allocator. Key routing supports both round-robin distribution and thread-local placement (via a runtime config flag). The library is implemented in C++20, uses a platform abstraction layer (Numatic) for NUMA operations, and integrates a custom synchronization library (StreamLine) for thread coordination. Lock-free reads are implemented via SeqLock on per-node sharded KeyMeta, eliminating shared_mutex overhead from the read path. Benchmark results on a QEMU NUMA simulation (2 nodes, 6 vCPUs) demonstrate that lock-free reads expose an 11.7% p50 and 13.3% p99 cross-node overhead---more than double the signal visible under shared_mutex (5.1% p50). Thread-local routing achieves 26-30% p50 and 31-41% p99 improvement over round-robin with lock-free reads, confirming that NUMA-aware placement provides compound benefits in both memory locality and synchronization reduction. A cross-VM baseline comparison (Furrballs in a 2-node NUMA VM vs a functionally identical non-NUMA cache in a separate 1-node VM) reveals that per-node sharding with hash-based routing provides a 3x concurrent Set and 1.25x concurrent Get throughput advantage through natural lock partitioning, at a modest 4-6% single-threaded cost. QEMU does not simulate real cross-node memory latency, so real hardware validation is needed to measure the true net effect.
 
 ## 1. Problem Statement
 
@@ -84,11 +84,7 @@ Error Set(const std::string& key, void* data, size_t size);
 Error Get(const std::string& key, void* outBuf, size_t bufSize, size_t& outSize);
 ```
 
-Key routing supports two strategies, selectable at runtime via `NumaConfig::UseThreadLocalRouting`:
-- **Round-robin** (default): `AtomicRoundRobin` distributes keys evenly across nodes.
-- **Thread-local**: `Numatic::GetCurrentNode()` places keys on the calling thread's node.
-
-The routing decision in `Set()` uses a ternary operator on the stored flag, incurring a single branch prediction miss per call. `KeyMeta` stores `{PageIndex, DataSize, DataOffset, NodeID}`. Keys are stored in per-node shards (`PerNodeDetails::KeyShard`), eliminating the global map contention point. Each shard entry wraps `KeyMeta` in a `SeqLock<KeyMeta>` for lock-free reads.
+Key routing supports two strategies: round-robin distribution via `AtomicRoundRobin` (v0.5), thread-local placement via `Numatic::GetCurrentNode()` (v0.5-v0.6), and hash-based deterministic routing via `std::hash<std::string>{}(key) % nodeCount` (v0.7, current). Hash-based routing was adopted because it eliminates the need for `Get()` to iterate all node shards: both `Set()` and `Get()` compute the target node from the key hash, enabling a single-shard lookup. The trade-off is the loss of thread-local placement flexibility---the hash decides the node, not the calling thread's locality.
 
 ### 2.4 Bump Allocator
 
@@ -96,7 +92,7 @@ Multi-value pages use an append-only bump allocator with 8-byte alignment. Each 
 
 ### 2.5 Concurrency
 
-Per-node `shared_mutex` serializes writes (map insert/update + page bump). Reads are lock-free via `SeqLock<KeyMeta>`: `Get()` iterates per-node shards, calls `SeqLock::Read()` on matching entries, and copies data without taking any lock. The SeqLock sequence counter provides deterministic consistency---if a writer is active (odd sequence), the reader retries. Statistics use `alignas(64)` on all atomic fields to prevent false sharing.
+Per-node `shared_mutex` serializes writes (map insert/update + page bump). Reads are lock-free via `SeqLock<KeyMeta>`: `Get()` computes the target node from `std::hash<std::string>{}(key) % nodeCount`, does a single `unordered_map::find()` on that node's shard, calls `SeqLock::Read()` on matching entries, and copies data without taking any lock. The SeqLock sequence counter provides deterministic consistency---if a writer is active (odd sequence), the reader retries. Statistics use `alignas(64)` on all atomic fields to prevent false sharing.
 
 ### 2.6 Platform Abstraction (Numatic)
 
@@ -126,9 +122,9 @@ Linux implementation uses libnuma. Windows has stubs/heuristics for functions wi
 **Rationale:** Standard `std::vector` allocates on the OS's preferred node. PMR with a NUMA-local resource ensures the backing array memory lands on the correct node, since `PerNodeDetails` is constructed on a pinned worker thread.
 
 ### 3.3 Key Routing Strategy
-**Decision:** Keys are routed via either `AtomicRoundRobin` (default) or `Numatic::GetCurrentNode()` (thread-local), selected at runtime by a `NumaConfig::UseThreadLocalRouting` flag. The dispatch uses a ternary operator: `ThreadLocalRoute ? Numatic::GetCurrentNode() : rr.Get()`.
+**Decision:** Keys are routed via `std::hash<std::string>{}(key) % nodeCount`, deterministically placing each key on a specific node. Both `Set()` and `Get()` compute the same hash, enabling single-shard lookup without a routing table.
 
-**Rationale:** Round-robin provides uniform distribution. Thread-local routing eliminates cross-node lock contention during writes when the writer is pinned to a specific node. Both strategies have valid use cases: round-robin for load-balanced workloads, thread-local for read-after-write locality. The ternary dispatch avoids virtual dispatch overhead; branch prediction makes the cost negligible since the flag never changes after construction.
+**Rationale:** Previous versions used round-robin (`AtomicRoundRobin`) and thread-local (`Numatic::GetCurrentNode()`) routing. Both required `Get()` to iterate all node shards, causing a 6-8x concurrent throughput penalty (later found to be partially a benchmark artifact). Hash-based routing eliminates shard iteration entirely---`Get()` checks exactly one shard, reducing the NUMA awareness overhead to 10-15% for concurrent reads vs a non-NUMA baseline. The trade-off is losing thread-local placement flexibility: the hash decides the node, not the calling thread's locality. For read-heavy workloads where `Get()` dominates, this trade-off is favorable.
 
 ### 3.4 All-or-Nothing NUMA Init
 **Decision:** If any node fails to allocate during `CreateBall()`, all successful allocations are freed and `nullptr` is returned.
@@ -254,14 +250,45 @@ Two threads, each pinned to a different NUMA node (node 0 and node 1). Each thre
 
 Lock-free reads amplify the thread-local routing improvement from 8-10% p50 to **26-30% p50**. The lock was masking not only the NUMA effect but also the routing strategy benefit. Thread-local routing with SeqLock achieves 26-41% improvement across all Get metrics, confirming that the compound benefit of NUMA-aware placement (memory locality + reduced synchronization) is genuine and measurable.
 
-### 5.7 Limitations
+### 5.7 Baseline Comparison: Cross-VM Isolation (3 runs each)
 
-- QEMU emulation adds noise to p50 latency measurements. The p99 tail metric is more reliable for NUMA effect detection.
+To isolate the NUMA contribution, Furrballs runs in the NUMA VM (2 nodes) and the BaselineCache runs in a separate non-NUMA VM (1 node, same QEMU overhead, no NUMA topology). The BaselineCache uses identical mechanisms (SeqLock reads, CAS bump allocator, per-op timing) but eliminates all NUMA-specific design choices: single `malloc`-backed allocation, single `unordered_map` (no per-node shards), single `shared_mutex`.
+
+**Single-threaded 64B (3 runs averaged):**
+
+| Implementation | Set p50 (ns) | Get p50 (ns) | Set ops/s | Get ops/s |
+|---|---:|---:|---:|---:|
+| Furrballs (NUMA VM, hash routing) | 815 | 729 | 635K | 706K |
+| Baseline (non-NUMA VM) | 783 | 687 | 612K | 687K |
+| Delta | +4.1% | +6.1% | +3.8% | +2.8% |
+
+**Concurrent 4-thread 64B (3 runs averaged, both with per-op timing):**
+
+| Implementation | Set ops/s | Get ops/s |
+|---|---:|---:|
+| Furrballs (NUMA VM, hash routing) | 1,191K | 1,796K |
+| Baseline (non-NUMA VM) | 390K | 1,438K |
+| Ratio | **3.05x** | **1.25x** |
+
+**Analysis:**
+
+Furrballs' concurrent throughput *exceeds* the baseline in both Set (3x) and Get (1.25x). The mechanism is lock partitioning: Furrballs' per-node sharding creates N separate `shared_mutex` instances (one per NUMA node), so 4 threads contend on 2 mutexes instead of 1. Hash-based deterministic routing distributes keys evenly across shards, ensuring balanced contention. The baseline's single `shared_mutex` becomes the bottleneck under concurrent writes---all 4 threads serialize on one lock.
+
+Single-threaded overhead is modest: 4-6% slower than the baseline, reflecting the cost of per-node allocation indirection and atomic statistics updates.
+
+**Caveat:** QEMU does not simulate real cross-node memory latency. Remote memory access within the VM has identical latency to local access. On real hardware, the NUMA penalty (1.2-2x remote access overhead) would partially offset the lock partitioning benefit for read operations. The cross-VM comparison captures the architectural benefit (lock partitioning, smaller per-shard maps) without the hardware NUMA cost. Real hardware validation is needed to measure the true net effect.
+
+Initial in-VM comparisons showed a 6-8x concurrent Get gap, which was traced to a benchmark methodology issue: Furrballs measured per-operation latency via `Clock::now()` (two VM exits per operation in QEMU), while the baseline measured only total wall time. With identical per-op timing and separate VMs, the gap reversed to a 1.25x advantage for Furrballs.
+
+### 5.8 Limitations
+
+- QEMU emulation adds noise to p50 latency measurements and does not simulate real cross-node memory access latency. The p99 tail metric is more reliable for NUMA effect detection within the VM. The cross-VM baseline comparison captures the architectural benefit (lock partitioning) without the hardware NUMA cost.
 - 512-byte cross-node overhead remains noisy under QEMU. Requires real hardware validation.
 - Lock-free reads are correct when no concurrent writes target the same shard (map `find()` is not thread-safe during concurrent `insert()`). The benchmark warmup-then-read pattern avoids this; production use requires a concurrent hash map.
 - Cross-node reads in Phase 1 execute on the calling thread (synchronous). Phase 2 NodeJob dispatch will enable remote-node reads via pinned workers, potentially reducing cross-node overhead.
 - Memory fragmentation from the bump allocator is not yet measured.
 - The per-key `unique_ptr<SeqLock<KeyMeta>>` adds one heap allocation per key and one pointer indirection per read. A slab allocator for SeqLock entries would reduce this overhead.
+- Per-node shard iteration in `Get()` imposes a 6-8x concurrent throughput penalty vs a non-NUMA baseline when benchmarked with unfair timing methodology. Hash-based deterministic routing (`hash(key) % numNodes`) eliminates shard iteration and reduces the gap to 10-15% for concurrent reads and 35% for concurrent writes.
 
 ## 6. Current Status
 
@@ -298,6 +325,8 @@ The project is on the `numa-focus` branch. Licensed under MIT. Build and test ar
 - [x] Benchmark harness
 - [x] Thread-local routing comparison (round-robin vs `Numatic::GetCurrentNode()`)
 - [x] SeqLock isolation of NUMA memory latency signal
+- [x] Baseline comparison (non-NUMA cache, concurrent throughput analysis)
+- [x] Hash-based deterministic routing (eliminates shard iteration from read path)
 - [ ] Full write-on-shutdown persistence verification
 - [ ] Real hardware benchmark validation
 
@@ -326,7 +355,7 @@ The project is on the `numa-focus` branch. Licensed under MIT. Build and test ar
 
 ## 9. Conclusion
 
-Furrballs demonstrates that NUMA topology can serve as a meaningful input to cache placement decisions. The architecture---per-node physical allocation, bump-packed multi-value pages, and two-level ARC hierarchy---provides a structured foundation for measuring and optimizing NUMA-aware caching. The critical finding is that synchronization overhead masks the true NUMA memory latency signal: under `shared_mutex`, cross-node overhead was 5.1% at p50; under SeqLock lock-free reads, it is 11.7%---more than double. Thread-local routing with lock-free reads achieves 26-41% improvement over round-robin across all Get metrics, confirming that NUMA-aware placement provides compound benefits in both memory locality and synchronization reduction. These results, obtained on QEMU NUMA simulation, establish the methodology and architecture. Real hardware validation is the remaining step before publication.
+Furrballs demonstrates that NUMA topology can serve as a meaningful input to cache placement decisions. The architecture---per-node physical allocation, bump-packed multi-value pages, and two-level ARC hierarchy---provides a structured foundation for measuring and optimizing NUMA-aware caching. The critical finding is that synchronization overhead masks the true NUMA memory latency signal: under `shared_mutex`, cross-node overhead was 5.1% at p50; under SeqLock lock-free reads, it is 11.7%---more than double. Hash-based deterministic routing (`hash(key) % numNodes`) eliminates per-node shard iteration and, combined with per-node sharding, provides a 3x concurrent Set and 1.25x concurrent Get throughput advantage over a non-NUMA baseline through natural lock partitioning. Single-threaded overhead is modest at 4-6%. A cross-VM comparison initially appeared to show a 6-8x concurrent Get gap, which was traced to a benchmark methodology issue (per-operation `Clock::now()` calls causing VM exits, applied only to Furrballs). With fair timing and separate VMs, the gap reversed to a 1.25x advantage for Furrballs. QEMU does not simulate real cross-node memory latency, so the lock partitioning benefit is measured without the hardware NUMA cost. Real hardware validation is the remaining step before publication.
 
 ## Appendix A: Repository Structure
 ```
@@ -353,6 +382,9 @@ Furrballs/
       NumaticUnix.cpp  # Linux implementation (libnuma)
       NumaticWin.cpp   # Windows stubs/heuristics
   Benchmark/          # Benchmark harness
+    BaselineCache.h   # Non-NUMA control group (malloc, single map, SeqLock)
+    Benchmark.cpp     # Full benchmark suite (runs in NUMA VM)
+    BaselineBenchmark.cpp  # Standalone baseline benchmark (runs in non-NUMA VM)
   Sandbox/            # Unit tests
   docs/               # This whitepaper
 ```

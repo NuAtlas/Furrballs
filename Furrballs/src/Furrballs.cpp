@@ -10,6 +10,7 @@
 #undef min
 #include <cstring>
 #include <chrono>
+#include <functional>
 #include <rocksdb/db.h>
 #include <rocksdb/advanced_options.h>
 #include <rocksdb/options.h>
@@ -194,19 +195,17 @@ Error NuAtlas::FurrBall::Get(const std::string &key, void* outBuf, size_t BufSiz
         return INVALID_ARG;
     }
 
-    int nodeCount = globalNumaState.NumaNodeCount;
-    for(int n = 0; n < nodeCount; n++){
-        PerNodeDetails* details = DataMembers->privateNumaState->NodeDetails[n];
-        auto it = details->KeyShard.find(key);
-        if(it != details->KeyShard.end()){
-            KeyMeta meta = it->second->Read();
-            outSize = meta.DataSize;
-            if(BufSize < meta.DataSize) return BUF_NOT_LARGE_ENOUGH;
-            memcpy(outBuf, meta.DataOffset, meta.DataSize);
-            Stats.HitCount.fetch_add(1, std::memory_order_relaxed);
-            Stats.BytesRead.fetch_add(meta.DataSize, std::memory_order_relaxed);
-            return NO_ERR;
-        }
+    int targetNode = std::hash<std::string>{}(key) % globalNumaState.NumaNodeCount;
+    PerNodeDetails* details = DataMembers->privateNumaState->NodeDetails[targetNode];
+    auto it = details->KeyShard.find(key);
+    if(it != details->KeyShard.end()){
+        KeyMeta meta = it->second->Read();
+        outSize = meta.DataSize;
+        if(BufSize < meta.DataSize) return BUF_NOT_LARGE_ENOUGH;
+        memcpy(outBuf, meta.DataOffset, meta.DataSize);
+        Stats.HitCount.fetch_add(1, std::memory_order_relaxed);
+        Stats.BytesRead.fetch_add(meta.DataSize, std::memory_order_relaxed);
+        return NO_ERR;
     }
 
     Stats.MissCount.fetch_add(1, std::memory_order_relaxed);
@@ -220,7 +219,7 @@ Error NuAtlas::FurrBall::Set(const std::string &key, void *data, size_t size) no
         return INVALID_ARG;
     }
 
-    int targetNode = ThreadLocalRoute ? Numatic::GetCurrentNode() : this->DataMembers->privateNumaState->rr.Get();
+    int targetNode = std::hash<std::string>{}(key) % globalNumaState.NumaNodeCount;
     PerNodeDetails* details = DataMembers->privateNumaState->NodeDetails[targetNode];
     std::unique_lock<std::shared_mutex> lock(details->rwMutex);
 
