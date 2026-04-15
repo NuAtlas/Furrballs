@@ -14,6 +14,7 @@
 #include "NodeJob.h"
 #include "Numatic.h"
 #include "WaitGroup.h"
+#include "SeqLock.h"
 #include <memory>
 #include <string>
 #include <thread>
@@ -230,11 +231,6 @@ private:
     class FurrBall final {
     private:
         struct ImplDetail;
-        struct KeyMeta{
-            size_t PageIndex, DataSize;
-            void* DataOffset;
-            int NodeID;
-        };
         ImplDetail* DataMembers;
 
         ARCPolicy<size_t, Page*> cache;
@@ -246,7 +242,6 @@ private:
         bool ThreadLocalRoute;
 
         std::vector<void*> AllocatedPages;
-        std::unordered_map<std::string, KeyMeta> KeyStore = std::unordered_map<std::string, KeyMeta>();
 
         inline static std::list<FurrBall*> OpenBalls = std::list<FurrBall*>();
 
@@ -269,6 +264,12 @@ private:
         void FlushPage(Page* page)noexcept;
 
     public:
+        struct KeyMeta{
+            size_t PageIndex, DataSize;
+            void* DataOffset;
+            int NodeID;
+        };
+
         class Statistics {
             friend FurrBall;
         private:

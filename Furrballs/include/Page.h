@@ -1,42 +1,66 @@
 #pragma once
 #include "MemoryManager.h"
+#include <atomic>
 #include <memory>
 
 
 namespace NuAtlas
 {
-
-    //Bump allocator. Next phase, add a strategy template. We have C++20 + Concepts now.
-    //Pages are not supposed to be under contention (this struct specifically).
     struct Page {
         void* Data = nullptr;
         size_t PageIndex = 0;
         size_t PageSize = 0;
-        size_t UsedBytes = 0; //Just for the bump allocator, this can be used an offset to free memory.
-        size_t DataWastedByPadding = 0; //This is for metrics. It's not really useful elsewhere.
+        std::atomic<size_t> UsedBytes{0};
+        std::atomic<size_t> DataWastedByPadding{0};
         bool Dirty = false;
 
         Page() noexcept = default;
         Page(void* ptr, size_t pageSize, size_t pageIndex)noexcept
             : Data(ptr), PageIndex(pageIndex), PageSize(pageSize) {};
-        
-        //Keeping this simple, It will track start position only. 
-        void* TryBump(size_t Size, size_t align = 8) noexcept
+
+        Page(const Page&) = delete;
+        Page& operator=(const Page&) = delete;
+
+        Page(Page&& other) noexcept
+            : Data(other.Data), PageIndex(other.PageIndex), PageSize(other.PageSize), Dirty(other.Dirty)
         {
-            size_t head = padded_size_to(UsedBytes, align);  // relative offset, aligned
-            if (head + Size <= PageSize) {
-                DataWastedByPadding += head - UsedBytes;
-                UsedBytes = head + Size;
-                //We'll consider the page dirty.
-                Dirty = true;
-                return static_cast<char*>(Data) + head;
-            }else{
-                return nullptr;
-            }
+            UsedBytes.store(other.UsedBytes.load(std::memory_order_relaxed), std::memory_order_relaxed);
+            DataWastedByPadding.store(other.DataWastedByPadding.load(std::memory_order_relaxed), std::memory_order_relaxed);
+            other.Data = nullptr;
         }
 
-        size_t GetUsedSize() const noexcept { return UsedBytes;}
-        size_t GetDataSize() const noexcept { return UsedBytes - DataWastedByPadding;}
-        size_t GetTotalPaddingBytes() const noexcept { return DataWastedByPadding; }
+        Page& operator=(Page&& other) noexcept {
+            if (this != &other) {
+                Data = other.Data;
+                PageIndex = other.PageIndex;
+                PageSize = other.PageSize;
+                Dirty = other.Dirty;
+                UsedBytes.store(other.UsedBytes.load(std::memory_order_relaxed), std::memory_order_relaxed);
+                DataWastedByPadding.store(other.DataWastedByPadding.load(std::memory_order_relaxed), std::memory_order_relaxed);
+                other.Data = nullptr;
+            }
+            return *this;
+        }
+
+        void* TryBump(size_t Size, size_t align = 8) noexcept
+        {
+            size_t oldUsed = UsedBytes.load(std::memory_order_relaxed);
+            size_t head;
+            do {
+                head = padded_size_to(oldUsed, align);
+                if (head + Size > PageSize) return nullptr;
+            } while (!UsedBytes.compare_exchange_weak(oldUsed, head + Size,
+                         std::memory_order_acq_rel, std::memory_order_relaxed));
+            size_t waste = head - oldUsed;
+            if (waste > 0) {
+                DataWastedByPadding.fetch_add(waste, std::memory_order_relaxed);
+            }
+            Dirty = true;
+            return static_cast<char*>(Data) + head;
+        }
+
+        size_t GetUsedSize() const noexcept { return UsedBytes.load(std::memory_order_relaxed); }
+        size_t GetDataSize() const noexcept { return UsedBytes.load(std::memory_order_relaxed) - DataWastedByPadding.load(std::memory_order_relaxed); }
+        size_t GetTotalPaddingBytes() const noexcept { return DataWastedByPadding.load(std::memory_order_relaxed); }
     };
-} // namespace NuAtlas
+}
