@@ -1,8 +1,20 @@
 project:
-  type: default
-  output-dir: _output
+  type: website
+  output-dir: _site
   render:
+    - index.qmd
     - whitepaper.qmd
+  resources:
+    - CNAME
+
+website:
+  title: "Furrballs"
+  navbar:
+    left:
+      - href: index.qmd
+        text: Home
+      - href: whitepaper.qmd
+        text: Whitepaper
 
 format:
   html:

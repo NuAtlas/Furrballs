@@ -1,4 +1,4 @@
-*# Quarto Setup (Headless Ubuntu VPS)
+## Quarto Setup (Headless Ubuntu VPS + Cloudflare Pages)
 
 This project treats [whitepaper.qmd](whitepaper.qmd) as the source of truth.
 
@@ -48,28 +48,45 @@ Small footprint option:
 sudo apt install -y texlive-latex-recommended texlive-latex-extra texlive-fonts-recommended
 ```
 
-## 3. Render the white paper
+## 3. Render the docs site
 
 From repo root:
 
 ```bash
 cd docs
-quarto render whitepaper.qmd
+quarto render
 ```
 
-Outputs are written to `docs/_output`.
+Outputs are written to `docs/_site`.
 
 ## 4. Useful checks
 
 ```bash
 quarto check
+quarto render
+quarto preview
 quarto render whitepaper.qmd --to html
 quarto render whitepaper.qmd --to latex
 quarto render whitepaper.qmd --to pdf
 quarto render whitepaper.qmd --to docx
 ```
 
-## 5. Upgrade Quarto later
+## 5. Cloudflare Pages configuration
+
+Connect this Git repository to Cloudflare Pages and use these build settings:
+
+- Framework preset: `None`
+- Build command: `bash docs/scripts/cloudflare-build.sh`
+- Build output directory: `docs/_site`
+
+Notes:
+
+- The Quarto project now builds a website with a root `index.html` and `whitepaper.html`.
+- `CNAME` is included in the output via `project.resources`.
+- `docs/scripts/cloudflare-build.sh` installs a pinned Quarto release in the build workspace before rendering.
+- Optional: pin/override version with environment variable `QUARTO_VERSION` in Pages settings.
+
+## 6. Upgrade Quarto later
 
 Use the automatic latest install block again. It will fetch the newest release and upgrade the installed package.
 

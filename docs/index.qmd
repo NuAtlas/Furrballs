@@ -1,0 +1,22 @@
+---
+title: "Furrballs Documentation"
+---
+
+## Overview
+
+Furrballs is a NUMA-aware, high-performance caching library in C++.
+
+Use this site to read the current technical whitepaper and follow project progress.
+
+## Start Here
+
+- [Read the whitepaper](whitepaper.qmd)
+- [Repository README](../README.md)
+
+## Build Locally
+
+```bash
+cd docs
+quarto render
+quarto preview
+```

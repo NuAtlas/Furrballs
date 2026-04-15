@@ -1,9 +1,0 @@
-name = "furrballs-paper"
-compatibility_date = "2024-09-23"
-
-[[routes]]
-pattern = "/*"
-zone_override = "furrballs"
-
-[env.vars]
-NODE_ENV = "production"
