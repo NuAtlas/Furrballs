@@ -32,6 +32,7 @@ namespace NuAtlas
         PROTECT_FAILED      = 35,
         DOUBLE_FREE         = 36,
         INVALID_PTR         = 37,
+        BUF_NOT_LARGE_ENOUGH = 38,
         // Cache / Eviction
         CACHE_FULL          = 40,
         CACHE_MISS          = 41,

@@ -98,6 +98,22 @@ namespace NuAtlas::Numatic {
         return static_cast<int>(mbi.Node);
     }
 
+    bool IsHugePagesAvailable() noexcept {
+        return false;
+    }
+
+    size_t GetHugePageSize() noexcept {
+        return 0;
+    }
+
+    void* AllocateOnNodeHuge(size_t, int) noexcept {
+        return nullptr;
+    }
+
+    void* AllocateLocalHuge(size_t) noexcept {
+        return nullptr;
+    }
+
 }
 
 #endif

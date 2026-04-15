@@ -1,6 +1,8 @@
-﻿#include "Sandbox.h"
+#include "Sandbox.h"
 #include <iostream>
 #include <cstring>
+#include <vector>
+#include <string>
 
 int main() {
     FurrBall::Bootstrap();
@@ -18,27 +20,64 @@ int main() {
         return -1;
     }
 
-    const char* testData = "Hello, NUMA-aware Furrballs!";
-    size_t testAddr = 4096;
+    struct TestEntry {
+        std::string key;
+        std::string value;
+    };
 
-    if (!fb->Set((void*)testData, std::strlen(testData) + 1, testAddr)) {
-        std::cerr << "Set failed" << std::endl;
-        delete fb;
-        return -1;
+    std::vector<TestEntry> entries = {
+        {"greeting", "Hello, NUMA-aware Furrballs!"},
+        {"counter", "42"},
+        {"config", "pagesize=4096"},
+        {"status", "operational"},
+        {"large", std::string(2000, 'X')},
+    };
+
+    char buf[4096];
+    size_t outSize = 0;
+
+    for (const auto& entry : entries) {
+        Error err = fb->Set(entry.key, (void*)entry.value.c_str(), entry.value.size());
+        if (err != NO_ERR) {
+            std::cerr << "Set failed for key '" << entry.key << "': " << err << std::endl;
+        }
     }
 
-    void* result = fb->Get((void*)testAddr);
-    if (result) {
-        std::cout << "Read back: " << static_cast<char*>(result) << std::endl;
-    }
-    else {
-        std::cerr << "Get failed" << std::endl;
+    for (const auto& entry : entries) {
+        Error err = fb->Get(entry.key, buf, sizeof(buf), outSize);
+        if (err == NO_ERR) {
+            std::string readVal((char*)buf, outSize);
+            bool match = (readVal == entry.value);
+            std::cout << "[" << (match ? "OK" : "FAIL") << "] "
+                      << entry.key << ": " << (match ? "matched" : "MISMATCH")
+                      << " (size=" << outSize << ")" << std::endl;
+        } else {
+            std::cout << "[FAIL] " << entry.key << ": Get returned " << err << std::endl;
+        }
     }
 
-    std::cout << "Stats:" << std::endl;
+    Error missErr = fb->Get("nonexistent", buf, sizeof(buf), outSize);
+    std::cout << "["
+              << (missErr == INVALID_ARG ? "OK" : "FAIL")
+              << "] nonexistent key: "
+              << (missErr == INVALID_ARG ? "correctly returned error" : "unexpected success")
+              << std::endl;
+
+    const char* updateData = "updated value!";
+    Error setErr = fb->Set("counter", (void*)updateData, std::strlen(updateData));
+    if (setErr == NO_ERR) {
+        fb->Get("counter", buf, sizeof(buf), outSize);
+        std::string readVal((char*)buf, outSize);
+        bool match = (readVal == std::string(updateData));
+        std::cout << "[" << (match ? "OK" : "FAIL") << "] overwrite: "
+                  << (match ? "matched" : "MISMATCH") << std::endl;
+    }
+
+    std::cout << "\nStats:" << std::endl;
     std::cout << "  HitCount: " << fb->Stats.GetHitCount() << std::endl;
     std::cout << "  MissCount: " << fb->Stats.GetMissCount() << std::endl;
-    std::cout << "  EvictionCount: " << fb->Stats.GetEvictionCount() << std::endl;
+    std::cout << "  BytesWritten: " << fb->Stats.GetBytesWritten() << std::endl;
+    std::cout << "  BytesRead: " << fb->Stats.GetBytesRead() << std::endl;
     std::cout << "  TotalAllocated: " << fb->Stats.GetTotalAllocated() << std::endl;
 
     delete fb;

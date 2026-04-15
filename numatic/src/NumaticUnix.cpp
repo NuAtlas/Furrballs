@@ -5,6 +5,8 @@
 #include <unistd.h>
 #include <sys/mman.h>
 #include <vector>
+#include <fstream>
+#include <string>
 
 namespace NuAtlas::Numatic {
 
@@ -94,6 +96,54 @@ namespace NuAtlas::Numatic {
         long ret = numa_move_pages(0, 1, &addr, nullptr, &status, 0);
         if (ret != 0) return -1;
         return status;
+    }
+
+    bool IsHugePagesAvailable() noexcept {
+        std::ifstream f("/proc/sys/vm/nr_hugepages");
+        if (!f.is_open()) return false;
+        long count = 0;
+        f >> count;
+        return count > 0;
+    }
+
+    size_t GetHugePageSize() noexcept {
+        std::ifstream f("/proc/meminfo");
+        if (!f.is_open()) return 0;
+        std::string line;
+        while (std::getline(f, line)) {
+            if (line.find("Hugepagesize:") != std::string::npos) {
+                size_t kb = 0;
+                for (char c : line) {
+                    if (c >= '0' && c <= '9') kb = kb * 10 + (c - '0');
+                    else if (kb > 0) break;
+                }
+                return kb * 1024;
+            }
+        }
+        return 0;
+    }
+
+    void* AllocateOnNodeHuge(size_t size, int nodeId) noexcept {
+        void* ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE,
+                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+        if (ptr == MAP_FAILED) return nullptr;
+        if (numa_available() != -1) {
+            numa_set_preferred(nodeId);
+            madvise(ptr, size, MADV_DONTFORK);
+        }
+        return ptr;
+    }
+
+    void* AllocateLocalHuge(size_t size) noexcept {
+        void* ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE,
+                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+        if (ptr == MAP_FAILED) return nullptr;
+        if (numa_available() != -1) {
+            int node = GetCurrentNode();
+            numa_set_preferred(node);
+            madvise(ptr, size, MADV_DONTFORK);
+        }
+        return ptr;
     }
 
 }

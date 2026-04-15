@@ -1,6 +1,6 @@
 # Furrballs
 
-A NUMA-aware, high-performance caching library written in C++17 under the `NuAtlas` namespace.
+A NUMA-aware, high-performance caching library written in C++20 under the `NuAtlas` namespace.
 
 The core thesis contribution is using **NUMA topology as a first-class input to cache placement and eviction decisions** — per-page allocation places data on the NUMA node of the requesting thread, with ARC (Adaptive Replacement Cache) eviction, write-back dirty tracking, and RocksDB persistence. No published work combines NUMA topology with adaptive cache policy at the page level.
 

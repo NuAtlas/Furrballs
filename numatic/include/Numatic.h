@@ -13,7 +13,11 @@ namespace NuAtlas::Numatic {
     size_t GetNodePageSize() noexcept;
     [[nodiscard]] void* AllocateOnNode(size_t size, int nodeId) noexcept;
     [[nodiscard]] void* AllocateLocal(size_t size) noexcept;
+    [[nodiscard]] void* AllocateOnNodeHuge(size_t size, int nodeId) noexcept;
+    [[nodiscard]] void* AllocateLocalHuge(size_t size) noexcept;
     void FreeNUMA(void* ptr, size_t size) noexcept;
+    bool IsHugePagesAvailable() noexcept;
+    size_t GetHugePageSize() noexcept;
     int GetAvailableNodes() noexcept;
 
     int GetDistance(int nodeA, int nodeB) noexcept;

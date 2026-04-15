@@ -178,14 +178,17 @@ namespace NuAtlas {
         }
     };
 
-    template<bool use_atomic>
+    template<bool use_atomic = true>
     struct RoundRobin{
     private:
-        int n;
+        int n = 1;
         std::conditional_t<use_atomic, std::atomic_uint, unsigned int> counter = 0;
     public:
+        RoundRobin() = default;
         RoundRobin(int _n) : n(_n) {};
         ~RoundRobin() = default;
+
+        void SetN(int _n) { n = _n; }
         int GetAndInc(int step = 1){
             if constexpr (use_atomic){
                 return counter.fetch_add(step, std::memory_order_relaxed) % n;
@@ -195,6 +198,8 @@ namespace NuAtlas {
             }
         }
     };
+
+    typedef RoundRobin<true> AtomicRoundRobin;
     //All default values are arbitrary for now.
 
     struct NumaConfig{
@@ -226,7 +231,8 @@ namespace NuAtlas {
     private:
         struct ImplDetail;
         struct KeyMeta{
-            size_t PageIndex, DataSize, DataOffset;
+            size_t PageIndex, DataSize;
+            void* DataOffset;
             int NodeID;
         };
         ImplDetail* DataMembers;
@@ -265,13 +271,13 @@ namespace NuAtlas {
         class Statistics {
             friend FurrBall;
         private:
-            std::atomic<size_t> UsedMemory{0};
-            std::atomic<size_t> TotalAllocated{0};
-            std::atomic<unsigned int> EvictionCount{0};
-            std::atomic<unsigned int> HitCount{0};
-            std::atomic<unsigned int> MissCount{0};
-            std::atomic<size_t> BytesWritten{0};
-            std::atomic<size_t> BytesRead{0};
+            alignas(64) std::atomic<size_t> UsedMemory{0};
+            alignas(64) std::atomic<size_t> TotalAllocated{0};
+            alignas(64) std::atomic<unsigned int> EvictionCount{0};
+            alignas(64) std::atomic<unsigned int> HitCount{0};
+            alignas(64) std::atomic<unsigned int> MissCount{0};
+            alignas(64) std::atomic<size_t> BytesWritten{0};
+            alignas(64) std::atomic<size_t> BytesRead{0};
             Statistics()noexcept = default;
             Statistics& operator=(const Statistics&) = delete;
             Statistics& operator=(Statistics&&) = delete;
@@ -292,7 +298,8 @@ namespace NuAtlas {
 
         void* Get(void* vAddress)noexcept;
         bool Set(void* data, size_t size, size_t vAddress)noexcept;
-        //
+        //New API-style
+        Error Get(const std::string& key, void* outBuf, size_t BufSize, size_t& outSize) noexcept;
         Error Set(const std::string& key, void* data, size_t size)noexcept;
 
         const Cache<size_t, Page*>& GetBackingCache()const noexcept {

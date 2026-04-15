@@ -7,16 +7,11 @@ set(SOURCES
 
 set(HEADERS
     include/Furrballs.h
-    include/IFactory.h
     include/Logger.h
     include/MemoryManager.h
     include/Error.h
     include/Page.h
     include/NodeJob.h
-#STREAMLINE SPECIFIC HEADERS.
-    include/Concept.h
-    include/Barrier.h
-    include/Latch.h
     include/WaitGroup.h
 )
 

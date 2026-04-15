@@ -36,6 +36,7 @@ struct PerNodeDetails{
     std::shared_mutex rwMutex;
     Numatic::NumaLocalMemoryResource nodeMR;
     std::pmr::vector<Page> NodePages;
+    size_t CurrentPage = 0;
     void* PhysicalPageInNode = nullptr;
 
     PerNodeDetails() : NodePages(&nodeMR) {}
@@ -43,6 +44,7 @@ struct PerNodeDetails{
 
 struct PrivateNumaState{
     PerNodeDetails** NodeDetails;
+    AtomicRoundRobin rr;
 };
 
 struct FurrBall::ImplDetail {
@@ -185,6 +187,25 @@ bool NuAtlas::FurrBall::Set(void* data, size_t size, size_t vAddress) noexcept {
     return true;
 }
 
+Error NuAtlas::FurrBall::Get(const std::string &key, void* outBuf, size_t BufSize, size_t& outSize) noexcept
+{
+    auto iterK = KeyStore.find(key);
+    if(key.empty() || iterK == KeyStore.end()){
+        Stats.MissCount.fetch_add(1, std::memory_order_relaxed);
+        return INVALID_ARG;
+    }
+    Stats.HitCount.fetch_add(1, std::memory_order_relaxed);
+    auto& meta = (*iterK).second;
+    outSize = meta.DataSize;
+    if(BufSize < meta.DataSize) return BUF_NOT_LARGE_ENOUGH;
+    {
+        std::unique_lock<std::shared_mutex> lock(DataMembers->privateNumaState->NodeDetails[meta.NodeID]->rwMutex);
+        memcpy(outBuf, meta.DataOffset, meta.DataSize);
+    }
+    Stats.BytesRead.fetch_add(meta.DataSize, std::memory_order_relaxed);
+    return NO_ERR;
+}
+
 Error NuAtlas::FurrBall::Set(const std::string &key, void *data, size_t size) noexcept
 {
     if(!data || !size){
@@ -192,6 +213,54 @@ Error NuAtlas::FurrBall::Set(const std::string &key, void *data, size_t size) no
         return INVALID_ARG;
     }
     
+    std::unordered_map<std::string, NuAtlas::FurrBall::KeyMeta>::iterator iterK = KeyStore.find(key); //avoiding the const_iterator
+    if(iterK == KeyStore.end()){
+        //Key not found.
+        KeyMeta metadata;
+        metadata.DataSize = size;
+        metadata.NodeID = this->DataMembers->privateNumaState->rr.GetAndInc();
+        
+        PerNodeDetails* details = this->DataMembers->privateNumaState->NodeDetails[metadata.NodeID];
+        std::unique_lock<std::shared_mutex> lock(details->rwMutex);
+        void* Loc = details->NodePages[details->CurrentPage].TryBump(size);
+        while(Loc == nullptr){
+            if(++details->CurrentPage == details->NodePages.size()){
+                return OUT_OF_MEM; //all-or-nothing.
+            }
+            Loc = details->NodePages[details->CurrentPage].TryBump(size);
+        }
+        memcpy(Loc, data, size);
+        metadata.PageIndex = details->CurrentPage;
+        metadata.DataOffset = Loc;
+        KeyStore.insert({key, metadata});
+        Stats.BytesWritten.fetch_add(size, std::memory_order_relaxed);
+    }else{
+        /*for future expansion with reclaming and a better allocator*/
+        auto& meta = (*iterK).second;
+        PerNodeDetails* details = this->DataMembers->privateNumaState->NodeDetails[meta.NodeID];
+        if(size <= meta.DataSize){
+            //Overwrite it.
+            std::unique_lock<std::shared_mutex> lock(details->rwMutex);
+
+            memcpy(meta.DataOffset, data, size);
+            meta.DataSize = size;
+        }else{ //size > meta.DataSize
+            //This wastes spaces, but again simple for phase 1.
+            std::unique_lock<std::shared_mutex> lock(details->rwMutex);
+            void* Loc = details->NodePages[details->CurrentPage].TryBump(size);
+            while(Loc == nullptr){
+                if(++details->CurrentPage == details->NodePages.size()){
+                    return OUT_OF_MEM; //all-or-nothing.
+                }
+                Loc = details->NodePages[details->CurrentPage].TryBump(size);
+            }
+            memcpy(Loc, data, size);
+            meta.PageIndex = details->CurrentPage;
+            meta.DataOffset = Loc;
+            meta.DataSize = size;
+            Stats.BytesWritten.fetch_add(size, std::memory_order_relaxed);
+        }
+    }
     return NO_ERR;
 }
 
@@ -250,9 +319,8 @@ FurrBall *FurrBall::CreateBall(const std::string &DBpath, const FurrConfig &conf
     if(config.EnableNUMA == true && globalNumaState.NumaNodeCount){
         //Allocate Per-ball Numa State.
         pNumaState = new PrivateNumaState();
-        // pNumaState->NodeDetails.reserve(globalNumaState.NumaNodeCount);
         pNumaState->NodeDetails = (PerNodeDetails**)malloc(sizeof(PerNodeDetails*) * globalNumaState.NumaNodeCount);
-
+        pNumaState->rr.SetN(globalNumaState.NumaNodeCount);
         //Recalculate Physical Page and page count only if we are using NodePageSize as the Physical Size.
         if(config.numaConfig->AllocateUsingNodePageSize){
             pPageSize = Numatic::GetNodePageSize();
@@ -296,10 +364,21 @@ FurrBall *FurrBall::CreateBall(const std::string &DBpath, const FurrConfig &conf
             }
         }
         if(!wg.WaitFor(std::chrono::seconds(8))){
-            //Wait for 8 seconds. Overkill but enough time for any worker to clear up.
-            //This worth throwing, but i don't know.
-            Logger::getInstance().critical("WaitGroup timed out. At Phase one, we'll simply fail and terminate");
-            std::exit(-1); //All-or-nothing, but needs to be improved later on.
+            Logger::getInstance().critical("WaitGroup timed out during NUMA page allocation.");
+            for (int i = 0; i < globalNumaState.NumaNodeCount; i++) {
+                PerNodeDetails* details = pNumaState->NodeDetails[i];
+                if (details) {
+                    if (details->PhysicalPageInNode) {
+                        Numatic::FreeNUMA(details->PhysicalPageInNode, details->PhysicalPageInNode ? totalPhysicalPageSize : 0);
+                    }
+                    details->~PerNodeDetails();
+                    Numatic::FreeNUMA(details, sizeof(PerNodeDetails));
+                }
+            }
+            free(pNumaState->NodeDetails);
+            delete pNumaState;
+            delete db;
+            return nullptr;
         }
 
     }else{

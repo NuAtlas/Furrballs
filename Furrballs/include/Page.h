@@ -27,6 +27,8 @@ namespace NuAtlas
             if (head + Size <= PageSize) {
                 DataWastedByPadding += head - UsedBytes;
                 UsedBytes = head + Size;
+                //We'll consider the page dirty.
+                Dirty = true;
                 return static_cast<char*>(Data) + head;
             }else{
                 return nullptr;
