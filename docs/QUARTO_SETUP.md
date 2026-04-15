@@ -84,6 +84,7 @@ Notes:
 - The Quarto project now builds a website with a root `index.html` and `whitepaper.html`.
 - `CNAME` is included in the output via `project.resources`.
 - `docs/scripts/cloudflare-build.sh` installs a pinned Quarto release in the build workspace before rendering.
+- The Cloudflare build renders HTML only (`quarto render --to html`) so TeX is not required.
 - Optional: pin/override version with environment variable `QUARTO_VERSION` in Pages settings.
 
 ## 6. Upgrade Quarto later

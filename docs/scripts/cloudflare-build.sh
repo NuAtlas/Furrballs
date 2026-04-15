@@ -14,4 +14,4 @@ tar -xzf /tmp/quarto.tar.gz -C "${QUARTO_ROOT}"
 export PATH="${QUARTO_ROOT}/quarto-${QUARTO_VERSION}/bin:${PATH}"
 
 cd docs
-quarto render
+quarto render --to html
