@@ -1,6 +1,6 @@
 ---
 title: "Furrballs: A NUMA-Aware, High-Performance Caching Library"
-subtitle: "Technical Report v0.4"
+subtitle: "Technical Report v0.5"
 author: "The Sphynx"
 date: last-modified
 lang: en
@@ -40,10 +40,10 @@ format:
 ---
 
 ## Status
-Draft v0.4 (living document)
+Draft v0.5 (living document)
 
 ## Abstract
-Furrballs is a NUMA-aware caching library that uses NUMA topology as a first-class input to cache placement and eviction decisions. The core contribution is per-page allocation on specific NUMA nodes, with a two-level ARC hierarchy: key-level ARC (L1) and page-level ARC (L2), backed by RocksDB persistence (L3). Pages are pre-allocated at initialization via one physical allocation per NUMA node, subdivided into logical pages filled by a bump allocator. Key routing distributes keys across nodes via round-robin. The library is implemented in C++20, uses a platform abstraction layer (Numatic) for NUMA operations, and integrates a custom synchronization library (StreamLine) for thread coordination. Benchmark results on a QEMU NUMA simulation (2 nodes, 6 vCPUs) demonstrate measurable cross-node latency overhead (8-10%), confirming the NUMA effect is real even under emulation overhead.
+Furrballs is a NUMA-aware caching library that uses NUMA topology as a first-class input to cache placement and eviction decisions. The core contribution is per-page allocation on specific NUMA nodes, with a two-level ARC hierarchy: key-level ARC (L1) and page-level ARC (L2), backed by RocksDB persistence (L3). Pages are pre-allocated at initialization via one physical allocation per NUMA node, subdivided into logical pages filled by a bump allocator. Key routing supports both round-robin distribution and thread-local placement (via a runtime config flag). The library is implemented in C++20, uses a platform abstraction layer (Numatic) for NUMA operations, and integrates a custom synchronization library (StreamLine) for thread coordination. Benchmark results on a QEMU NUMA simulation (2 nodes, 6 vCPUs) demonstrate measurable cross-node latency overhead (8-10%), confirming the NUMA effect is real even under emulation overhead. Thread-local routing shows 8-10% p50 improvement and 30-51% p99 improvement over round-robin, driven by reduced lock contention when each thread writes exclusively to its local node.
 
 ## 1. Problem Statement
 
@@ -84,7 +84,11 @@ Error Set(const std::string& key, void* data, size_t size);
 Error Get(const std::string& key, void* outBuf, size_t bufSize, size_t& outSize);
 ```
 
-Key routing uses atomic round-robin across NUMA nodes. `KeyMeta` stores `{PageIndex, DataSize, DataOffset, NodeID}`.
+Key routing supports two strategies, selectable at runtime via `NumaConfig::UseThreadLocalRouting`:
+- **Round-robin** (default): `AtomicRoundRobin` distributes keys evenly across nodes.
+- **Thread-local**: `Numatic::GetCurrentNode()` places keys on the calling thread's node.
+
+The routing decision in `Set()` uses a ternary operator on the stored flag, incurring a single branch prediction miss per call. `KeyMeta` stores `{PageIndex, DataSize, DataOffset, NodeID}`.
 
 ### 2.4 Bump Allocator
 
@@ -121,10 +125,10 @@ Linux implementation uses libnuma. Windows has stubs/heuristics for functions wi
 
 **Rationale:** Standard `std::vector` allocates on the OS's preferred node. PMR with a NUMA-local resource ensures the backing array memory lands on the correct node, since `PerNodeDetails` is constructed on a pinned worker thread.
 
-### 3.3 Atomic Round-Robin Key Routing
-**Decision:** Keys are distributed across nodes via `AtomicRoundRobin` (atomic counter mod node count), not hash-based.
+### 3.3 Key Routing Strategy
+**Decision:** Keys are routed via either `AtomicRoundRobin` (default) or `Numatic::GetCurrentNode()` (thread-local), selected at runtime by a `NumaConfig::UseThreadLocalRouting` flag. The dispatch uses a ternary operator: `ThreadLocalRoute ? Numatic::GetCurrentNode() : rr.Get()`.
 
-**Rationale:** Round-robin provides uniform distribution. Thread-local routing (`Numatic::GetCurrentNode()`) will be added as a comparison baseline for the thesis. The routing strategy is easily swappable.
+**Rationale:** Round-robin provides uniform distribution. Thread-local routing eliminates cross-node lock contention during writes when the writer is pinned to a specific node. Both strategies have valid use cases: round-robin for load-balanced workloads, thread-local for read-after-write locality. The ternary dispatch avoids virtual dispatch overhead; branch prediction makes the cost negligible since the flag never changes after construction.
 
 ### 3.4 All-or-Nothing NUMA Init
 **Decision:** If any node fails to allocate during `CreateBall()`, all successful allocations are freed and `nullptr` is returned.
@@ -218,23 +222,42 @@ Four threads, each pinned to a NUMA node, operating on disjoint key ranges.
 
 The cross-node concurrent throughput is comparable to local, suggesting that under 4-thread contention the lock overhead dominates over NUMA memory access latency. This is expected with the current `shared_mutex` implementation and motivates the planned lock-free read optimization.
 
-### 5.6 Limitations
+### 5.6 Routing Strategy Comparison (QEMU VM, 2 threads, 5 iterations averaged)
+
+Two threads, each pinned to a different NUMA node (node 0 and node 1). Each thread writes 5000 keys (64 bytes), then reads its own keys (self-read) and the other thread's keys (cross-read). The test is run with both routing strategies under identical conditions.
+
+| Metric | Round-robin (ns) | Thread-local (ns) | Improvement |
+|--------|-----------------:|-------------------:|------------:|
+| Set p50 | 1,033 | 913 | **11.6%** |
+| Set p99 | 11,288 | 5,503 | **51.2%** |
+| Self-Get p50 | 907 | 835 | **8.0%** |
+| Self-Get p99 | 2,096 | 1,357 | **35.3%** |
+| Cross-Get p50 | 879 | 792 | **9.9%** |
+| Cross-Get p99 | 1,953 | 1,358 | **30.5%** |
+
+Thread-local routing is consistently faster across all metrics. The p99 improvement (30-51%) is significantly larger than p50 (8-12%), indicating the primary benefit is in reducing tail latency.
+
+**Root cause:** With round-robin, both threads compete for both nodes' `rwMutex` (keys alternate between nodes). With thread-local, thread 0 writes exclusively to node 0's lock and thread 1 to node 1's lock, eliminating write-side lock contention entirely. This explains the dramatic p99 improvement --- the worst-case latency in round-robin occurs when both threads attempt to write to the same node simultaneously.
+
+The cross-Get improvement (9.9% p50, 30.5% p99) is a secondary benefit: with thread-local routing, each node's pages are filled sequentially by one thread, reducing cache-line bouncing on the page's `UsedBytes` counter during concurrent writes.
+
+### 5.7 Limitations
 
 - QEMU emulation adds noise to p50 latency measurements. The p99 tail metric is more reliable for NUMA effect detection.
 - 512-byte cross-node p99 shows a negative overhead (faster cross-node), likely a QEMU scheduling artifact. Requires real hardware validation.
-- The current `shared_mutex` on both the global `KeyStore` and per-node data creates contention that masks NUMA effects at high thread counts.
+- The current `shared_mutex` on both the global `KeyStore` and per-node data creates contention that masks NUMA effects at high thread counts. Thread-local routing partially mitigates this by reducing write-side contention.
 - Cross-node reads in Phase 1 execute on the calling thread (synchronous). Phase 2 NodeJob dispatch will enable remote-node reads via pinned workers, potentially reducing cross-node overhead.
 - Memory fragmentation from the bump allocator is not yet measured.
 
 ## 6. Current Status
 
 Phase 1 core is implemented and tested:
-- L1 ARC with key-based Set/Get API (bump allocator, round-robin routing, per-node locking)
+- L1 ARC with key-based Set/Get API (bump allocator, round-robin + thread-local routing, per-node locking)
 - Per-node physical block allocation with PMR-backed containers
 - NodeJob worker pinning (one worker per NUMA node)
 - WaitGroup-synchronized parallel init
 - Full Numatic platform abstraction (13 functions, CRTP PMR allocators, Linux + Windows stubs)
-- Benchmark harness (single-threaded, multi-threaded NUMA effect, concurrent throughput, 5 iterations with stddev)
+- Benchmark harness (single-threaded, multi-threaded NUMA effect, concurrent throughput, routing comparison, 5 iterations with stddev)
 - 7/7 unit tests passing
 
 The project is on the `numa-focus` branch. Licensed under MIT. Build and test artifacts are excluded from version control.
@@ -255,7 +278,7 @@ The project is on the `numa-focus` branch. Licensed under MIT. Build and test ar
 - [x] Per-node locking (`shared_mutex`)
 - [x] Statistics with cache-line-aligned atomics
 - [x] Benchmark harness
-- [ ] Thread-local routing comparison (round-robin vs `Numatic::GetCurrentNode()`)
+- [x] Thread-local routing comparison (round-robin vs `Numatic::GetCurrentNode()`)
 - [ ] Full write-on-shutdown persistence verification
 
 ### Phase 2: Two-Level ARC
@@ -282,7 +305,7 @@ The project is on the `numa-focus` branch. Licensed under MIT. Build and test ar
 
 ## 9. Conclusion
 
-Furrballs demonstrates that NUMA topology can serve as a meaningful input to cache placement decisions. The architecture---per-node physical allocation, bump-packed multi-value pages, and two-level ARC hierarchy---provides a structured foundation for measuring and optimizing NUMA-aware caching. The 8% p99 cross-node overhead measured on QEMU, while noisy, confirms the effect is real. With real hardware benchmarks and Phase 2's page-level eviction, the system will provide publishable evidence for the thesis.
+Furrballs demonstrates that NUMA topology can serve as a meaningful input to cache placement decisions. The architecture---per-node physical allocation, bump-packed multi-value pages, and two-level ARC hierarchy---provides a structured foundation for measuring and optimizing NUMA-aware caching. The 8% p99 cross-node overhead measured on QEMU, while noisy, confirms the effect is real. The routing strategy comparison reveals that thread-local placement achieves 8-10% p50 and 30-51% p99 improvement over round-robin, primarily by eliminating write-side lock contention across nodes. This finding supports the thesis that NUMA-aware placement is not just about memory locality---it also reduces synchronization overhead. With real hardware benchmarks and Phase 2's page-level eviction, the system will provide publishable evidence for the thesis.
 
 ## Appendix A: Repository Structure
 ```

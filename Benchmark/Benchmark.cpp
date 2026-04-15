@@ -245,6 +245,95 @@ static IterationResult runIterations(FurrBall* fb, const std::function<BenchResu
     return ir;
 }
 
+struct RoutingBenchResult {
+    std::string name;
+    double setP50 = 0, setP99 = 0;
+    double selfGetP50 = 0, selfGetP99 = 0;
+    double crossGetP50 = 0, crossGetP99 = 0;
+};
+
+static RoutingBenchResult benchRoutingStrategy(FurrBall* fb, const std::string& name, int numNodes, size_t keysPerThread, size_t valueSize) {
+    RoutingBenchResult result;
+    result.name = name;
+
+    struct ThreadResult {
+        std::vector<ns> setLatencies;
+        std::vector<ns> selfGetLatencies;
+        std::vector<ns> crossGetLatencies;
+    };
+
+    std::vector<ThreadResult> threadResults(numNodes);
+    std::vector<std::thread> threads(numNodes);
+
+    auto worker = [&](int nodeId, ThreadResult& tr) {
+        Numatic::PinCurrentThreadToNode(nodeId);
+
+        std::vector<char> value(valueSize, 'X');
+        std::vector<char> outBuf(valueSize + 64);
+
+        tr.setLatencies.resize(keysPerThread);
+        tr.selfGetLatencies.resize(keysPerThread);
+        tr.crossGetLatencies.resize(keysPerThread);
+
+        std::string prefix = "route_t" + std::to_string(nodeId) + "_";
+
+        for (size_t i = 0; i < keysPerThread; i++) {
+            std::string key = prefix + std::to_string(i);
+            auto t0 = Clock::now();
+            fb->Set(key, value.data(), valueSize);
+            tr.setLatencies[i] = Clock::now() - t0;
+        }
+
+        int otherNode = (nodeId + 1) % numNodes;
+        std::string otherPrefix = "route_t" + std::to_string(otherNode) + "_";
+
+        for (size_t i = 0; i < keysPerThread; i++) {
+            std::string key = prefix + std::to_string(i);
+            size_t outSize = 0;
+            auto t0 = Clock::now();
+            fb->Get(key, outBuf.data(), outBuf.size(), outSize);
+            tr.selfGetLatencies[i] = Clock::now() - t0;
+        }
+
+        for (size_t i = 0; i < keysPerThread; i++) {
+            std::string key = otherPrefix + std::to_string(i);
+            size_t outSize = 0;
+            auto t0 = Clock::now();
+            fb->Get(key, outBuf.data(), outBuf.size(), outSize);
+            tr.crossGetLatencies[i] = Clock::now() - t0;
+        }
+    };
+
+    for (int t = 0; t < numNodes; t++)
+        threads[t] = std::thread(worker, t, std::ref(threadResults[t]));
+    for (auto& th : threads) th.join();
+
+    auto aggregate = [](std::vector<ns>& flat) -> std::pair<double, double> {
+        if (flat.empty()) return {0, 0};
+        std::sort(flat.begin(), flat.end());
+        double p50 = flat[flat.size() / 2].count();
+        double p99 = flat[flat.size() * 99 / 100].count();
+        return {p50, p99};
+    };
+
+    std::vector<ns> allSet, allSelfGet, allCrossGet;
+    for (auto& tr : threadResults) {
+        allSet.insert(allSet.end(), tr.setLatencies.begin(), tr.setLatencies.end());
+        allSelfGet.insert(allSelfGet.end(), tr.selfGetLatencies.begin(), tr.selfGetLatencies.end());
+        allCrossGet.insert(allCrossGet.end(), tr.crossGetLatencies.begin(), tr.crossGetLatencies.end());
+    }
+
+    auto [sp50, sp99] = aggregate(allSet);
+    auto [sgp50, sgp99] = aggregate(allSelfGet);
+    auto [cgp50, cgp99] = aggregate(allCrossGet);
+
+    result.setP50 = sp50; result.setP99 = sp99;
+    result.selfGetP50 = sgp50; result.selfGetP99 = sgp99;
+    result.crossGetP50 = cgp50; result.crossGetP99 = cgp99;
+
+    return result;
+}
+
 int main() {
     FurrBall::Bootstrap();
 
@@ -439,6 +528,89 @@ int main() {
         }
     } else {
         std::cout << "Skipping multi-threaded NUMA benchmarks (1 node). Run in QEMU VM for NUMA results." << std::endl;
+    }
+
+    // --- ROUTING STRATEGY COMPARISON ---
+    if (numNodes >= 2) {
+        std::cout << std::string(110, '=') << std::endl;
+        std::cout << "ROUTING STRATEGY COMPARISON (" << iterations << " iterations, averaged)" << std::endl;
+        std::cout << "64-byte values, 2 threads (one per node), 5000 keys/thread" << std::endl;
+        std::cout << std::string(110, '=') << std::endl;
+
+        size_t routeKeys = 5000;
+
+        NumaConfig numaTL;
+        numaTL.AllocateUsingNodePageSize = false;
+        numaTL.UseThreadLocalRouting = true;
+
+        FurrConfig configTL;
+        configTL.EnableLogging = false;
+        configTL.EnableNUMA = true;
+        configTL.PageSize = 4096;
+        configTL.InitialPageCount = 2048;
+        configTL.numaConfig = &numaTL;
+
+        FurrBall* fb_tl = FurrBall::CreateBall("BenchDB_TL", configTL);
+        if (fb_tl) {
+            double rrSetP50 = 0, rrSetP99 = 0, rrSelfP50 = 0, rrSelfP99 = 0, rrCrossP50 = 0, rrCrossP99 = 0;
+            double tlSetP50 = 0, tlSetP99 = 0, tlSelfP50 = 0, tlSelfP99 = 0, tlCrossP50 = 0, tlCrossP99 = 0;
+
+            for (int i = 0; i < iterations; i++) {
+                auto rrR = benchRoutingStrategy(fb, "RoundRobin", numNodes, routeKeys, 64);
+                rrSetP50 += rrR.setP50; rrSetP99 += rrR.setP99;
+                rrSelfP50 += rrR.selfGetP50; rrSelfP99 += rrR.selfGetP99;
+                rrCrossP50 += rrR.crossGetP50; rrCrossP99 += rrR.crossGetP99;
+
+                auto tlR = benchRoutingStrategy(fb_tl, "ThreadLocal", numNodes, routeKeys, 64);
+                tlSetP50 += tlR.setP50; tlSetP99 += tlR.setP99;
+                tlSelfP50 += tlR.selfGetP50; tlSelfP99 += tlR.selfGetP99;
+                tlCrossP50 += tlR.crossGetP50; tlCrossP99 += tlR.crossGetP99;
+            }
+
+            rrSetP50 /= iterations; rrSetP99 /= iterations;
+            rrSelfP50 /= iterations; rrSelfP99 /= iterations;
+            rrCrossP50 /= iterations; rrCrossP99 /= iterations;
+            tlSetP50 /= iterations; tlSetP99 /= iterations;
+            tlSelfP50 /= iterations; tlSelfP99 /= iterations;
+            tlCrossP50 /= iterations; tlCrossP99 /= iterations;
+
+            std::cout << std::endl;
+            std::cout << std::left << std::setw(20) << "Strategy" << " | "
+                      << std::right << std::setw(12) << "Set p50" << " | "
+                      << std::setw(12) << "Set p99" << " | "
+                      << std::setw(12) << "Self-Get p50" << " | "
+                      << std::setw(12) << "Self-Get p99" << " | "
+                      << std::setw(12) << "Cross-Get p50" << " | "
+                      << std::setw(12) << "Cross-Get p99"
+                      << std::endl;
+            std::cout << std::string(110, '-') << std::endl;
+            std::cout << std::left << std::setw(20) << "Round-robin" << " | "
+                      << std::right << std::setw(10) << std::fixed << std::setprecision(0) << rrSetP50 << " ns | "
+                      << std::setw(10) << rrSetP99 << " ns | "
+                      << std::setw(10) << rrSelfP50 << " ns | "
+                      << std::setw(10) << rrSelfP99 << " ns | "
+                      << std::setw(10) << rrCrossP50 << " ns | "
+                      << std::setw(10) << rrCrossP99 << " ns"
+                      << std::endl;
+            std::cout << std::left << std::setw(20) << "Thread-local" << " | "
+                      << std::right << std::setw(10) << std::fixed << std::setprecision(0) << tlSetP50 << " ns | "
+                      << std::setw(10) << tlSetP99 << " ns | "
+                      << std::setw(10) << tlSelfP50 << " ns | "
+                      << std::setw(10) << tlSelfP99 << " ns | "
+                      << std::setw(10) << tlCrossP50 << " ns | "
+                      << std::setw(10) << tlCrossP99 << " ns"
+                      << std::endl;
+
+            double selfImprove = (rrSelfP50 > 0) ? ((rrSelfP50 - tlSelfP50) / rrSelfP50 * 100.0) : 0;
+            double crossImprove = (rrCrossP50 > 0) ? ((rrCrossP50 - tlCrossP50) / rrCrossP50 * 100.0) : 0;
+            std::cout << std::endl;
+            std::cout << "Thread-local self-Get improvement: " << std::fixed << std::setprecision(1) << selfImprove << "%" << std::endl;
+            std::cout << "Thread-local cross-Get improvement: " << std::fixed << std::setprecision(1) << crossImprove << "%" << std::endl;
+
+            delete fb_tl;
+        } else {
+            std::cout << "Failed to create thread-local routing FurrBall" << std::endl;
+        }
     }
 
     std::cout << std::endl;

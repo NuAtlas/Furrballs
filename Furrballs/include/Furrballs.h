@@ -1,4 +1,4 @@
-﻿/*****************************************************************//**
+/*****************************************************************//**
  * \file   Furrballs.h
  * \brief Primary interface for the Furrball library.
  *
@@ -180,7 +180,7 @@ namespace NuAtlas {
 
     template<bool use_atomic = true>
     struct RoundRobin{
-    private:
+private:
         int n = 1;
         std::conditional_t<use_atomic, std::atomic_uint, unsigned int> counter = 0;
     public:
@@ -189,7 +189,7 @@ namespace NuAtlas {
         ~RoundRobin() = default;
 
         void SetN(int _n) { n = _n; }
-        int GetAndInc(int step = 1){
+        int Get(int step = 1){
             if constexpr (use_atomic){
                 return counter.fetch_add(step, std::memory_order_relaxed) % n;
             }else{
@@ -198,7 +198,6 @@ namespace NuAtlas {
             }
         }
     };
-
     typedef RoundRobin<true> AtomicRoundRobin;
     //All default values are arbitrary for now.
 
@@ -206,6 +205,7 @@ namespace NuAtlas {
         short PerNodePageLimit = 2;
         bool AllocateUsingNodePageSize = true; //< allocates with NUMA page sizes (or multiples of page sizes) instead of PageSize.
         bool AllowNodeFallback = false; //< For now, This will be ignored (considered false)
+        bool UseThreadLocalRouting = false;
         //Add priority later, Add Home Node + Perferred Nodes.
     };
 
@@ -243,6 +243,7 @@ namespace NuAtlas {
         size_t MaxPages;
         bool Volatile;
         bool UseNUMA;
+        bool ThreadLocalRoute;
 
         std::vector<void*> AllocatedPages;
         std::unordered_map<std::string, KeyMeta> KeyStore = std::unordered_map<std::string, KeyMeta>();

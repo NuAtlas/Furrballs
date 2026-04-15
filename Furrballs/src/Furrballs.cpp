@@ -1,4 +1,4 @@
-﻿/*****************************************************************//**
+/*****************************************************************//**
  * \file   Furrballs.cpp
  *
  * \author The Sphynx
@@ -58,6 +58,7 @@ NuAtlas::FurrBall::FurrBall(const FurrConfig& config, size_t numPages) noexcept
     MaxPages(numPages),
     Volatile(config.IsVolatile),
     UseNUMA(config.EnableNUMA),
+    ThreadLocalRoute(config.numaConfig ? config.numaConfig->UseThreadLocalRouting : false),
     DataMembers(new ImplDetail())
 {
 }
@@ -218,7 +219,7 @@ Error NuAtlas::FurrBall::Set(const std::string &key, void *data, size_t size) no
         //Key not found.
         KeyMeta metadata;
         metadata.DataSize = size;
-        metadata.NodeID = this->DataMembers->privateNumaState->rr.GetAndInc();
+        metadata.NodeID = ThreadLocalRoute ? Numatic::GetCurrentNode() : this->DataMembers->privateNumaState->rr.Get();
         
         PerNodeDetails* details = this->DataMembers->privateNumaState->NodeDetails[metadata.NodeID];
         std::unique_lock<std::shared_mutex> lock(details->rwMutex);
