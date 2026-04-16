@@ -336,7 +336,38 @@ Memory fragmentation from the bump allocator is not yet measured.
 
 The per-key `unique_ptr<SeqLock<KeyMeta>>` adds one heap allocation per key and one pointer indirection per read. A slab allocator for SeqLock entries would reduce this overhead and should be implemented before Phase 2 ARC measurements to avoid confounding eviction behavior.
 
-### 5.10 Variant Comparison: Shared Memory vs Shared-Nothing (QEMU VM, 3 runs averaged)
+### 5.10 Ablation Study (QEMU VM, 3 runs averaged)
+
+To isolate the individual contribution of each architectural decision, we construct five configurations where each step adds one design change on top of the previous. All configurations use the same benchmark methodology: 64-byte values, SeqLock reads, per-op timing, 5 iterations averaged.
+
+| Step | Configuration | ST Set p50 (ns) | ST Get p50 (ns) | Self-Get p50 (ns) | Cross-Get p50 (ns) | Cross-OH |
+|---|---|---:|---:|---:|---:|---:|
+| A | Baseline: `malloc`, single map, single mutex | 851 | 751 | 935 | 920 | -1.5% |
+| B | + NUMA-aware allocation (per-node pages, single map) | 4,363 | 763 | 975 | 950 | -0.7% |
+| C | + Per-node sharding (separate maps + mutexes per node) | 882 | 885 | 1,025 | 999 | -2.5% |
+| D | + Thread-local routing (`GetCurrentNode()` placement) | 1,057 | 1,018 | 1,320 | 1,454 | **12.7%** |
+| E | + Shared-nothing cross-node reads (MPSC queue) | 1,144 | 1,081 | 1,375 | 2,749 | **100.8%** |
+
+**Step-by-step analysis:**
+
+**A→B (NUMA-aware allocation):** Replacing `malloc` with `Numatic::AllocateOnNode()` for page data causes a catastrophic 5x Set regression (851→4,363ns). The root cause is that NUMA allocation with a single shared map creates a cross-node allocation pattern: each Set acquires the single mutex, then allocates on a remote node via round-robin, paying cross-node allocation latency under the lock. Get performance is unaffected (+1.6%) because reads don't allocate and the single map is cache-warm for sequential access. **This demonstrates that NUMA-aware allocation without sharding is actively harmful for write performance.**
+
+**B→C (Per-node sharding):** Set p50 drops from 4,363ns to 882ns — a 5x improvement that recovers the baseline's performance. The mechanism is lock partitioning: each node has its own map and mutex, so threads write to their local shard without cross-node contention. Per-node sharding is not merely a performance optimization but a **prerequisite** for NUMA-aware allocation to be viable. Get p50 increases slightly (763→885ns, +16%) due to the shard iteration cost when the key's location is unknown.
+
+**C→D (Thread-local routing):** Cross-node overhead jumps from -2.5% to **12.7%** — the first measurable NUMA signal in the ablation. Under round-robin (C), keys are distributed uniformly, so self-Get and cross-Get have similar latency. Thread-local routing concentrates keys on the writing thread's node, creating genuine locality: self-Get finds the key on the local shard (fast path), while cross-Get must search the remote shard (slow path). ST latency increases modestly (Set +20%, Get +15%) due to `Numatic::GetCurrentNode()` overhead and the less uniform distribution.
+
+**D→E (Shared-nothing):** Cross-Get p50 doubles (1,454→2,749ns, +89%), while local operations see a modest increase (Set +8%, Get +6%). The ~1,300ns cross-node penalty is the MPSC slot queue round-trip: claim → fill → submit → worker processes → complete → read response. Local operations are unaffected by the queue (they bypass it entirely); the small overhead comes from CPU competition with spin-polling worker threads (4 benchmark threads + 2 workers on 4 vCPUs). On real hardware with dedicated cores, this local overhead would approach zero.
+
+**Summary of isolated contributions:**
+
+| Design Decision | Contribution | Evidence |
+|---|---|---|
+| NUMA-aware allocation alone | **Actively harmful** (-413% Set) | Cross-node allocation under single lock |
+| + Per-node sharding | **Enables NUMA alloc** (+395% Set recovery) | Lock partitioning eliminates cross-node contention |
+| + Thread-local routing | **Exposes NUMA signal** (+15pp cross-OH) | Locality creates measurable local/remote gap |
+| + Shared-nothing queue | **Eliminates cross-node reads** (+89% cross-Get) | Queue cost > direct cross-node access for small values |
+
+### 5.11 Variant Comparison: Shared Memory vs Shared-Nothing (QEMU VM, 3 runs averaged)
 
 To evaluate whether message-passing eliminates cross-node synchronization overhead, we implement a **shared-nothing variant** (`SharedNothingCache`) alongside Furrballs' shared-memory design. Both variants share identical infrastructure: per-node physical allocation, bump allocator, SeqLock on `KeyMeta`, thread-local routing, and the same benchmark methodology. The difference is exclusively in the **cross-node read path**.
 
@@ -394,7 +425,7 @@ With typical Xeon values: $n_{\text{misses}} > 1500\text{ns} / 70\text{ns} \appr
 
 **Documented limitation:** The QEMU evaluation captures the queue round-trip floor (~1500ns, a protocol cost) and the local-path overhead (likely inflated by CPU competition). It does not capture the cross-node cache miss cost that the queue is designed to avoid. The analytical projection above estimates real-hardware behavior; validation requires real multi-socket hardware.
 
-### 5.11 Tradeoff Model
+### 5.12 Tradeoff Model
 
 NUMA awareness in Furrballs involves the following measurable tradeoffs:
 

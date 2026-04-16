@@ -2,6 +2,7 @@
 #include "Numatic.h"
 #include "BaselineCache.h"
 #include "SharedNothingCache.h"
+#include "NUMAAllocCache.h"
 #include <iostream>
 #include <vector>
 #include <string>
@@ -1095,6 +1096,160 @@ int main() {
             benchVariant(*sm, "SharedNothing (MPSC queue)", "smsm", true);
 
             delete sm;
+        }
+    }
+
+    // --- ABLATION STUDY ---
+    if (numNodes >= 2) {
+        std::cout << std::string(110, '=') << std::endl;
+        std::cout << "ABLATION STUDY: Isolating each design decision's contribution" << std::endl;
+        std::cout << "Each step adds one architectural change on top of the previous." << std::endl;
+        std::cout << std::string(110, '=') << std::endl;
+
+        size_t numOps = 10000;
+        std::vector<char> val(64, 'X');
+        std::vector<char> outBuf(128);
+
+        auto benchAblation = [&](auto& cache, const std::string& name, const std::string& prefix) -> void {
+            double setP50 = 0, getP50 = 0;
+            double selfP50 = 0, crossP50 = 0;
+            size_t keysPerThread = 5000;
+
+            for (int iter = 0; iter < iterations; iter++) {
+                { // ST Set
+                    std::vector<ns> lat(numOps);
+                    for (size_t i = 0; i < numOps; i++) {
+                        auto t0 = Clock::now();
+                        cache.Set(prefix + "_" + std::to_string(i), val.data(), 64);
+                        lat[i] = Clock::now() - t0;
+                    }
+                    std::sort(lat.begin(), lat.end());
+                    setP50 += lat[numOps / 2].count();
+                }
+                { // ST Get
+                    std::vector<ns> lat(numOps);
+                    for (size_t i = 0; i < numOps; i++) {
+                        size_t os = 0;
+                        auto t0 = Clock::now();
+                        cache.Get(prefix + "_" + std::to_string(i), outBuf.data(), outBuf.size(), os);
+                        lat[i] = Clock::now() - t0;
+                    }
+                    std::sort(lat.begin(), lat.end());
+                    getP50 += lat[numOps / 2].count();
+                }
+            }
+            setP50 /= iterations;
+            getP50 /= iterations;
+
+            // MT self/cross
+            {
+                double sp = 0, cp = 0;
+                for (int iter = 0; iter < iterations; iter++) {
+                    std::vector<std::thread> threads(numNodes);
+                    struct R { std::vector<ns> self, cross; };
+                    std::vector<R> results(numNodes);
+
+                    for (int t = 0; t < numNodes; t++) {
+                        threads[t] = std::thread([&, t]() {
+                            Numatic::PinCurrentThreadToNode(t);
+                            for (size_t i = 0; i < keysPerThread; i++)
+                                cache.Set(prefix + "_ab_t" + std::to_string(t) + "_" + std::to_string(i), val.data(), 64);
+                            results[t].self.resize(keysPerThread);
+                            results[t].cross.resize(keysPerThread);
+                            int other = (t + 1) % numNodes;
+                            for (size_t i = 0; i < keysPerThread; i++) {
+                                size_t os = 0;
+                                auto t0 = Clock::now();
+                                cache.Get(prefix + "_ab_t" + std::to_string(t) + "_" + std::to_string(i), outBuf.data(), outBuf.size(), os);
+                                results[t].self[i] = Clock::now() - t0;
+                            }
+                            for (size_t i = 0; i < keysPerThread; i++) {
+                                size_t os = 0;
+                                auto t0 = Clock::now();
+                                cache.Get(prefix + "_ab_t" + std::to_string(other) + "_" + std::to_string(i), outBuf.data(), outBuf.size(), os);
+                                results[t].cross[i] = Clock::now() - t0;
+                            }
+                        });
+                    }
+                    for (auto& th : threads) th.join();
+                    std::vector<ns> allSelf, allCross;
+                    for (auto& r : results) {
+                        allSelf.insert(allSelf.end(), r.self.begin(), r.self.end());
+                        allCross.insert(allCross.end(), r.cross.begin(), r.cross.end());
+                    }
+                    std::sort(allSelf.begin(), allSelf.end());
+                    std::sort(allCross.begin(), allCross.end());
+                    sp += allSelf[allSelf.size()/2].count();
+                    cp += allCross[allCross.size()/2].count();
+                }
+                selfP50 = sp / iterations;
+                crossP50 = cp / iterations;
+            }
+
+            double crossOH = (selfP50 > 0) ? ((crossP50 - selfP50) / selfP50 * 100.0) : 0;
+            std::cout << std::left << std::setw(36) << name << " | "
+                      << std::right << std::fixed << std::setprecision(0)
+                      << "Set " << std::setw(6) << setP50 << " | "
+                      << "Get " << std::setw(6) << getP50 << " | "
+                      << "Self " << std::setw(6) << selfP50 << " | "
+                      << "Cross " << std::setw(6) << crossP50 << " | "
+                      << "X-OH " << std::setprecision(1) << std::setw(6) << crossOH << "%"
+                      << std::endl;
+        };
+
+        std::cout << std::endl;
+        std::cout << std::left << std::setw(36) << "Configuration" << " | "
+                  << std::right << "  ST Set  |    ST Get |   MT Self |  MT Cross | Cross-OH" << std::endl;
+        std::cout << std::string(110, '-') << std::endl;
+
+        // A: Baseline (single malloc, single map)
+        BaselineCache baseline(4096, 4096);
+        benchAblation(baseline, "A: Baseline (malloc, 1 map)", "abA");
+
+        // B: + NUMA-aware allocation (per-node pages, single map, single mutex)
+        NUMAAllocCache numaAlloc(4096, 4096, numNodes);
+        benchAblation(numaAlloc, "B: + NUMA alloc (1 map)", "abB");
+
+        // C: + Per-node sharding (Furrballs round-robin)
+        NumaConfig numaRR;
+        numaRR.AllocateUsingNodePageSize = false;
+        FurrConfig cfgRR;
+        cfgRR.EnableLogging = false;
+        cfgRR.EnableNUMA = true;
+        cfgRR.PageSize = 4096;
+        cfgRR.InitialPageCount = 2048;
+        cfgRR.numaConfig = &numaRR;
+        FurrBall* fb_rr = FurrBall::CreateBall("BenchDB_AB_C", cfgRR);
+        if (fb_rr) {
+            benchAblation(*fb_rr, "C: + Per-node sharding", "abC");
+
+            // D: + Thread-local routing
+            NumaConfig numaTL2;
+            numaTL2.AllocateUsingNodePageSize = false;
+            numaTL2.UseThreadLocalRouting = true;
+            FurrConfig cfgTL2;
+            cfgTL2.EnableLogging = false;
+            cfgTL2.EnableNUMA = true;
+            cfgTL2.PageSize = 4096;
+            cfgTL2.InitialPageCount = 2048;
+            cfgTL2.numaConfig = &numaTL2;
+            FurrBall* fb_tl2 = FurrBall::CreateBall("BenchDB_AB_D", cfgTL2);
+            if (fb_tl2) {
+                benchAblation(*fb_tl2, "D: + Thread-local routing", "abD");
+                delete fb_tl2;
+            }
+            delete fb_rr;
+        }
+
+        // E: + Shared-nothing (MPSC queue for cross-node)
+        using namespace NuAtlas::SM;
+        SM::SMConfig smCfg2;
+        smCfg2.PageSize = 4096;
+        smCfg2.InitialPageCount = 2048;
+        SharedNothingCache* sm2 = SharedNothingCache::Create("BenchDB_AB_E", smCfg2);
+        if (sm2) {
+            benchAblation(*sm2, "E: + Shared-nothing (MPSC)", "abE");
+            delete sm2;
         }
     }
 
