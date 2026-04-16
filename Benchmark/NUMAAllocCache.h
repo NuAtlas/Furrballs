@@ -41,13 +41,13 @@ class NUMAAllocCache {
     std::shared_mutex mutex;
     std::unordered_map<std::string, std::unique_ptr<StreamLine::SeqLock<Meta>>> store;
     std::vector<std::unique_ptr<BumpPage>> pages;
-    size_t currentPage = 0;
+    std::vector<size_t> currentPagePerNode;
     size_t pageSize;
     int nodeCount;
     std::atomic<int> rrNode{0};
 
 public:
-    NUMAAllocCache(size_t numPages, size_t ps, int nodes) : pageSize(ps), nodeCount(nodes) {
+    NUMAAllocCache(size_t numPages, size_t ps, int nodes) : pageSize(ps), nodeCount(nodes), currentPagePerNode(nodes, 0) {
         for (int n = 0; n < nodes; n++) {
             for (size_t i = 0; i < numPages / nodes; i++) {
                 pages.push_back(std::make_unique<BumpPage>(ps, n));
@@ -72,17 +72,18 @@ public:
 
         int targetNode = rrNode.fetch_add(1, std::memory_order_relaxed) % nodeCount;
         void* loc = nullptr;
+        size_t& cpn = currentPagePerNode[targetNode];
         for (size_t attempt = 0; attempt < pages.size(); attempt++) {
-            size_t idx = (currentPage + attempt) % pages.size();
+            size_t idx = (cpn + attempt) % pages.size();
             if (pages[idx]->nodeId == targetNode) {
                 loc = pages[idx]->tryBump(size);
-                if (loc) { currentPage = idx; break; }
+                if (loc) { cpn = idx; break; }
             }
         }
         if (!loc) {
             for (size_t idx = 0; idx < pages.size(); idx++) {
                 loc = pages[idx]->tryBump(size);
-                if (loc) { currentPage = idx; break; }
+                if (loc) { cpn = idx; break; }
             }
         }
         if (!loc) return NuAtlas::OUT_OF_MEM;

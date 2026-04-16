@@ -1144,6 +1144,7 @@ int main() {
             // MT self/cross
             {
                 double sp = 0, cp = 0;
+
                 for (int iter = 0; iter < iterations; iter++) {
                     std::vector<std::thread> threads(numNodes);
                     struct R { std::vector<ns> self, cross; };
