@@ -280,6 +280,7 @@ private:
             alignas(64) std::atomic<unsigned int> MissCount{0};
             alignas(64) std::atomic<size_t> BytesWritten{0};
             alignas(64) std::atomic<size_t> BytesRead{0};
+            alignas(64) std::atomic<unsigned int> LocalHitCount{0};
             Statistics()noexcept = default;
             Statistics& operator=(const Statistics&) = delete;
             Statistics& operator=(Statistics&&) = delete;
@@ -291,6 +292,7 @@ private:
             unsigned int GetMissCount()const noexcept { return MissCount.load(); }
             size_t GetBytesWritten()const noexcept { return BytesWritten.load(); }
             size_t GetBytesRead()const noexcept { return BytesRead.load(); }
+            unsigned int GetLocalHitCount()const noexcept { return LocalHitCount.load(); }
         } Stats;
 
         FurrBall(const FurrBall& cpy) = delete;

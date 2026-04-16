@@ -21,4 +21,5 @@ option(SIMULATE_NUMA_LATENCY_NS "Simulate cross-node NUMA latency (nanoseconds).
 add_subdirectory("numatic")
 add_subdirectory("Sandbox")
 add_subdirectory("Furrballs")
+add_subdirectory("FurrballsSM")
 add_subdirectory("Benchmark")

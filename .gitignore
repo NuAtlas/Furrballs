@@ -6,9 +6,12 @@
 [Bb]uild/
 [Bb]uildtest/
 [Bb]uildsim/
+[Bb]uildhost/
+[Bb]uildrel/
 
 TestDB/
 BenchDB/
+BenchDB_*/
 *.pid
 
 .cache/

@@ -1,6 +1,7 @@
 #include "Furrballs.h"
 #include "Numatic.h"
 #include "BaselineCache.h"
+#include "SharedNothingCache.h"
 #include <iostream>
 #include <vector>
 #include <string>
@@ -11,6 +12,7 @@
 #include <cstring>
 #include <iomanip>
 #include <cmath>
+#include <random>
 
 using namespace NuAtlas;
 using Clock = std::chrono::high_resolution_clock;
@@ -612,6 +614,8 @@ int main() {
             std::cout << std::endl;
             std::cout << "Thread-local self-Get improvement: " << std::fixed << std::setprecision(1) << selfImprove << "%" << std::endl;
             std::cout << "Thread-local cross-Get improvement: " << std::fixed << std::setprecision(1) << crossImprove << "%" << std::endl;
+            std::cout << "Thread-local optimistic hit rate: " << std::fixed << std::setprecision(1)
+                      << (fb_tl->Stats.GetHitCount() > 0 ? (100.0 * fb_tl->Stats.GetLocalHitCount() / fb_tl->Stats.GetHitCount()) : 0) << "%" << std::endl;
 
             delete fb_tl;
         } else {
@@ -626,10 +630,13 @@ int main() {
         std::cout << "Same SeqLock reads, same bump allocator. Difference: per-node allocation + sharding." << std::endl;
         std::cout << std::string(110, '=') << std::endl;
 
+        FurrBall* fb_fresh = FurrBall::CreateBall("BenchDB_BL", config);
+        if (!fb_fresh) fb_fresh = fb;
+
         BaselineCache baseline(4096, 4096);
 
         auto benchBaselineST = [&](bool doSet, size_t numOps, size_t valueSize) -> IterationResult {
-            return runIterations(fb, [&](FurrBall*) -> BenchResult {
+            return runIterations(fb_fresh, [&](FurrBall*) -> BenchResult {
                 BenchResult r;
                 r.name = doSet ? "Set" : "Get";
                 r.ops = numOps;
@@ -670,9 +677,9 @@ int main() {
         };
 
         {
-            auto fSet = runIterations(fb, [&](FurrBall* b){ return benchSingleThread(b, "bl64", 10000, 64, true); }, iterations);
+            auto fSet = runIterations(fb_fresh, [&](FurrBall* b){ return benchSingleThread(b, "bl64", 10000, 64, true); }, iterations);
             auto bSet = benchBaselineST(true, 10000, 64);
-            auto fGet = runIterations(fb, [&](FurrBall* b){ return benchSingleThread(b, "bl64", 10000, 64, false); }, iterations);
+            auto fGet = runIterations(fb_fresh, [&](FurrBall* b){ return benchSingleThread(b, "bl64", 10000, 64, false); }, iterations);
             auto bGet = benchBaselineST(false, 10000, 64);
 
             std::cout << std::endl;
@@ -717,8 +724,8 @@ int main() {
             double fSetOpsSum = 0, fGetOpsSum = 0;
 
             for (int i = 0; i < iterations; i++) {
-                auto fSet = benchMultiThread(fb, "Set", 4, numNodes, 2500, 64, true, false);
-                auto fGet = benchMultiThread(fb, "Get", 4, numNodes, 2500, 64, false, false);
+                auto fSet = benchMultiThread(fb_fresh, "Set", 4, numNodes, 2500, 64, true, false);
+                auto fGet = benchMultiThread(fb_fresh, "Get", 4, numNodes, 2500, 64, false, false);
                 fSetOpsSum += fSet.opsPerSec;
                 fGetOpsSum += fGet.opsPerSec;
 
@@ -795,6 +802,299 @@ int main() {
             std::cout << std::endl;
             std::cout << "Furrballs concurrent Set speedup: " << std::fixed << std::setprecision(2) << setSpeedup << "x vs baseline" << std::endl;
             std::cout << "Furrballs concurrent Get speedup: " << std::fixed << std::setprecision(2) << getSpeedup << "x vs baseline" << std::endl;
+        }
+
+        if (fb_fresh != fb) delete fb_fresh;
+    }
+
+    // --- ZIPFIAN WORKLOAD ---
+    if (numNodes >= 2) {
+        std::cout << std::string(110, '=') << std::endl;
+        std::cout << "ZIPFIAN WORKLOAD (theta=0.99, " << iterations << " iterations)" << std::endl;
+        std::cout << "Each thread populates local keys, then reads using Zipfian selection." << std::endl;
+        std::cout << "Compares round-robin vs thread-local under skewed access." << std::endl;
+        std::cout << std::string(110, '=') << std::endl;
+
+        auto zipfianSample = [](size_t n, double theta, std::mt19937_64& rng) -> size_t {
+            if (n == 0) return 0;
+            double alpha = 1.0 / (1.0 - theta);
+            double zeta = 0.0;
+            for (size_t i = 0; i < n; i++) zeta += 1.0 / std::pow((double)(i + 1), theta);
+            double eta = (1.0 - std::pow(2.0 / (double)n, 1.0 - theta)) / (1.0 - zeta + std::pow(2.0 / (double)n, 1.0 - theta) / (1.0 - (1.0 / (double)n)));
+            std::uniform_real_distribution<double> dist(0.0, 1.0);
+            double u = dist(rng);
+            double uz = u * zeta;
+            if (uz < 1.0) return 0;
+            if (uz < 1.0 + std::pow(0.5, theta)) return 1;
+            return (size_t)((double)n * std::pow(eta * u - eta + 1.0, 1.0 / (1.0 - theta))) % n;
+        };
+
+        size_t zipfKeysPerThread = 5000;
+        size_t zipfReadOps = 10000;
+
+        auto benchZipfian = [&](FurrBall* fball, const std::string& name, int nNodes) -> void {
+            std::cout << std::endl;
+            std::cout << "--- " << name << " ---" << std::endl;
+
+            struct ZipfThreadResult {
+                std::vector<ns> selfGetLatencies;
+                std::vector<ns> crossGetLatencies;
+                size_t localHits = 0;
+                size_t totalGets = 0;
+            };
+
+            double selfP50Sum = 0, selfP99Sum = 0, crossP50Sum = 0, crossP99Sum = 0;
+            double localHitRateSum = 0;
+            unsigned int totalHitsBefore = fball->Stats.GetHitCount();
+            unsigned int totalLocalHitsBefore = fball->Stats.GetLocalHitCount();
+
+            for (int iter = 0; iter < iterations; iter++) {
+                std::vector<ZipfThreadResult> threadResults(nNodes);
+                std::vector<std::thread> threads(nNodes);
+
+                auto worker = [&](int nodeId, ZipfThreadResult& tr) {
+                    Numatic::PinCurrentThreadToNode(nodeId);
+                    std::mt19937_64 rng(nodeId * 1000 + iter);
+                    std::vector<char> value(64, 'X');
+                    std::vector<char> outBuf(128);
+
+                    for (size_t i = 0; i < zipfKeysPerThread; i++) {
+                        std::string key = "zipf_t" + std::to_string(nodeId) + "_" + std::to_string(i);
+                        fball->Set(key, value.data(), 64);
+                    }
+
+                    int otherNode = (nodeId + 1) % nNodes;
+
+                    tr.selfGetLatencies.resize(zipfReadOps);
+                    tr.crossGetLatencies.resize(zipfReadOps);
+                    tr.localHits = 0;
+                    tr.totalGets = zipfReadOps * 2;
+
+                    for (size_t i = 0; i < zipfReadOps; i++) {
+                        size_t selfIdx = zipfianSample(zipfKeysPerThread, 0.99, rng);
+                        std::string selfKey = "zipf_t" + std::to_string(nodeId) + "_" + std::to_string(selfIdx);
+                        size_t outSize = 0;
+                        auto t0 = Clock::now();
+                        fball->Get(selfKey, outBuf.data(), outBuf.size(), outSize);
+                        tr.selfGetLatencies[i] = Clock::now() - t0;
+                    }
+
+                    for (size_t i = 0; i < zipfReadOps; i++) {
+                        size_t crossIdx = zipfianSample(zipfKeysPerThread, 0.99, rng);
+                        std::string crossKey = "zipf_t" + std::to_string(otherNode) + "_" + std::to_string(crossIdx);
+                        size_t outSize = 0;
+                        auto t0 = Clock::now();
+                        fball->Get(crossKey, outBuf.data(), outBuf.size(), outSize);
+                        tr.crossGetLatencies[i] = Clock::now() - t0;
+                    }
+                };
+
+                for (int t = 0; t < nNodes; t++)
+                    threads[t] = std::thread(worker, t, std::ref(threadResults[t]));
+                for (auto& th : threads) th.join();
+
+                std::vector<ns> allSelf, allCross;
+                for (auto& tr : threadResults) {
+                    allSelf.insert(allSelf.end(), tr.selfGetLatencies.begin(), tr.selfGetLatencies.end());
+                    allCross.insert(allCross.end(), tr.crossGetLatencies.begin(), tr.crossGetLatencies.end());
+                }
+
+                auto agg = [](std::vector<ns>& v) -> std::tuple<double, double> {
+                    if (v.empty()) return {0, 0};
+                    std::sort(v.begin(), v.end());
+                    return {v[v.size() / 2].count(), v[v.size() * 99 / 100].count()};
+                };
+
+                auto [sp50, sp99] = agg(allSelf);
+                auto [cp50, cp99] = agg(allCross);
+                selfP50Sum += sp50; selfP99Sum += sp99;
+                crossP50Sum += cp50; crossP99Sum += cp99;
+            }
+
+            unsigned int totalHits = fball->Stats.GetHitCount() - totalHitsBefore;
+            unsigned int totalLocalHits = fball->Stats.GetLocalHitCount() - totalLocalHitsBefore;
+            double optimisticRate = (totalHits > 0) ? (100.0 * totalLocalHits / totalHits) : 0;
+
+            std::cout << std::left << std::setw(20) << name << " | "
+                      << std::right << std::fixed << std::setprecision(0)
+                      << "Self-Get p50 " << std::setw(8) << selfP50Sum / iterations << " ns | "
+                      << "Self-Get p99 " << std::setw(8) << selfP99Sum / iterations << " ns | "
+                      << "Cross-Get p50 " << std::setw(8) << crossP50Sum / iterations << " ns | "
+                      << "Cross-Get p99 " << std::setw(8) << crossP99Sum / iterations << " ns"
+                      << std::endl;
+            std::cout << std::left << std::setw(20) << "" << " | "
+                      << "Optimistic hit rate: " << std::fixed << std::setprecision(1) << optimisticRate << "%"
+                      << " | Cross-node overhead (p50): " << std::fixed << std::setprecision(1)
+                      << ((selfP50Sum > 0) ? ((crossP50Sum / iterations - selfP50Sum / iterations) / (selfP50Sum / iterations) * 100.0) : 0) << "%"
+                      << std::endl;
+        };
+
+        NumaConfig numaTL;
+        numaTL.AllocateUsingNodePageSize = false;
+        numaTL.UseThreadLocalRouting = true;
+
+        FurrConfig configTL;
+        configTL.EnableLogging = false;
+        configTL.EnableNUMA = true;
+        configTL.PageSize = 4096;
+        configTL.InitialPageCount = 2048;
+        configTL.numaConfig = &numaTL;
+
+        FurrBall* fb_tl = FurrBall::CreateBall("BenchDB_ZF", configTL);
+        if (fb_tl) {
+            benchZipfian(fb, "Round-robin", numNodes);
+            benchZipfian(fb_tl, "Thread-local", numNodes);
+            delete fb_tl;
+        } else {
+            std::cout << "Failed to create thread-local FurrBall for Zipfian test" << std::endl;
+        }
+    }
+
+    // --- VARIANT COMPARISON: Furrballs vs SharedNothingCache ---
+    if (numNodes >= 2) {
+        std::cout << std::string(110, '=') << std::endl;
+        std::cout << "VARIANT COMPARISON: Shared+SeqLock vs Shared-Nothing (MPSC queue)" << std::endl;
+        std::cout << std::string(110, '=') << std::endl;
+
+        using namespace NuAtlas::SM;
+        SM::SMConfig smCfg;
+        smCfg.PageSize = 4096;
+        smCfg.InitialPageCount = 2048;
+
+        SharedNothingCache* sm = SharedNothingCache::Create("BenchDB_SM", smCfg);
+        if (!sm) {
+            std::cout << "Failed to create SharedNothingCache" << std::endl;
+        } else {
+            auto benchVariant = [&](auto& cache, const std::string& name, const std::string& prefix, bool isSM) -> void {
+                std::cout << std::endl;
+                std::cout << "--- " << name << " ---" << std::endl;
+
+                size_t numOps = 10000;
+                std::vector<char> val(64, 'X');
+                std::vector<char> outBuf(128);
+
+                double setP50 = 0, getP50 = 0, selfGetP50 = 0, crossGetP50 = 0;
+                double localHitRate = 0;
+
+                for (int iter = 0; iter < iterations; iter++) {
+                    // Single-threaded Set
+                    {
+                        std::vector<ns> lat(numOps);
+                        for (size_t i = 0; i < numOps; i++) {
+                            std::string key = prefix + "_key_" + std::to_string(i);
+                            auto t0 = Clock::now();
+                            cache.Set(key, val.data(), 64);
+                            lat[i] = Clock::now() - t0;
+                        }
+                        std::sort(lat.begin(), lat.end());
+                        setP50 += lat[numOps / 2].count();
+                    }
+                    // Single-threaded Get
+                    {
+                        std::vector<ns> lat(numOps);
+                        for (size_t i = 0; i < numOps; i++) {
+                            std::string key = prefix + "_key_" + std::to_string(i);
+                            size_t outSize = 0;
+                            auto t0 = Clock::now();
+                            cache.Get(key, outBuf.data(), outBuf.size(), outSize);
+                            lat[i] = Clock::now() - t0;
+                        }
+                        std::sort(lat.begin(), lat.end());
+                        getP50 += lat[numOps / 2].count();
+                    }
+                }
+                setP50 /= iterations;
+                getP50 /= iterations;
+
+                // Multi-threaded self/cross Get
+                {
+                    size_t keysPerThread = 5000;
+                    double sp50 = 0, cp50 = 0;
+                    for (int iter = 0; iter < iterations; iter++) {
+                        std::vector<std::thread> threads(numNodes);
+                        struct TResult { std::vector<ns> self, cross; };
+                        std::vector<TResult> results(numNodes);
+
+                        for (int t = 0; t < numNodes; t++) {
+                            threads[t] = std::thread([&, t]() {
+                                Numatic::PinCurrentThreadToNode(t);
+                                std::vector<char> v(64, 'Y');
+                                for (size_t i = 0; i < keysPerThread; i++) {
+                                    cache.Set(prefix + "_mt_t" + std::to_string(t) + "_" + std::to_string(i), v.data(), 64);
+                                }
+                                results[t].self.resize(keysPerThread);
+                                results[t].cross.resize(keysPerThread);
+                                int other = (t + 1) % numNodes;
+                                for (size_t i = 0; i < keysPerThread; i++) {
+                                    std::string sk = prefix + "_mt_t" + std::to_string(t) + "_" + std::to_string(i);
+                                    size_t os = 0;
+                                    auto t0 = Clock::now();
+                                    cache.Get(sk, outBuf.data(), outBuf.size(), os);
+                                    results[t].self[i] = Clock::now() - t0;
+                                }
+                                for (size_t i = 0; i < keysPerThread; i++) {
+                                    std::string ck = prefix + "_mt_t" + std::to_string(other) + "_" + std::to_string(i);
+                                    size_t os = 0;
+                                    auto t0 = Clock::now();
+                                    cache.Get(ck, outBuf.data(), outBuf.size(), os);
+                                    results[t].cross[i] = Clock::now() - t0;
+                                }
+                            });
+                        }
+                        for (auto& th : threads) th.join();
+
+                        std::vector<ns> allSelf, allCross;
+                        for (auto& r : results) {
+                            allSelf.insert(allSelf.end(), r.self.begin(), r.self.end());
+                            allCross.insert(allCross.end(), r.cross.begin(), r.cross.end());
+                        }
+                        std::sort(allSelf.begin(), allSelf.end());
+                        std::sort(allCross.begin(), allCross.end());
+                        sp50 += allSelf[allSelf.size() / 2].count();
+                        cp50 += allCross[allCross.size() / 2].count();
+                    }
+                    selfGetP50 = sp50 / iterations;
+                    crossGetP50 = cp50 / iterations;
+                }
+
+                // Counters
+                unsigned int hits = 0, localHits = 0;
+                if constexpr (std::is_same_v<std::decay_t<decltype(cache)>, SharedNothingCache>) {
+                    hits = cache.Stats.GetHitCount();
+                    localHits = cache.Stats.GetLocalHitCount();
+                } else {
+                    hits = cache.Stats.GetHitCount();
+                    localHits = cache.Stats.GetLocalHitCount();
+                }
+                double optRate = (hits > 0) ? (100.0 * localHits / hits) : 0;
+
+                std::cout << std::fixed << std::setprecision(0);
+                std::cout << "  ST Set p50: " << std::setw(8) << setP50 << " ns" << std::endl;
+                std::cout << "  ST Get p50: " << std::setw(8) << getP50 << " ns" << std::endl;
+                std::cout << "  MT Self-Get p50: " << std::setw(8) << selfGetP50 << " ns" << std::endl;
+                std::cout << "  MT Cross-Get p50: " << std::setw(8) << crossGetP50 << " ns" << std::endl;
+                double crossOverhead = (selfGetP50 > 0) ? ((crossGetP50 - selfGetP50) / selfGetP50 * 100.0) : 0;
+                std::cout << "  Cross-node overhead: " << std::fixed << std::setprecision(1) << crossOverhead << "%" << std::endl;
+                std::cout << "  Optimistic hit rate: " << std::fixed << std::setprecision(1) << optRate << "%" << std::endl;
+            };
+
+            NumaConfig numaSM;
+            numaSM.AllocateUsingNodePageSize = false;
+            FurrConfig cfgSM;
+            cfgSM.EnableLogging = false;
+            cfgSM.EnableNUMA = true;
+            cfgSM.PageSize = 4096;
+            cfgSM.InitialPageCount = 2048;
+            cfgSM.numaConfig = &numaSM;
+
+            FurrBall* fb_sm = FurrBall::CreateBall("BenchDB_SM_FB", cfgSM);
+            if (fb_sm) {
+                benchVariant(*fb_sm, "Furrballs (shared+SeqLock)", "smfb", false);
+                delete fb_sm;
+            }
+            benchVariant(*sm, "SharedNothing (MPSC queue)", "smsm", true);
+
+            delete sm;
         }
     }
 
