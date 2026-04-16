@@ -16,6 +16,8 @@ endif()
 
 project("Furrballs")
 
+option(SIMULATE_NUMA_LATENCY_NS "Simulate cross-node NUMA latency (nanoseconds). 0 = disabled." 0)
+
 add_subdirectory("numatic")
 add_subdirectory("Sandbox")
 add_subdirectory("Furrballs")

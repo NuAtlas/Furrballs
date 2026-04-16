@@ -32,3 +32,8 @@ PRIVATE
 )
 
 target_include_directories(Furrballs PUBLIC ${CMAKE_SOURCE_DIR}/numatic/include)
+
+if(SIMULATE_NUMA_LATENCY_NS GREATER 0)
+    target_compile_definitions(Furrballs PUBLIC SIMULATE_NUMA_LATENCY_NS=${SIMULATE_NUMA_LATENCY_NS})
+    message(STATUS "NUMA latency simulation enabled: ${SIMULATE_NUMA_LATENCY_NS}ns")
+endif()

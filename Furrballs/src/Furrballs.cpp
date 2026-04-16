@@ -24,6 +24,51 @@
 #define unlikely(cond) (__builtin_expect(!!(cond), 0))
 #endif
 
+#ifdef SIMULATE_NUMA_LATENCY_NS
+#include <atomic>
+#if defined(__x86_64__) || defined(_M_X64)
+#include <emmintrin.h>
+#endif
+
+namespace {
+    std::atomic<double> tscCyclesPerNs{0.0};
+
+    inline uint64_t rdtsc() {
+        unsigned int lo, hi;
+        __asm__ __volatile__ ("rdtsc" : "=a" (lo), "=d" (hi));
+        return ((uint64_t)hi << 32) | lo;
+    }
+
+    void calibrateTsc() {
+        double expected = tscCyclesPerNs.load(std::memory_order_relaxed);
+        if (expected > 0.0) return;
+        auto t0 = std::chrono::high_resolution_clock::now();
+        uint64_t c0 = rdtsc();
+        while (std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::high_resolution_clock::now() - t0).count() < 500) {}
+        uint64_t c1 = rdtsc();
+        auto t1 = std::chrono::high_resolution_clock::now();
+        double elapsedNs = std::chrono::duration<double, std::nano>(t1 - t0).count();
+        double calibrated = static_cast<double>(c1 - c0) / elapsedNs;
+        tscCyclesPerNs.store(calibrated, std::memory_order_relaxed);
+    }
+
+    inline void simulateCrossNodeLatency() {
+        calibrateTsc();
+        double cpn = tscCyclesPerNs.load(std::memory_order_relaxed);
+        uint64_t target = static_cast<uint64_t>(SIMULATE_NUMA_LATENCY_NS * cpn);
+        uint64_t start = rdtsc();
+        while ((rdtsc() - start) < target) {
+#if defined(__x86_64__) || defined(_M_X64)
+            _mm_pause();
+#elif defined(__aarch64__)
+            __asm__ __volatile__("yield");
+#endif
+        }
+    }
+}
+#endif
+
 using namespace NuAtlas;
 
 thread_local std::unordered_set<void*> MemoryManager::ThreadBuffers;
@@ -199,6 +244,11 @@ Error NuAtlas::FurrBall::Get(const std::string &key, void* outBuf, size_t BufSiz
     PerNodeDetails* details = DataMembers->privateNumaState->NodeDetails[targetNode];
     auto it = details->KeyShard.find(key);
     if(it != details->KeyShard.end()){
+#ifdef SIMULATE_NUMA_LATENCY_NS
+        if(Numatic::GetCurrentNode() != targetNode) {
+            simulateCrossNodeLatency();
+        }
+#endif
         KeyMeta meta = it->second->Read();
         outSize = meta.DataSize;
         if(BufSize < meta.DataSize) return BUF_NOT_LARGE_ENOUGH;

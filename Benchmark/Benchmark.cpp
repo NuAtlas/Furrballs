@@ -343,6 +343,11 @@ int main() {
     std::cout << "=== Furrballs Benchmark ===" << std::endl;
     std::cout << "NUMA nodes: " << numNodes << std::endl;
     std::cout << "NUMA page size: " << Numatic::GetNodePageSize() << std::endl;
+#ifdef SIMULATE_NUMA_LATENCY_NS
+    std::cout << "NUMA latency simulation: " << SIMULATE_NUMA_LATENCY_NS << " ns (cross-node)" << std::endl;
+#else
+    std::cout << "NUMA latency simulation: disabled" << std::endl;
+#endif
     std::cout << "Iterations per test: " << iterations << std::endl;
     std::cout << std::endl;
 
