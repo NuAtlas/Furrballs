@@ -1,6 +1,6 @@
 ---
 title: "Furrballs: A NUMA-Aware, High-Performance Caching Library"
-subtitle: "Technical Report v1.0"
+subtitle: "Technical Report v1.1"
 author: "The Sphynx"
 date: last-modified
 lang: en
@@ -40,14 +40,14 @@ format:
 ---
 
 ## Status
-v1.0 --- Phase 1 complete
+v1.1 --- Phase 1 complete
 
 ## Abstract
 Furrballs is a NUMA-aware caching library that uses NUMA topology as a first-class input to cache placement and eviction decisions. The core contribution is per-page allocation on specific NUMA nodes, with a planned two-level ARC hierarchy: key-level ARC (L1, Phase 2) for hot/cold key tracking with NUMA-aware eviction preference, and page-level ARC (L2, Phase 2) for page eviction backed by RocksDB persistence (L3). Pages are pre-allocated at initialization via one physical allocation per NUMA node, subdivided into logical pages filled by a bump allocator. Key routing supports round-robin distribution and thread-local placement (via a runtime config flag). The library is implemented in C++20, uses a platform abstraction layer (Numatic) for NUMA operations, and integrates a custom synchronization library (StreamLine) for thread coordination. Lock-free reads are implemented via SeqLock on per-node sharded KeyMeta, eliminating shared_mutex overhead from the read path. Benchmark results on a QEMU NUMA simulation (2 nodes, 4 vCPUs) demonstrate that lock-free reads expose an 11.7% p50 and 13.3% p99 cross-node overhead---more than double the signal visible under shared_mutex (5.1% p50). Thread-local routing achieves 26-30% p50 and 31-41% p99 improvement over round-robin with lock-free reads, confirming that NUMA-aware placement provides compound benefits in both memory locality and synchronization reduction. A cross-VM baseline comparison (Furrballs in a 2-node NUMA VM vs a functionally identical non-NUMA cache in a separate 1-node VM) reveals that per-node sharding provides a 3x concurrent Set and 1.2x concurrent Get throughput advantage through natural lock partitioning, at a mixed single-threaded cost (Set +3%, Get +17%). A five-step ablation study isolates each architectural decision: NUMA-aware allocation produces no signal in QEMU (which lacks hardware NUMA latency simulation), per-node sharding serves as an architectural enabler for subsequent routing decisions, thread-local routing creates the first measurable locality signal (+18.3% cross-node overhead), and a shared-nothing variant using an MPSC slot-based queue for cross-node reads adds +114% cross-node overhead (~1,500ns queue round-trip). Analytical projection shows the shared-nothing approach becomes competitive when cross-node cache misses per operation exceed ~21 on Xeon hardware. QEMU does not simulate real cross-node memory latency; a compile-time simulated latency feature (`-DSIMULATE_NUMA_LATENCY_NS=N`) validates architectural response to NUMA signals using published hardware specifications.
 
 ## 1. Problem Statement
 
-Modern multi-socket servers expose NUMA topology where memory access latency depends on which socket the data resides on. Remote NUMA access (cross-socket) can be 1.2-2x slower than local access. Existing caching systems either ignore NUMA topology entirely (Redis, Memcached) or handle it at coarse granularity (Meta's CacheLib uses static per-node sharding). No published system combines NUMA topology as an adaptive input to per-page cache placement decisions.
+Modern multi-socket servers expose NUMA topology where memory access latency depends on which socket the data resides on. Remote NUMA access (cross-socket) can be 1.2-2x slower than local access. Existing caching systems either ignore NUMA topology entirely (Redis, Memcached) or handle it at coarse granularity (Meta's CacheLib uses static per-node sharding). To our knowledge, no published system combines NUMA topology as an adaptive input to per-page cache placement decisions.
 
 Furrballs targets this gap: allocate cache pages on the NUMA node of the thread that accesses them, measure the locality benefit, and provide a structured architecture for evolving the policy.
 
@@ -56,12 +56,13 @@ Furrballs targets this gap: allocate cache pages on the NUMA node of the thread 
 ### 2.1 Architecture Overview
 
 ```
-L1: ARC<string, KeyMeta>     -- Key-level cache, tracks hot keys
-L2: ARC<PageIndex, Page*>  -- Page-level cache, tracks hot pages (Phase 2)
-L3: RocksDB                 -- Persistent storage, written on eviction/shutdown
+L1: Flat KeyStore (current)   -- Key→metadata mapping, no eviction (Phase 1)
+L1: ARC<string, KeyMeta>      -- Key-level cache with hot/cold tracking (Phase 2)
+L2: ARC<PageIndex, Page*>     -- Page-level cache, tracks hot pages (Phase 2)
+L3: RocksDB                   -- Persistent storage, written on eviction/shutdown
 ```
 
-Phase 1 (current): L1 ARC + pre-allocated pages + RocksDB write-on-shutdown. Pages are never evicted from memory.
+Phase 1 (current): flat key store + pre-allocated pages + RocksDB write-on-shutdown. Pages are never evicted from memory. No ARC eviction policy is active; all inserted keys remain resident until shutdown.
 
 ### 2.1.1 Locality Unit
 
@@ -112,7 +113,7 @@ Multi-value pages use an append-only bump allocator with 8-byte alignment. Each 
 
 ### 2.5 Concurrency
 
-Per-node `shared_mutex` serializes writes (map insert/update + page bump). Reads are lock-free via `SeqLock<KeyMeta>`: `Get()` iterates per-node shards, calls `SeqLock::Read()` on matching entries, and copies data without taking any lock. The SeqLock sequence counter provides deterministic consistency---if a writer is active (odd sequence), the reader retries. Statistics use `alignas(64)` on all atomic fields to prevent false sharing.
+Per-node `shared_mutex` serializes writes (map insert/update + page bump). Reads are lock-free via `SeqLock<KeyMeta>` under read-heavy workloads where no concurrent `insert()` targets the same shard: `Get()` iterates per-node shards, calls `SeqLock::Read()` on matching entries, and copies data without taking any lock. The SeqLock sequence counter provides deterministic consistency---if a writer is active (odd sequence), the reader retries. In mixed read/write workloads where concurrent `Set()` inserts new keys into the same shard, `unordered_map::find()` may observe a partially-constructed map state; this requires a concurrent hash map or per-key locking (Phase 4). Statistics use `alignas(64)` on all atomic fields to prevent false sharing.
 
 ### 2.6 Platform Abstraction (Numatic)
 
@@ -180,7 +181,7 @@ Linux implementation uses libnuma. Windows has stubs/heuristics for functions wi
 | US11561834B2 (Rambus) | ML-based metablock placement via RL | External optimizer using reinforcement learning; no per-page cache eviction |
 | Furrballs | Per-page placement + two-level ARC | Fine-grained, adaptive, page-level NUMA locality as policy input |
 
-No published system implements page-level cache eviction policy informed by NUMA placement and cross-node access frequency. NUMA-aware allocators (TCMalloc, jemalloc) handle placement but not eviction; NUMA-aware caches (CacheLib) use static sharding without adaptive per-page locality decisions. Rayhan & Aref's `move_pages2` syscall improves kernel-level page migration efficiency for DBMS workloads (up to 1.84x query throughput improvement) but does not address user-space cache placement policy---it is complementary to Furrballs' approach, which avoids runtime page migration entirely via track-and-defer eviction. Rambus's US11561834B2 patent describes an ML-based reinforcement learning system for adaptive metablock placement across NUMA tiers, operating as an external optimizer above the OS rather than as a user-space caching library with integrated NUMA-aware eviction.
+To our knowledge, no published system implements page-level cache eviction policy informed by NUMA placement and cross-node access frequency. NUMA-aware allocators (TCMalloc, jemalloc) handle placement but not eviction; NUMA-aware caches (CacheLib) use static sharding without adaptive per-page locality decisions. Rayhan & Aref's `move_pages2` syscall improves kernel-level page migration efficiency for DBMS workloads (up to 1.84x query throughput improvement) but does not address user-space cache placement policy---it is complementary to Furrballs' approach, which avoids runtime page migration entirely via track-and-defer eviction. Rambus's US11561834B2 patent describes an ML-based reinforcement learning system for adaptive metablock placement across NUMA tiers, operating as an external optimizer above the OS rather than as a user-space caching library with integrated NUMA-aware eviction.
 
 ## 5. Evaluation
 
@@ -446,7 +447,7 @@ NUMA awareness in Furrballs involves the following measurable tradeoffs:
 | Dimension | Cost | Benefit |
 |---|---|---|
 | Single-threaded latency | Set +3%, Get +17% overhead (shard iteration cost + per-node indirection) | Data placed on requesting thread's NUMA node |
-| Concurrent read throughput | Negligible (1.2x advantage from lock partitioning, offset on real hardware by NUMA latency) | Per-node shards reduce map size, improve cache locality |
+| Concurrent read throughput | Modest (1.2x advantage from lock partitioning, offset on real hardware by NUMA latency) | Per-node shards reduce map size, improve cache locality |
 | Concurrent write throughput | None measured (3x advantage from lock partitioning) | N separate mutexes vs 1, reducing contention proportionally |
 | Memory overhead | One physical block per NUMA node, pre-allocated | No per-page syscall overhead, deterministic memory layout |
 | Synchronization freedom | `unordered_map::find()` not safe during concurrent `insert()` | Lock-free reads with deterministic consistency via SeqLock |
@@ -460,9 +461,9 @@ The net tradeoff is favorable when: (a) concurrent writes dominate (lock partiti
 **Phase 1 is complete.** The NUMA-aware core is fully implemented, benchmarked, and documented.
 
 Delivered artifacts:
-- L1 ARC with key-based Set/Get API (CAS bump allocator, round-robin + thread-local routing, per-node shards)
+- Key-based Set/Get API with flat KeyStore (CAS bump allocator, round-robin + thread-local routing, per-node shards; no eviction policy in Phase 1)
 - Per-node physical block allocation with PMR-backed containers
-- Lock-free reads via SeqLock on per-node sharded KeyMeta
+- Lock-free reads via SeqLock on per-node sharded KeyMeta (validated under warmup-then-read pattern; see §5.9 for mixed-workload limitation)
 - NodeJob worker pinning (one worker per NUMA node)
 - WaitGroup-synchronized parallel init
 - Full Numatic platform abstraction (13 functions, CRTP PMR allocators, Linux + Windows stubs)
@@ -531,7 +532,7 @@ The project is on the `numa-focus` branch. Licensed under MIT. Build and test ar
 
 #### 4.1 Broadcast-Race Get (Revised Design)
 
-The broadcast-race Get replaces the O(N) sequential shard scan with a parallel scatter-gather that resolves key location in O(1) expected time on a cold miss.
+The broadcast-race Get replaces the O(N) sequential shard scan with a parallel scatter-gather: all N node workers probe their local shard concurrently, achieving wall-clock latency of a single shard lookup (independent of node count) while total CPU work remains O(N) unsuccessful probes.
 
 **Mechanism:**
 
