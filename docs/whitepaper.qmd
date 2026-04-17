@@ -1,6 +1,6 @@
 ---
 title: "Furrballs: A NUMA-Aware, High-Performance Caching Library"
-subtitle: "Technical Report v1.1"
+subtitle: "Technical Report v1.2"
 author: "The Sphynx"
 date: last-modified
 lang: en
@@ -40,7 +40,7 @@ format:
 ---
 
 ## Status
-v1.1 --- Phase 1 complete
+v1.2 --- Phase 1 complete
 
 ## Abstract
 Furrballs is a NUMA-aware caching library that uses NUMA topology as a first-class input to cache placement and eviction decisions. The core contribution is per-page allocation on specific NUMA nodes, with a planned two-level ARC hierarchy: key-level ARC (L1, Phase 2) for hot/cold key tracking with NUMA-aware eviction preference, and page-level ARC (L2, Phase 2) for page eviction backed by RocksDB persistence (L3). Pages are pre-allocated at initialization via one physical allocation per NUMA node, subdivided into logical pages filled by a bump allocator. Key routing supports round-robin distribution and thread-local placement (via a runtime config flag). The library is implemented in C++20, uses a platform abstraction layer (Numatic) for NUMA operations, and integrates a custom synchronization library (StreamLine) for thread coordination. Lock-free reads are implemented via SeqLock on per-node sharded KeyMeta, eliminating shared_mutex overhead from the read path. Benchmark results on a QEMU NUMA simulation (2 nodes, 4 vCPUs) demonstrate that lock-free reads expose an 11.7% p50 and 13.3% p99 cross-node overhead---more than double the signal visible under shared_mutex (5.1% p50). Thread-local routing achieves 26-30% p50 and 31-41% p99 improvement over round-robin with lock-free reads, confirming that NUMA-aware placement provides compound benefits in both memory locality and synchronization reduction. A cross-VM baseline comparison (Furrballs in a 2-node NUMA VM vs a functionally identical non-NUMA cache in a separate 1-node VM) reveals that per-node sharding provides a 3x concurrent Set and 1.2x concurrent Get throughput advantage through natural lock partitioning, at a mixed single-threaded cost (Set +3%, Get +17%). A five-step ablation study isolates each architectural decision: NUMA-aware allocation produces no signal in QEMU (which lacks hardware NUMA latency simulation), per-node sharding serves as an architectural enabler for subsequent routing decisions, thread-local routing creates the first measurable locality signal (+18.3% cross-node overhead), and a shared-nothing variant using an MPSC slot-based queue for cross-node reads adds +114% cross-node overhead (~1,500ns queue round-trip). Analytical projection shows the shared-nothing approach becomes competitive when cross-node cache misses per operation exceed ~21 on Xeon hardware. QEMU does not simulate real cross-node memory latency; a compile-time simulated latency feature (`-DSIMULATE_NUMA_LATENCY_NS=N`) validates architectural response to NUMA signals using published hardware specifications.
@@ -532,7 +532,7 @@ The project is on the `numa-focus` branch. Licensed under MIT. Build and test ar
 
 #### 4.1 Broadcast-Race Get (Revised Design)
 
-The broadcast-race Get replaces the O(N) sequential shard scan with a parallel scatter-gather: all N node workers probe their local shard concurrently, achieving wall-clock latency of a single shard lookup (independent of node count) while total CPU work remains O(N) unsuccessful probes.
+The broadcast-race Get replaces the O(N) sequential shard scan with a parallel scatter-gather: all N node workers probe their local shard concurrently, achieving O(N) aggregate work with O(1)-round parallel latency (wall-clock time of a single shard lookup, independent of node count under fixed N workers).
 
 **Mechanism:**
 
@@ -547,7 +547,7 @@ The broadcast-race Get replaces the O(N) sequential shard scan with a parallel s
 
 **Synchronization primitives:** The only coordination is a `WaitGroup` with count N---one `Done()` per worker completion. No atomic flags, no bitmask, no polling loop. The result slot requires no lock by the structural guarantee.
 
-**Caller decoupling:** By dispatching to its own node's worker (rather than performing a direct local lookup), the caller thread is entirely free during the race. This provides natural scaffolding for future batching: the caller could queue multiple Gets before waiting, amortizing the WaitGroup overhead across multiple concurrent lookups.
+**Caller decoupling:** By dispatching to its own node's worker (rather than performing a direct local lookup), the caller thread is temporarily decoupled from the data path until `WaitGroup::wait()` returns. This provides natural scaffolding for future batching: the caller could queue multiple Gets before waiting, amortizing the WaitGroup overhead across multiple concurrent lookups.
 
 **Waste model:**
 
@@ -567,7 +567,7 @@ After a broadcast-race resolves a cold-miss location, the result (key → nodeID
 
 #### 4.3 Remaining Phase 4 Items
 
-- [ ] Score-based eviction policy with configurable weight vector (recency, frequency, cross-node access count). Enables empirical testing of eviction behavior across a range of weight combinations rather than committing to a single fixed policy like ARC.
+- [ ] Score-based eviction policy for the location-store metadata (key → owner-node hints, including optional negative hints). This policy applies only to ownership hints used to reduce discovery/refetch cost; it does not replace the planned two-level ARC for key/page data eviction (Phase 2). Configurable weight vector (recency, frequency, cross-node access count) enables empirical testing across a range of combinations. On broadcast-race hit: cache positive owner hint. On broadcast-race miss: optionally cache short-TTL negative hint. Stale hint: rerun discovery and refresh.
 - [ ] Ablation of dispatch models: sequential probe vs broadcast-race vs broadcast-race + location cache vs MPSC queue, measuring compound effect with/without NUMA pinning
 - [ ] O(1) ARC lookup (hash map + list iterator, replacing linear search)
 - [ ] Concurrent hash map for per-node shards (safe lock-free reads during writes)
@@ -585,7 +585,7 @@ Phase 1 of Furrballs demonstrates that NUMA topology can serve as a meaningful i
 
 The critical finding is that synchronization overhead masks the true NUMA memory latency signal: under `shared_mutex`, cross-node overhead was 5.1% at p50; under SeqLock lock-free reads, it is 11.7%---more than double. Thread-local routing with SeqLock achieves 26--41% improvement over round-robin, confirming that NUMA-aware placement provides compound benefits. Per-node sharding provides 3x concurrent Set throughput through natural lock partitioning at a mixed single-threaded cost (Set +3%, Get +17%). A five-step ablation study isolates the contribution of each design decision: NUMA-aware allocation alone produces no measurable signal in QEMU (no hardware NUMA latency), per-node sharding acts as an architectural enabler for routing decisions (and is a prerequisite for NUMA-aware allocation to be viable), thread-local routing creates the first measurable locality signal (+18.3% cross-node overhead), and a shared-nothing variant using an MPSC slot queue for cross-node reads adds +114% cross-node overhead (~1,500ns queue round-trip). Analytical projection shows the shared-nothing approach becomes competitive when cross-node cache misses per operation exceed ~21 on Xeon hardware.
 
-Phase 2 will introduce the novel contribution: a two-level ARC hierarchy where NUMA placement and cross-node access frequency serve as eviction policy inputs. The broadcast-race dispatch model (Phase 4) provides a path to O(1) key location resolution using structural single-writer guarantees and WaitGroup coordination, with the caller fully decoupled from the data path.
+Phase 2 will introduce the novel contribution: a two-level ARC hierarchy where NUMA placement and cross-node access frequency serve as eviction policy inputs. The broadcast-race dispatch model (Phase 4) provides O(N) aggregate work with O(1)-round parallel latency (all N node workers probe concurrently), using structural single-writer guarantees and WaitGroup coordination. A location cache over discovery results (key → owner-node hints) then provides a true O(1) lookup path for subsequent accesses to the same key.
 
 When a cross-node access occurs, Furrballs tracks the access and defers action to the eviction policy (Phase 2), which will prefer evicting wrong-placed data. A compile-time simulated latency feature (`-DSIMULATE_NUMA_LATENCY_NS=N`) validates that the architecture responds to NUMA signals. QEMU does not simulate real cross-node memory latency, so Phase 1 results validate the methodology and architecture but not the performance claims. Real hardware validation and Phase 2's ARC eviction implementation are the remaining steps before publication.
 
