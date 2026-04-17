@@ -1,6 +1,6 @@
 ---
 title: "Furrballs: A NUMA-Aware, High-Performance Caching Library"
-subtitle: "Technical Report v0.11"
+subtitle: "Technical Report v0.12"
 author: "The Sphynx"
 date: last-modified
 lang: en
@@ -40,7 +40,7 @@ format:
 ---
 
 ## Status
-Draft v0.11 (living document)
+Draft v0.12 (living document)
 
 ## Abstract
 Furrballs is a NUMA-aware caching library that uses NUMA topology as a first-class input to cache placement and eviction decisions. The core contribution is per-page allocation on specific NUMA nodes, with a planned two-level ARC hierarchy: key-level ARC (L1, Phase 2) for hot/cold key tracking with NUMA-aware eviction preference, and page-level ARC (L2, Phase 2) for page eviction backed by RocksDB persistence (L3). Pages are pre-allocated at initialization via one physical allocation per NUMA node, subdivided into logical pages filled by a bump allocator. Key routing supports round-robin distribution and thread-local placement (via a runtime config flag). The library is implemented in C++20, uses a platform abstraction layer (Numatic) for NUMA operations, and integrates a custom synchronization library (StreamLine) for thread coordination. Lock-free reads are implemented via SeqLock on per-node sharded KeyMeta, eliminating shared_mutex overhead from the read path. Benchmark results on a QEMU NUMA simulation (2 nodes, 4 vCPUs) demonstrate that lock-free reads expose an 11.7% p50 and 13.3% p99 cross-node overhead---more than double the signal visible under shared_mutex (5.1% p50). Thread-local routing achieves 26-30% p50 and 31-41% p99 improvement over round-robin with lock-free reads, confirming that NUMA-aware placement provides compound benefits in both memory locality and synchronization reduction. A cross-VM baseline comparison (Furrballs in a 2-node NUMA VM vs a functionally identical non-NUMA cache in a separate 1-node VM) reveals that per-node sharding provides a 3x concurrent Set and 1.2x concurrent Get throughput advantage through natural lock partitioning, at a mixed single-threaded cost (Set +3%, Get +17%). A five-step ablation study isolates each architectural decision: NUMA-aware allocation produces no signal in QEMU (which lacks hardware NUMA latency simulation), per-node sharding serves as an architectural enabler for subsequent routing decisions, thread-local routing creates the first measurable locality signal (+18.3% cross-node overhead), and a shared-nothing variant using an MPSC slot-based queue for cross-node reads adds +114% cross-node overhead (~1,500ns queue round-trip). Analytical projection shows the shared-nothing approach becomes competitive when cross-node cache misses per operation exceed ~21 on Xeon hardware. QEMU does not simulate real cross-node memory latency; a compile-time simulated latency feature (`-DSIMULATE_NUMA_LATENCY_NS=N`) validates architectural response to NUMA signals using published hardware specifications.
@@ -497,10 +497,11 @@ The project is on the `numa-focus` branch. Licensed under MIT. Build and test ar
 - [ ] Page pool contraction when idle
 - [ ] Multi-physical-block support per node
 
-### Phase 4: Optimization
+### Phase 4: Dispatch Models & Optimization
+- [ ] Broadcast-race Get: parallel speculative probe to all node workers, first to find key writes result via CAS (resolves location opacity in O(1) instead of O(N) sequential scan). Partial analogy to distributed speculative reads (Dynamo). Only beneficial with non-uniform routing (thread-local) + NUMA-aware pinning + per-node memory allocation.
+- [ ] Ablation of dispatch models: sequential probe vs broadcast-race vs MPSC queue, measuring compound effect with/without NUMA pinning
 - [ ] O(1) ARC lookup (hash map + list iterator, replacing linear search)
 - [ ] Concurrent hash map for per-node shards (safe lock-free reads during writes)
-- [ ] NodeJob async dispatch for Set/Get (remote-node reads)
 - [ ] Reference counting on pages (dangling pointer safety for Phase 2 eviction)
 
 ### Phase 5: Publication
