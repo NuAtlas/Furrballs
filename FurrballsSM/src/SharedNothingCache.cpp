@@ -1,7 +1,6 @@
 #include "SharedNothingCache.h"
 #include "Logger.h"
 #include "MemoryManager.h"
-#include "WaitGroup.h"
 #include <rocksdb/db.h>
 #include <rocksdb/advanced_options.h>
 #include <rocksdb/options.h>
@@ -68,7 +67,7 @@ struct SharedNothingCache::Impl {
     bool isVolatile = false;
 };
 
-static void workerLoop(SMNodeWorker* w) {
+static void workerLoopMPSC(SMNodeWorker* w) {
     Numatic::PinCurrentThreadToNode(w->nodeId);
     Logger::getInstance().info("SM worker started on node " + std::to_string(w->nodeId));
 
@@ -173,7 +172,7 @@ SharedNothingCache* SharedNothingCache::Create(const std::string& dbPath, const 
     }
 
     for (int i = 0; i < nodeCount; i++) {
-        cache->pImpl->workers[i].thread = std::thread(workerLoop, &cache->pImpl->workers[i]);
+        cache->pImpl->workers[i].thread = std::thread(workerLoopMPSC, &cache->pImpl->workers[i]);
     }
 
     return cache;
@@ -309,7 +308,6 @@ SharedNothingCache::~SharedNothingCache() noexcept {
         if (pImpl->workers[i].thread.joinable()) {
             pImpl->workers[i].thread.join();
         }
-        delete[] pImpl->workers[i].incoming;
     }
     delete[] pImpl->workers;
 

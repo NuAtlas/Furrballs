@@ -1,6 +1,6 @@
 ---
 title: "Furrballs: A NUMA-Aware, High-Performance Caching Library"
-subtitle: "Technical Report v1.4"
+subtitle: "Technical Report v1.5"
 author: "Hamza Jamil Saied (The Sphynx)"
 date: last-modified
 doi: "10.5281/zenodo.19629610"
@@ -8,11 +8,11 @@ lang: en
 format:
   html:
     toc: true
-    number-sections: true
+    number-sections: false
   pdf:
     toc: true
     toc-depth: 2
-    number-sections: true
+    number-sections: false
     documentclass: scrartcl
     fontsize: 11pt
     geometry:
@@ -37,11 +37,11 @@ format:
         \KOMAoptions{headsepline=true}
   docx:
     toc: true
-    number-sections: true
+    number-sections: false
 ---
 
 ## Status
-v1.4 --- Phase 1 complete
+v1.5 --- BR variant evaluated, deferred pending real hardware
 
 ## Abstract
 Furrballs is a NUMA-aware caching library that uses NUMA topology as a first-class input to cache placement and eviction decisions. The core contribution is per-page allocation on specific NUMA nodes, with a planned two-level ARC hierarchy: key-level ARC (L1, Phase 2) for hot/cold key tracking with NUMA-aware eviction preference, and page-level ARC (L2, Phase 2) for page eviction backed by RocksDB persistence (L3). Pages are pre-allocated at initialization via one physical allocation per NUMA node, subdivided into logical pages filled by a bump allocator. Key routing supports round-robin distribution and thread-local placement (via a runtime config flag). The library is implemented in C++20, uses a platform abstraction layer (Numatic) for NUMA operations, and integrates a custom synchronization library (StreamLine) for thread coordination. Lock-free reads are implemented via SeqLock on per-node sharded KeyMeta, eliminating shared_mutex overhead from the read path. Benchmark results on a QEMU NUMA simulation (2 nodes, 4 vCPUs) demonstrate that lock-free reads expose an 11.7% p50 and 13.3% p99 cross-node overhead---more than double the signal visible under shared_mutex (5.1% p50). Thread-local routing achieves 26-30% p50 and 31-41% p99 improvement over round-robin with lock-free reads, confirming that NUMA-aware placement provides compound benefits in both memory locality and synchronization reduction. A cross-VM baseline comparison (Furrballs in a 2-node NUMA VM vs a functionally identical non-NUMA cache in a separate 1-node VM) reveals that per-node sharding provides a 3x concurrent Set and 1.2x concurrent Get throughput advantage through natural lock partitioning, at a mixed single-threaded cost (Set +3%, Get +17%). A five-step ablation study isolates each architectural decision: NUMA-aware allocation produces no signal in QEMU (which lacks hardware NUMA latency simulation), per-node sharding serves as an architectural enabler for subsequent routing decisions, thread-local routing creates the first measurable locality signal (+18.3% cross-node overhead), and a shared-nothing variant using an MPSC slot-based queue for cross-node reads adds +114% cross-node overhead (~1,500ns queue round-trip). Analytical projection shows the shared-nothing approach becomes competitive when cross-node cache misses per operation exceed ~21 on Xeon hardware. QEMU does not simulate real cross-node memory latency; a compile-time simulated latency feature (`-DSIMULATE_NUMA_LATENCY_NS=N`) validates architectural response to NUMA signals using published hardware specifications.
@@ -414,7 +414,7 @@ The shared-nothing variant exhibits three distinct behaviors:
 
 1. **Local-path overhead (+11-22%):** The SharedNothing variant is slower even on local operations. This is a QEMU artifact: the spin-polling worker threads compete for CPU time with the benchmark threads (2 workers + 2 benchmark threads on 4 vCPUs). On real hardware with dedicated cores per NUMA node (typical in server configurations), this overhead would be eliminated—the worker would run on a dedicated core with no benchmark thread competition.
 
-2. **Cross-node queue round-trip (~1,500ns):** The cross-node overhead is the cost of the MPSC slot protocol: claim slot → fill → submit → worker processes → complete → sender reads response. This is a fixed protocol cost independent of data size. The ~1,500ns overhead is dominated by the two `atomic` store/load round-trips and the `yield()` spin-wait. On real hardware, this could be reduced by using `futex` or `std::condition_variable` instead of spin-wait, and by placing the slot array on the worker's NUMA node.
+2. **Cross-node queue round-trip (~1,500ns):** The cross-node overhead is the cost of the MPSC slot protocol: claim slot → fill → submit → worker processes → complete → sender reads response. This is a fixed protocol cost independent of data size. The ~1,500ns overhead is dominated by the two `atomic` store/load round-trips and the `yield()` spin-wait. **Design flaw:** The MPSC queue uses CAS-based slot claiming and a 4-phase lifecycle designed for concurrent multi-producer contention. However, the structural single-writer guarantee (exactly one shard holds the key) means there is never concurrent multi-producer access to a single worker's queue for a given key. The multi-producer machinery is pure overhead solving a problem that does not exist in this architecture. A broadcast-race model (§4.4) eliminates the queue entirely.
 
 3. **Optimistic hit rate (67% vs 0%):** The SharedNothing variant's local-first lookup succeeds 67% of the time. This exceeds the naively expected 50% (equal self/cross reads) because the local-first check itself is cheaper than the queue path, and the benchmark interleaves ST warmup writes (all-local) with MT reads. Furrballs with round-robin routing shows 0% because round-robin distributes keys uniformly across nodes---local-first prediction has no correlation with key placement.
 
@@ -574,6 +574,25 @@ After a broadcast-race resolves a cold-miss location, the result (key → nodeID
 - [ ] Concurrent hash map for per-node shards (safe lock-free reads during writes)
 - [ ] Reference counting on pages (dangling pointer safety for Phase 2 eviction)
 - [ ] Theoretical scaling validation: per-node contention domains should scale as `threads_per_node` rather than `total_threads`, producing smoother scaling than non-NUMA caches as thread count increases. Requires real hardware (8+ cores across 2+ sockets) to measure.
+
+#### 4.4 Shared-Nothing + Broadcast-Race (Third Variant)
+
+The SharedNothingCache's MPSC queue was an inappropriate communication model: it assumes multiple concurrent producers contending for slots (CAS-based claiming, 4-phase lifecycle), but the structural single-writer guarantee means no concurrent multi-producer access ever occurs for a given key. The MPSC overhead is pure waste.
+
+Applying broadcast-race to the shared-nothing model eliminates the queue entirely:
+
+| Aspect | MPSC Queue (current) | Broadcast-Race |
+|---|---|---|
+| Cross-node dispatch | Caller targets specific worker via queue | Caller dispatches to all workers via WaitGroup |
+| Slot claiming | CAS-based (unnecessary) | None (no slots) |
+| Worker protocol | 4-phase lifecycle + polling | Wake, check shard, Done() |
+| Result synchronization | Spin-wait on `COMPLETED` atomic | WaitGroup + single-writer result slot (no CAS) |
+| Overhead source | Queue protocol (~1,500ns) | N-1 unsuccessful hash lookups (~100ns each) |
+
+The resulting model is a third variant combining shared-nothing data access with broadcast-race discovery. Workers still access only local memory (shared-nothing property preserved), but key discovery uses parallel probing instead of point-to-point queue communication. Projected cross-node latency: ~1 shard lookup + WaitGroup dispatch overhead, vs ~1,500ns for the MPSC queue.
+
+- [x] Implement shared-nothing + broadcast-race variant (implemented, evaluated in QEMU, deferred: CV wake overhead ~24us in QEMU masks any real NUMA effect; requires real hardware to validate)
+- [ ] Three-way ablation on real hardware: MPSC queue vs broadcast-race vs shared-nothing + broadcast-race
 
 ### Phase 5: Publication
 - [ ] Formal paper with reproducible benchmarks
