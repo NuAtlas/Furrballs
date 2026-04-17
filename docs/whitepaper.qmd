@@ -28,6 +28,7 @@ format:
       text: |
         \usepackage{microtype}
         \usepackage{booktabs}
+        \usepackage{etoolbox}
         \usepackage{caption}
         \captionsetup{font=small,labelfont=bf}
         \usepackage[automark]{scrlayer-scrpage}
@@ -35,6 +36,7 @@ format:
         \ihead{Furrballs Technical Report}
         \ohead{\pagemark}
         \KOMAoptions{headsepline=true}
+        \AtBeginEnvironment{tabular}{\let\oldcr\\\renewcommand{\\}{\oldcr\hline}}
   docx:
     toc: true
     number-sections: false
