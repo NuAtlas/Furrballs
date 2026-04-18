@@ -4,6 +4,7 @@
 ## Get latest from https://github.com/github/gitignore/blob/master/VisualStudio.gitignore
 
 [Bb]uild/
+[Bb]uilddebug/
 [Bb]uildtest/
 [Bb]uildsim/
 [Bb]uildhost/
@@ -29,7 +30,9 @@ BenchDB_*/
 # Mono auto generated files
 mono_crash.*
 
-.vscode/
+.vscode/*
+!.vscode/launch.json
+!.vscode/tasks.json
 # Build results
 [Dd]ebug/
 [Dd]ebugPublic/

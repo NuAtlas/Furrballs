@@ -1,4 +1,4 @@
-/*****************************************************************//**
+﻿/*****************************************************************//**
  * \file   Furrballs.h
  * \brief Primary interface for the Furrball library.
  *
@@ -205,7 +205,7 @@ private:
     struct NumaConfig{
         short PerNodePageLimit = 2;
         bool AllocateUsingNodePageSize = true; //< allocates with NUMA page sizes (or multiples of page sizes) instead of PageSize.
-        bool AllowNodeFallback = false; //< For now, This will be ignored (considered false)
+        bool AllowNodeFallback = false; //< For now, Keep this false.
         bool UseThreadLocalRouting = false;
         //Add priority later, Add Home Node + Perferred Nodes.
     };
@@ -268,6 +268,8 @@ private:
             size_t PageIndex, DataSize;
             void* DataOffset;
             int NodeID;
+            // bool Live = true; //Will be active when eviction and revival is needed, which will be soon
+            // size TTL, CreatedAt;
         };
 
         class Statistics {

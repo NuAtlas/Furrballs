@@ -1,0 +1,32 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "CMake: configure (Debug)",
+            "type": "shell",
+            "command": "cmake",
+            "args": ["-S", ".", "-B", "builddebug", "-DCMAKE_BUILD_TYPE=Debug"],
+            "group": "build"
+        },
+        {
+            "label": "CMake: build (Debug)",
+            "type": "shell",
+            "command": "cmake",
+            "args": ["--build", "builddebug", "--target", "Benchmark", "-j", "$(nproc)"],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        },
+        {
+            "label": "CMake: configure and build (Debug)",
+            "dependsOn": [
+                "CMake: configure (Debug)",
+                "CMake: build (Debug)"
+            ],
+            "group": "build",
+            "dependsOrder": "sequence",
+            "problemMatcher": []
+        }
+    ]
+}
