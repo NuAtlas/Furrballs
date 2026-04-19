@@ -1,6 +1,7 @@
 #pragma once
 #include "Concept.h"
 #include "MemoryManager.h"
+#include "Error.h"
 #include <bit>
 #include <emmintrin.h>
 #include <xxh3.h>
@@ -17,16 +18,26 @@ namespace NuAtlas {
 
     struct ProbeResult {
         size_t matchSlot = SIZE_MAX;   // SIZE_MAX if not found
-        size_t emptySlot = SIZE_MAX;   // SIZE_MAX if no empty found
         size_t deletedSlot = SIZE_MAX; // SIZE_MAX if no deleted found
+        size_t emptySlot = SIZE_MAX;   // SIZE_MAX if no empty found
     };
+
+    // h2 is also used for fingerprint. To reduce colisions. We are reducing the probability, but we can't remove it.
+    struct HashPair {
+        uint64_t h1, h2;
+    };
+
+    static HashPair HashKey(std::string_view key) {
+        XXH128_hash_t h = XXH3_128bits(key.data(), key.size());
+        return {h.high64, h.low64};
+    }
 
     // Swiss table varient, For NUMA backed bins create in the node.
     // Furrballs currently allocates the Entire Node metadata in the node's memory and we must ensure that it stays that
     // way or have a dynamic allocator.
     // TODO: re-add back the Key in the template, not needed for now.
     template <class Value>
-        requires std::is_move_constructible_v<Value>
+        requires std::is_move_constructible_v<Value> && std::is_trivially_copyable_v<Value>
     class CMap {
       private:
         static constexpr float kMaxLoadFactor = 0.875;
@@ -41,17 +52,6 @@ namespace NuAtlas {
 
             alignas(kNeedsSplit ? 64 : alignof(Value)) Value value;
         };
-
-        // h2 is also used for fingerprint. To reduce colisions. We are reducing the probability, but we can't remove
-        // it.
-        struct HashPair {
-            uint64_t h1, h2;
-        };
-
-        static HashPair HashKey(std::string_view key) {
-            XXH128_hash_t h = XXH3_128bits(key.data(), key.size());
-            return {h.high64, h.low64};
-        }
 
         const uint8_t* Ctrl() const { return SlotCtrlPair.second; }
         Slot* Slots() { return SlotCtrlPair.first; }
@@ -134,5 +134,21 @@ namespace NuAtlas {
             }
             return result; 
         }
+
+        std::optional<Value> Find(std::string_view key) const noexcept {
+            HashPair pair = HashKey(key);
+            ProbeResult result = Probe<false>(pair);
+            if (result.matchSlot == SIZE_MAX) return std::nullopt;
+            const Slot& slot = Slots()[result.matchSlot];
+            Value copy;
+            uint8_t s1;
+            do {
+                s1 = slot.seq.load(std::memory_order_acquire);
+                if (s1 & 1) { _mm_pause(); continue; }
+                std::memcpy(&copy, &slot.value, sizeof(Value));
+            } while (s1 != slot.seq.load(std::memory_order_acquire));
+            return copy;
+        }
+
     };
 } // namespace NuAtlas
