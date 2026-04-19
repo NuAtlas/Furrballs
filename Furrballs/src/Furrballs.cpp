@@ -313,6 +313,7 @@ Error NuAtlas::FurrBall::Set(const std::string &key, void *data, size_t size) no
         metadata.PageIndex = details->CurrentPage;
         metadata.DataOffset = Loc;
         details->KeyShard.insert({key, std::make_unique<PerNodeDetails::KeyLock>(metadata)});
+        details->KeyMetaStore.Add(key, metadata);
         Stats.BytesWritten.fetch_add(size, std::memory_order_relaxed);
     }else{
         KeyMeta meta = it->second->Read();

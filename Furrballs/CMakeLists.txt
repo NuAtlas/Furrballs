@@ -13,6 +13,7 @@ set(HEADERS
     include/Page.h
     include/NodeJob.h
     include/WaitGroup.h
+    include/CMap.h
 )
 
 add_library(Furrballs STATIC ${SOURCES} ${HEADERS})
@@ -22,8 +23,9 @@ source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR}/include PREFIX "Header Files" FILE
 
 find_package(lz4 CONFIG REQUIRED)
 find_package(RocksDB CONFIG REQUIRED)
+find_package(xxHash CONFIG REQUIRED)
 
-target_link_libraries(Furrballs PRIVATE lz4::lz4 RocksDB::rocksdb Numatic)
+target_link_libraries(Furrballs PRIVATE lz4::lz4 RocksDB::rocksdb xxHash::xxhash Numatic)
 target_include_directories(Furrballs
 PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include

@@ -8,6 +8,8 @@
 #include <string>
 #include "Concept.h"
 
+
+///COPIED VERBATIM FROM STREAMLINE, DO NOT CONSIDER TODOs HERE AS PART OF FURRBALLS' WORK.
 namespace StreamLine {
 
     /** \addtogroup Exceptions

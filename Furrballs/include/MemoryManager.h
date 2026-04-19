@@ -37,6 +37,46 @@ namespace NuAtlas {
         return (size + alignment - 1) & ~(alignment - 1);
     }
 
+    template<typename T, typename U>
+    struct CoAllocPair {
+        void* base = nullptr;
+        T* first = nullptr;
+        U* second = nullptr;
+        size_t totalBytes = 0;
+        size_t alignment  = 0;
+
+        void dealloc() const {
+            ::operator delete(base, std::align_val_t{alignment});
+        }
+    };
+
+    template<typename T, typename U>
+    CoAllocPair<T, U> CoAllocate(size_t countT, size_t countU) {
+        constexpr size_t allocAlign = std::max(alignof(T), alignof(U));
+        constexpr bool tFirst = alignof(T) >= alignof(U);
+
+        size_t sizeT = countT * sizeof(T);
+        size_t sizeU = countU * sizeof(U);
+        size_t secondOffset = tFirst
+            ? padded_size_to(sizeT, alignof(U))
+            : padded_size_to(sizeU, alignof(T));
+        size_t total = secondOffset + (tFirst ? sizeU : sizeT);
+
+        void* base = ::operator new(total, std::align_val_t{allocAlign});
+
+        T* tPtr;
+        U* uPtr;
+        if constexpr (tFirst) {
+            tPtr = static_cast<T*>(base);
+            uPtr = reinterpret_cast<U*>(static_cast<char*>(base) + secondOffset);
+        } else {
+            uPtr = static_cast<U*>(base);
+            tPtr = static_cast<T*>(static_cast<char*>(base) + secondOffset);
+        }
+
+        return {base, tPtr, uPtr, total, allocAlign};
+    }
+
     class MemoryManager {
     private:
         inline static std::mutex FreeingMutex;
