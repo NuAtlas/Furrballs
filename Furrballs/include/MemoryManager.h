@@ -40,8 +40,14 @@ namespace NuAtlas {
     template<typename T, typename U>
     struct CoAllocPair {
         void* base = nullptr;
-        T* first = nullptr;
-        U* second = nullptr;
+        union{
+            T* first = nullptr;
+            T* t;
+        };
+        union{
+            U* second = nullptr;
+            U* u;
+        };
         size_t totalBytes = 0;
         size_t alignment  = 0;
 
