@@ -539,6 +539,39 @@ int main() {
         std::cout << "Skipping multi-threaded NUMA benchmarks (1 node). Run in QEMU VM for NUMA results." << std::endl;
     }
 
+    // --- THREAD SCALING ---
+    if (numNodes >= 2) {
+        std::cout << std::string(110, '=') << std::endl;
+        std::cout << "THREAD SCALING (" << iterations << " iterations, averaged)" << std::endl;
+        std::cout << "64-byte values, thread-local routing, local Gets, per-thread-count fresh FurrBall" << std::endl;
+        std::cout << std::string(110, '=') << std::endl;
+        std::cout << "Threads | Set ops/s | Get ops/s" << std::endl;
+        std::cout << "--------|----------|----------" << std::endl;
+        for (int tc : {4, 8, 16, 32, 64}) {
+            int kpt = (tc <= 16) ? 2500 : 1000;
+            double sSum = 0, gSum = 0;
+            for (int i = 0; i < iterations; i++) {
+                NumaConfig sncfg;
+                sncfg.AllocateUsingNodePageSize = false;
+                sncfg.UseThreadLocalRouting = true;
+                FurrConfig scfg;
+                scfg.EnableLogging = false;
+                scfg.EnableNUMA = true;
+                scfg.PageSize = 4096;
+                scfg.InitialPageCount = 2048;
+                scfg.numaConfig = &sncfg;
+                FurrBall* sfb = FurrBall::CreateBall("BenchDB_Scale_" + std::to_string(tc), scfg, true);
+                if (!sfb) continue;
+                auto sr = benchMultiThread(sfb, "Set", tc, numNodes, kpt, 64, true, false);
+                auto gr = benchMultiThread(sfb, "Get", tc, numNodes, kpt, 64, false, false);
+                sSum += sr.opsPerSec; gSum += gr.opsPerSec;
+                delete sfb;
+            }
+            std::cout << std::setw(7) << tc << " | " << std::fixed << std::setprecision(0)
+                      << std::setw(8) << sSum/iterations << " | " << std::setw(8) << gSum/iterations << std::endl;
+        }
+    }
+
     // --- ROUTING STRATEGY COMPARISON ---
     if (numNodes >= 2) {
         std::cout << std::string(110, '=') << std::endl;
