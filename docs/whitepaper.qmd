@@ -1,6 +1,6 @@
 ---
 title: "Furrballs: A NUMA-Aware, High-Performance Caching Library"
-subtitle: "Technical Report v1.7.1"
+subtitle: "Technical Report v1.7.2"
 author: "Hamza Jamil Saied (The Sphynx)"
 date: last-modified
 doi: "10.5281/zenodo.19629610"
@@ -43,14 +43,14 @@ format:
 ---
 
 ## Status
-v1.7.1 --- Review fixes: baseline Get presentation corrected, interleave validation added, ablation per-iteration stddev quantified (Step D stddev=3.8%)
+v1.7.2 --- Fix factual error: Set scaling bottleneck is SpinLock (ARC list mutations), not PromoteBuf (read-path deferred promotions)
 
 ## Abstract
 Furrballs is a NUMA-aware caching library that uses NUMA topology as a first-class input to cache placement and eviction decisions. The core contribution is per-page allocation on specific NUMA nodes, with a two-level ARC hierarchy: key-level ARC (L1) for hot/cold key tracking with NUMA-aware eviction preference, and page-level ARC (L2) for page eviction backed by RocksDB persistence (L3). Pages are pre-allocated at initialization via one physical allocation per NUMA node, subdivided into logical pages filled by a bump allocator. Key routing supports round-robin distribution and thread-local placement (via a runtime config flag). The library is implemented in C++20, uses a platform abstraction layer (Numatic) for NUMA operations, and integrates a custom synchronization library (StreamLine) for thread coordination.
 
 Phase 1 validated the core architecture using lock-free reads via SeqLock on per-node sharded KeyMeta. Phase 2a replaces the Phase 1 data structures with CMap, a lock-free-read concurrent Swiss table with SSE2 SIMD probing and per-slot seqlock concurrency, wrapped by ConcurrentARC which provides ARC eviction policy with hash-keyed O(1) list tracking and deferred promotions via a lock-free MPSC buffer (PromoteBuf). Phase 2a results show a 58% improvement in concurrent Set throughput (per-slot CAS eliminates shared_mutex serialization), safe concurrent reads during writes (resolving Phase 1's unordered_map data race), and a 6--41% single-threaded latency regression (architectural cost of concurrent data structures). A cross-VM baseline comparison shows Furrballs maintains a 2.60x concurrent Set advantage through lock partitioning via per-node CMaps.
 
-Real hardware validation on AWS c6i.metal (Intel Xeon Platinum 8375C, 2 sockets, 128 vCPUs, NUMA distance 10/20) confirms the NUMA signal: 4.5--7.0% p50 cross-node overhead, thread-local routing provides +60--65% improvement over round-robin, and ablation step D (thread-local routing) is the primary driver of the cross-node signal (+21.0--38.9% Cross-OH). Get throughput scales +72% from 4→64 threads, validating the lock partitioning thesis for reads. Set throughput degrades -79% at 64 threads due to per-node SpinLock contention, identifying per-thread PromoteBuf sharding as the next optimization target.
+Real hardware validation on AWS c6i.metal (Intel Xeon Platinum 8375C, 2 sockets, 128 vCPUs, NUMA distance 10/20) confirms the NUMA signal: 4.5--7.0% p50 cross-node overhead, thread-local routing provides +60--65% improvement over round-robin, and ablation step D (thread-local routing) is the primary driver of the cross-node signal (+21.0--38.9% Cross-OH). Get throughput scales +72% from 4→64 threads, validating the lock partitioning thesis for reads. Set throughput degrades -79% at 64 threads due to per-node SpinLock contention, identifying striped SpinLocks or per-bucket ARC locks as the next optimization target.
 
 Phase 1 benchmark results on a QEMU NUMA simulation (2 nodes, 4 vCPUs) demonstrated that lock-free reads expose an 11.7% p50 and 13.3% p99 cross-node overhead---more than double the signal visible under shared_mutex (5.1% p50). Thread-local routing achieves 26--30% p50 and 31--41% p99 improvement over round-robin with lock-free reads, confirming that NUMA-aware placement provides compound benefits in both memory locality and synchronization reduction. A cross-VM baseline comparison reveals that per-node sharding provides a 3x concurrent Set and 1.2x concurrent Get throughput advantage through natural lock partitioning, at a mixed single-threaded cost (Set +3%, Get +17%). A five-step ablation study isolates each architectural decision: NUMA-aware allocation produces no signal in QEMU, per-node sharding serves as an architectural enabler, thread-local routing creates the first measurable locality signal (+18.3% cross-node overhead), and a shared-nothing variant using an MPSC slot queue adds +114% cross-node overhead (~1,500ns queue round-trip) with a break-even at ~21 cache misses per operation on Xeon hardware.
 
@@ -1024,7 +1024,7 @@ Per-node lock partitioning creates N independent contention domains. This sectio
 
 **Get throughput scales positively (+72% from 4→64 threads).** CMap's seqlock-based Find is nearly contention-free; more threads = more parallel reads. This validates the lock partitioning thesis for reads: per-node sharding prevents cross-node contention on the read path.
 
-**Set throughput degrades (-79% from 4→64 threads).** All writes on a node contend on the same SpinLock. At 32 threads/node, SpinLock contention dominates. This is the expected bottleneck for a single SpinLock per node; the documented upgrade path is per-thread PromoteBuf sharding (\S2.8.5) or striped SpinLocks.
+**Set throughput degrades (-79% from 4→64 threads).** All writes on a node contend on the same SpinLock. At 32 threads/node, SpinLock contention dominates. This is the expected bottleneck for a single SpinLock per node; the documented upgrade paths are striped SpinLocks (multiple locks per CMap, keyed by hash bucket) or per-bucket ARC locks.
 
 **Get scaling plateaus at ~16 threads (8/node):** 9.0M→9.2M→10.1M beyond 16 threads shows diminishing returns, likely from CMap's shared ctrl array probe traffic and memory bandwidth saturation.
 
@@ -1118,7 +1118,7 @@ Real hardware (c6i.metal) validated:
 3. **Ablation step D (thread-local routing) is the NUMA signal's primary driver** --- +21.0% to +38.9% Cross-OH on real hardware (vs -2.8% in QEMU)
 4. **Concurrent Set advantage maintained (1.74x)** on real hardware through lock partitioning
 5. **Get throughput scales +72% from 4→64 threads** --- lock partitioning prevents cross-node read contention (§5.19)
-6. **Set throughput degrades -79% from 4→64 threads** --- SpinLock bottleneck at 32 threads/node (documented upgrade path: per-thread PromoteBuf sharding)
+6. **Set throughput degrades -79% from 4→64 threads** --- SpinLock bottleneck at 32 threads/node (documented upgrade path: striped SpinLocks or per-bucket ARC locks)
 7. **QEMU results validated the methodology and architecture, not the performance claims** --- qualitative patterns match, quantitative magnitudes differ
 
 The project is on the `numa-focus` branch. Licensed under MIT. Build and test artifacts are excluded from version control.
@@ -1259,7 +1259,7 @@ Phase 2a replaces the Phase 1 data structures with a concurrent Swiss table (CMa
 
 The five-step ablation study (§5.10, §5.17) isolates the contribution of each architectural decision across both phases. The Phase 2a ablation reveals that the `thread_local` cache fundamentally changed the routing dynamics: thread-local routing is now *faster* than round-robin (ablation D < C), unlike Phase 1 where the `GetCurrentNode()` syscall made it 34% slower. This has a methodological implication: Phase 1's routing overhead findings (26--41% improvement from thread-local routing, ablation C→D +34% Set increase) are **environment-specific** rather than architectural. They reflect QEMU's VM exit cost on `sched_getcpu()`, not an inherent property of NUMA-aware routing. On real hardware where `GetCurrentNode()` costs ~1--10ns via VDSO, the Phase 1 routing story would resemble Phase 2a's.
 
-Real hardware validation on AWS c6i.metal (Intel Xeon Platinum 8375C, 2 sockets, 128 vCPUs) confirms the architecture's NUMA benefit: a genuine 4.5--7.0% p50 cross-node overhead (§5.18), thread-local routing providing +60--65% improvement over round-robin, and ablation step D (thread-local routing) as the primary driver of the cross-node signal (+21.0--38.9% Cross-OH). Get throughput scales +72% from 4→64 threads (§5.19), validating the lock partitioning thesis for reads. Set throughput degrades -79% at 64 threads due to per-node SpinLock contention, identifying per-thread PromoteBuf sharding as the next optimization target. The QEMU results validated the methodology and architecture; the real hardware results validate the performance claims.
+Real hardware validation on AWS c6i.metal (Intel Xeon Platinum 8375C, 2 sockets, 128 vCPUs) confirms the architecture's NUMA benefit: a genuine 4.5--7.0% p50 cross-node overhead (§5.18), thread-local routing providing +60--65% improvement over round-robin, and ablation step D (thread-local routing) as the primary driver of the cross-node signal (+21.0--38.9% Cross-OH). Get throughput scales +72% from 4→64 threads (§5.19), validating the lock partitioning thesis for reads. Set throughput degrades -79% at 64 threads due to per-node SpinLock contention, identifying striped SpinLocks or per-bucket ARC locks as the next optimization target. The QEMU results validated the methodology and architecture; the real hardware results validate the performance claims.
 
 Phase 2b will wire the eviction callback to flush dirty values to RocksDB, completing the L1 key-level ARC. The broadcast-race dispatch model (Phase 4) provides O(N) aggregate work with O(1)-round parallel latency.
 
