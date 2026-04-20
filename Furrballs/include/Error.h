@@ -40,6 +40,7 @@ namespace NuAtlas
         KEY_NOT_FOUND       = 43,
         EVICTION_FAILED     = 44,
         EVICTION_CALLBACK_ERR = 45,
+        ABANDONED_SET       = 46,
         // Storage / RocksDB
         DB_OPEN_FAILED      = 50,
         DB_CLOSE_FAILED     = 51,

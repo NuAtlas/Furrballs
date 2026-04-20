@@ -6,6 +6,7 @@
  *********************************************************************/
 
 #include "Furrballs.h"
+#include "CMap.h"
 #undef max
 #undef min
 #include <cstring>
@@ -75,15 +76,13 @@ thread_local std::unordered_set<void*> MemoryManager::ThreadBuffers;
 FurrBall::GlobalNumaState FurrBall::globalNumaState;
 
 struct PerNodeDetails{
-    std::shared_mutex rwMutex;
     Numatic::NumaLocalMemoryResource nodeMR;
     std::pmr::vector<Page> NodePages;
-    using KeyLock = StreamLine::SeqLock<FurrBall::KeyMeta>;
-    std::unordered_map<std::string, std::unique_ptr<KeyLock>> KeyShard;
-    size_t CurrentPage = 0;
+    ConcurrentARC<FurrBall::KeyMeta> KeyStore;
+    std::atomic<size_t> CurrentPage{0};
     void* PhysicalPageInNode = nullptr;
-    ARCPolicy<std::string, FurrBall::KeyMeta> KeyMetaStore;
-    PerNodeDetails(size_t ARC_cap) : NodePages(&nodeMR), KeyMetaStore(ARC_cap) {}
+    PerNodeDetails(size_t arcCap, CMapAllocFn af = CMapDefaultAlloc, CMapFreeFn ff = CMapDefaultFree)
+        : NodePages(&nodeMR), KeyStore(arcCap, af, ff) {}
 };
 
 struct PrivateNumaState{
@@ -241,21 +240,20 @@ Error NuAtlas::FurrBall::Get(const std::string &key, void* outBuf, size_t BufSiz
     }
 
     int nodeCount = globalNumaState.NumaNodeCount;
-    auto tryShard = [&](int n) -> Error {
+    auto tryNode = [&](int n) -> Error {
         PerNodeDetails* details = DataMembers->privateNumaState->NodeDetails[n];
-        auto it = details->KeyShard.find(key);
-        if(it != details->KeyShard.end()){
+        auto meta = details->KeyStore.Find(key);
+        if(meta.has_value()){
 #ifdef SIMULATE_NUMA_LATENCY_NS
             if(Numatic::GetCurrentNode() != n) {
                 simulateCrossNodeLatency();
             }
 #endif
-            KeyMeta meta = it->second->Read();
-            outSize = meta.DataSize;
-            if(BufSize < meta.DataSize) return BUF_NOT_LARGE_ENOUGH;
-            memcpy(outBuf, meta.DataOffset, meta.DataSize);
+            outSize = meta->DataSize;
+            if(BufSize < meta->DataSize) return BUF_NOT_LARGE_ENOUGH;
+            memcpy(outBuf, meta->DataOffset, meta->DataSize);
             Stats.HitCount.fetch_add(1, std::memory_order_relaxed);
-            Stats.BytesRead.fetch_add(meta.DataSize, std::memory_order_relaxed);
+            Stats.BytesRead.fetch_add(meta->DataSize, std::memory_order_relaxed);
             return NO_ERR;
         }
         return INVALID_ARG;
@@ -263,19 +261,19 @@ Error NuAtlas::FurrBall::Get(const std::string &key, void* outBuf, size_t BufSiz
 
     if(ThreadLocalRoute){
         int local = Numatic::GetCurrentNode();
-        Error err = tryShard(local);
+        Error err = tryNode(local);
         if(err == NO_ERR){
             Stats.LocalHitCount.fetch_add(1, std::memory_order_relaxed);
             return NO_ERR;
         }
         for(int n = 0; n < nodeCount; n++){
             if(n == local) continue;
-            err = tryShard(n);
+            err = tryNode(n);
             if(err == NO_ERR) return NO_ERR;
         }
     }else{
         for(int n = 0; n < nodeCount; n++){
-            Error err = tryShard(n);
+            Error err = tryNode(n);
             if(err == NO_ERR) return NO_ERR;
         }
     }
@@ -293,51 +291,46 @@ Error NuAtlas::FurrBall::Set(const std::string &key, void *data, size_t size) no
 
     int targetNode = ThreadLocalRoute ? Numatic::GetCurrentNode() : this->DataMembers->privateNumaState->rr.Get();
     PerNodeDetails* details = DataMembers->privateNumaState->NodeDetails[targetNode];
-    std::unique_lock<std::shared_mutex> lock(details->rwMutex);
 
-    auto it = details->KeyShard.find(key);
-
-    if(it == details->KeyShard.end()){
-        KeyMeta metadata;
-        metadata.DataSize = size;
-        metadata.NodeID = targetNode;
-
-        void* Loc = details->NodePages[details->CurrentPage].TryBump(size);
-        while(Loc == nullptr){
-            if(++details->CurrentPage == details->NodePages.size()){
-                return OUT_OF_MEM;
-            }
-            Loc = details->NodePages[details->CurrentPage].TryBump(size);
-        }
-        memcpy(Loc, data, size);
-        metadata.PageIndex = details->CurrentPage;
-        metadata.DataOffset = Loc;
-        details->KeyShard.insert({key, std::make_unique<PerNodeDetails::KeyLock>(metadata)});
-        details->KeyMetaStore.Add(key, metadata);
-        Stats.BytesWritten.fetch_add(size, std::memory_order_relaxed);
-    }else{
-        KeyMeta meta = it->second->Read();
-        if(size <= meta.DataSize){
+    auto existing = details->KeyStore.Find(key);
+    if(existing.has_value() && size <= existing->DataSize){
+        Error err = details->KeyStore.UpdateInPlace(key, [&data, &size](KeyMeta& meta){
             memcpy(meta.DataOffset, data, size);
             meta.DataSize = size;
-            it->second->Write(meta);
-        }else{
-            void* Loc = details->NodePages[details->CurrentPage].TryBump(size);
-            while(Loc == nullptr){
-                if(++details->CurrentPage == details->NodePages.size()){
-                    return OUT_OF_MEM;
-                }
-                Loc = details->NodePages[details->CurrentPage].TryBump(size);
-            }
-            memcpy(Loc, data, size);
-            meta.PageIndex = details->CurrentPage;
-            meta.DataOffset = Loc;
-            meta.DataSize = size;
-            it->second->Write(meta);
+        });
+        if(err == NO_ERR){
             Stats.BytesWritten.fetch_add(size, std::memory_order_relaxed);
+            return NO_ERR;
         }
     }
-    return NO_ERR;
+
+    size_t pageIdx = details->CurrentPage.load(std::memory_order_relaxed);
+    void* Loc = nullptr;
+    while (true) {
+        if (pageIdx >= details->NodePages.size()) return OUT_OF_MEM;
+        Loc = details->NodePages[pageIdx].TryBump(size);
+        if (Loc) break;
+        size_t nextIdx = pageIdx + 1;
+        if (nextIdx >= details->NodePages.size()) return OUT_OF_MEM;
+        if (!details->CurrentPage.compare_exchange_weak(pageIdx, nextIdx, std::memory_order_relaxed)) {
+            pageIdx = details->CurrentPage.load(std::memory_order_relaxed);
+        } else {
+            pageIdx = nextIdx;
+        }
+    }
+    memcpy(Loc, data, size);
+
+    KeyMeta metadata;
+    metadata.DataSize = size;
+    metadata.NodeID = targetNode;
+    metadata.PageIndex = pageIdx;
+    metadata.DataOffset = Loc;
+
+    Error err = details->KeyStore.Set(key, metadata);
+    if (err == NO_ERR) {
+        Stats.BytesWritten.fetch_add(size, std::memory_order_relaxed);
+    }
+    return err;
 }
 
 void NuAtlas::FurrBall::Bootstrap()
@@ -422,7 +415,7 @@ FurrBall *FurrBall::CreateBall(const std::string &DBpath, const FurrConfig &conf
                 }
                 void* auxD = (void*)Numatic::AllocateLocal(sizeof(PerNodeDetails));
                 Logger::getInstance().info(std::string("Per-node cache will have an inital capacity of ") + std::to_string(arcCap) + " Keys." );
-                PerNodeDetails* details = new(auxD)PerNodeDetails(arcCap);
+                PerNodeDetails* details = new(auxD)PerNodeDetails(arcCap, Numatic::AllocateLocal, Numatic::FreeNUMA);
                 details->PhysicalPageInNode = ptr;
                 details->NodePages.reserve(numPages);
                 

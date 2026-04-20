@@ -22,11 +22,14 @@ namespace NuAtlas::Numatic {
     }
 
     int GetCurrentNode() noexcept {
-        USHORT node;
-        if (GetNumaProcessorNode(GetCurrentProcessorNumber(), &node)) {
-            return static_cast<int>(node);
+        thread_local int node = -1;
+        if (node == -1) {
+            USHORT n;
+            if (GetNumaProcessorNode(GetCurrentProcessorNumber(), &n)) {
+                node = static_cast<int>(n);
+            }
         }
-        return 0;
+        return node;
     }
 
     void PinCurrentThreadToNode(int nodeId) noexcept {

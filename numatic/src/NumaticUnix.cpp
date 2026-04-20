@@ -20,7 +20,8 @@ namespace NuAtlas::Numatic {
     }
 
     int GetCurrentNode() noexcept {
-        return numa_node_of_cpu(sched_getcpu());
+        thread_local int node = numa_node_of_cpu(sched_getcpu());
+        return node;
     }
 
     void PinCurrentThreadToNode(int nodeId) noexcept {

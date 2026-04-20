@@ -1,6 +1,6 @@
 ---
 title: "Furrballs: A NUMA-Aware, High-Performance Caching Library"
-subtitle: "Technical Report v1.4"
+subtitle: "Technical Report v1.6"
 author: "Hamza Jamil Saied (The Sphynx)"
 date: last-modified
 doi: "10.5281/zenodo.19629610"
@@ -11,7 +11,7 @@ format:
     number-sections: false
   pdf:
     toc: true
-    toc-depth: 2
+    toc-depth: 4
     number-sections: false
     documentclass: scrartcl
     fontsize: 11pt
@@ -43,10 +43,14 @@ format:
 ---
 
 ## Status
-v1.4 --- BR variant evaluated, deferred pending real hardware
+v1.6 --- Phase 2a complete: CMap + ConcurrentARC + ArcList + PromoteBuf implemented, benchmarked, and evaluated
 
 ## Abstract
-Furrballs is a NUMA-aware caching library that uses NUMA topology as a first-class input to cache placement and eviction decisions. The core contribution is per-page allocation on specific NUMA nodes, with a planned two-level ARC hierarchy: key-level ARC (L1, Phase 2) for hot/cold key tracking with NUMA-aware eviction preference, and page-level ARC (L2, Phase 2) for page eviction backed by RocksDB persistence (L3). Pages are pre-allocated at initialization via one physical allocation per NUMA node, subdivided into logical pages filled by a bump allocator. Key routing supports round-robin distribution and thread-local placement (via a runtime config flag). The library is implemented in C++20, uses a platform abstraction layer (Numatic) for NUMA operations, and integrates a custom synchronization library (StreamLine) for thread coordination. Lock-free reads are implemented via SeqLock on per-node sharded KeyMeta, eliminating shared_mutex overhead from the read path. Benchmark results on a QEMU NUMA simulation (2 nodes, 4 vCPUs) demonstrate that lock-free reads expose an 11.7% p50 and 13.3% p99 cross-node overhead---more than double the signal visible under shared_mutex (5.1% p50). Thread-local routing achieves 26-30% p50 and 31-41% p99 improvement over round-robin with lock-free reads, confirming that NUMA-aware placement provides compound benefits in both memory locality and synchronization reduction. A cross-VM baseline comparison (Furrballs in a 2-node NUMA VM vs a functionally identical non-NUMA cache in a separate 1-node VM) reveals that per-node sharding provides a 3x concurrent Set and 1.2x concurrent Get throughput advantage through natural lock partitioning, at a mixed single-threaded cost (Set +3%, Get +17%). A five-step ablation study isolates each architectural decision: NUMA-aware allocation produces no signal in QEMU (which lacks hardware NUMA latency simulation), per-node sharding serves as an architectural enabler for subsequent routing decisions, thread-local routing creates the first measurable locality signal (+18.3% cross-node overhead), and a shared-nothing variant using an MPSC slot-based queue for cross-node reads adds +114% cross-node overhead (~1,500ns queue round-trip). Analytical projection shows the shared-nothing approach becomes competitive when cross-node cache misses per operation exceed ~21 on Xeon hardware. QEMU does not simulate real cross-node memory latency; a compile-time simulated latency feature (`-DSIMULATE_NUMA_LATENCY_NS=N`) validates architectural response to NUMA signals using published hardware specifications.
+Furrballs is a NUMA-aware caching library that uses NUMA topology as a first-class input to cache placement and eviction decisions. The core contribution is per-page allocation on specific NUMA nodes, with a two-level ARC hierarchy: key-level ARC (L1) for hot/cold key tracking with NUMA-aware eviction preference, and page-level ARC (L2) for page eviction backed by RocksDB persistence (L3). Pages are pre-allocated at initialization via one physical allocation per NUMA node, subdivided into logical pages filled by a bump allocator. Key routing supports round-robin distribution and thread-local placement (via a runtime config flag). The library is implemented in C++20, uses a platform abstraction layer (Numatic) for NUMA operations, and integrates a custom synchronization library (StreamLine) for thread coordination.
+
+Phase 1 validated the core architecture using lock-free reads via SeqLock on per-node sharded KeyMeta. Phase 2a replaces the Phase 1 data structures with CMap, a lock-free-read concurrent Swiss table with SSE2 SIMD probing and per-slot seqlock concurrency, wrapped by ConcurrentARC which provides ARC eviction policy with hash-keyed O(1) list tracking and deferred promotions via a lock-free MPSC buffer (PromoteBuf). Phase 2a results show a 58% improvement in concurrent Set throughput (per-slot CAS eliminates shared_mutex serialization), safe concurrent reads during writes (resolving Phase 1's unordered_map data race), and a 6--41% single-threaded latency regression (architectural cost of concurrent data structures). A cross-VM baseline comparison shows Furrballs maintains a 2.60x concurrent Set advantage through lock partitioning via per-node CMaps. The NUMA signal remains invisible in QEMU across both phases, requiring real hardware validation.
+
+Phase 1 benchmark results on a QEMU NUMA simulation (2 nodes, 4 vCPUs) demonstrated that lock-free reads expose an 11.7% p50 and 13.3% p99 cross-node overhead---more than double the signal visible under shared_mutex (5.1% p50). Thread-local routing achieves 26--30% p50 and 31--41% p99 improvement over round-robin with lock-free reads, confirming that NUMA-aware placement provides compound benefits in both memory locality and synchronization reduction. A cross-VM baseline comparison reveals that per-node sharding provides a 3x concurrent Set and 1.2x concurrent Get throughput advantage through natural lock partitioning, at a mixed single-threaded cost (Set +3%, Get +17%). A five-step ablation study isolates each architectural decision: NUMA-aware allocation produces no signal in QEMU, per-node sharding serves as an architectural enabler, thread-local routing creates the first measurable locality signal (+18.3% cross-node overhead), and a shared-nothing variant using an MPSC slot queue adds +114% cross-node overhead (~1,500ns queue round-trip) with a break-even at ~21 cache misses per operation on Xeon hardware.
 
 ## 1. Problem Statement
 
@@ -116,7 +120,15 @@ Multi-value pages use an append-only bump allocator with 8-byte alignment. Each 
 
 ### 2.5 Concurrency
 
-Per-node `shared_mutex` serializes writes (map insert/update + page bump). Reads are lock-free via `SeqLock<KeyMeta>` under read-heavy workloads where no concurrent `insert()` targets the same shard: `Get()` iterates per-node shards, calls `SeqLock::Read()` on matching entries, and copies data without taking any lock. The SeqLock sequence counter provides deterministic consistency---if a writer is active (odd sequence), the reader retries. In mixed read/write workloads where concurrent `Set()` inserts new keys into the same shard, `unordered_map::find()` may observe a partially-constructed map state; this requires a concurrent hash map or per-key locking (Phase 4). Statistics use `alignas(64)` on all atomic fields to prevent false sharing.
+Phase 1 used per-node `shared_mutex` for writes and `SeqLock<KeyMeta>` for lock-free reads under warmup-then-read workloads. The `unordered_map::find()` data race during concurrent reads+writes was a known limitation.
+
+Phase 2a replaces the per-node `unordered_map` + `SeqLock` + `shared_mutex` combination with CMap (§2.7) inside ConcurrentARC (§2.8). The concurrency model is now:
+
+- **Find (Get):** Lock-free CMap read via seqlock protocol. PromoteBuf enqueue for deferred ARC promotion (lock-free `fetch_add`). No SpinLock on the read path.
+- **Set (insert/update):** UpdateInPlace fast path (CMap seqlock only, no SpinLock) for existing keys that fit. New-key path: SpinLock for ARC list management + CMap for concurrent key→value storage. CMap's per-slot CAS eliminates shared_mutex serialization.
+- **Eviction:** SpinLock + CMap's `FindAndEraseByHash` (hash-keyed, no string needed).
+
+Statistics use `alignas(64)` on all atomic fields to prevent false sharing. `Numatic::GetCurrentNode()` uses a `thread_local` cache (§3.15) to eliminate syscall overhead per routing decision.
 
 ### 2.6 Platform Abstraction (Numatic)
 
@@ -132,6 +144,272 @@ All NUMA operations are isolated behind stateless free functions:
 | PMR | `NumaLocalMemoryResource`, `NumaNodeMemoryResource` (CRTP base) |
 
 Linux implementation uses libnuma. Windows has stubs/heuristics for functions without direct equivalents.
+
+### 2.7 CMap: Concurrent Swiss Table
+
+CMap is a lock-free-read, CAS-based-write concurrent hash map that replaces the Phase 1 `unordered_map<string, unique_ptr<SeqLock<KeyMeta>>>` per-node key store. It eliminates per-key SeqLock overhead, removes the data race on `unordered_map::find()` during concurrent reads, and serves as the backing map inside ConcurrentARC (§2.8). Phase 2a implements and benchmarks the full CMap + ConcurrentARC stack.
+
+#### 2.7.1 Design Constraints
+
+- `alignas(64)` invariant: no false sharing on hot paths
+- Lock-free reads: Get() holds zero locks
+- No stored keys: 128-bit hash split into H1 (64-bit, group index) + H2 (64-bit, fingerprint). Collision = cache miss, acceptable for a cache. 64-bit fingerprint collision probability: ~2^-64 per pair.
+- Fixed capacity, no resize (Phase 2a)
+- No iteration (ARC tracks entries externally)
+- NUMA-blind: memory provided by caller at construction
+- Value must be trivially copyable (required for seq-based memcpy reads) and move constructible (required for future resize)
+
+#### 2.7.2 Data Layout
+
+Two separate allocations via `CMapAllocFn` (caller-provided allocator, defaulting to `::operator new` with `std::align_val_t{64}`):
+
+**Ctrl array** (1 byte/slot, dense):
+
+- `0x80` = EMPTY, `0xFE` = DELETED, `0xFF` = SENTINEL (after last group)
+- `0x00--0x7F` = OCCUPIED (lower 7 bits = h2_short, top 7 bits of H2)
+- Modified only on INSERT (CAS EMPTY→OCCUPIED) and DELETE (CAS OCCUPIED→DELETED). Not modified during UPDATE.
+- Enables SIMD probing: 16 consecutive bytes per group, single SSE2 load.
+
+**Slot array** (cacheline-aligned per slot):
+
+- `seq` (1 byte, `atomic<uint8_t>`) + pad (7) + fingerprint (8 bytes, `atomic<uint64_t>`) + Value (N bytes)
+- Compile-time layout decision: if `16 + sizeof(Value) <= 64`, inline (one cacheline per slot); if `16 + sizeof(Value) > 64`, split into metadata (64 bytes, cacheline-aligned) + data (`sizeof(Value)`, packed).
+- seq uses odd/even: odd = writer active, even = stable.
+- `fingerprint` is `std::atomic<uint64_t>` --- reads use `.load(relaxed)`, writes use `.store(val, relaxed)`. On x86-64, this compiles to the same instructions as plain `uint64_t` (zero overhead). The seq CAS provides ordering.
+- Each slot is `alignas(64)` --- no false sharing between adjacent slots.
+- Slots are initialized via placement-new (`new (&slots_[i]) Slot{}`) after allocation, ensuring atomic members start in defined state (seq=even/stable, fingerprint=0).
+
+#### 2.7.3 Hashing
+
+Single call to `XXH3_128bits(key)` produces:
+
+- H1 = upper 64 bits → group index: `H1 & (numGroups - 1)`
+- H2 = lower 64 bits → stored as fingerprint in slot
+- h2_short = top 7 bits of H2 (`H2 >> 57`) → stored in ctrl byte for SIMD pre-filtering
+
+No separate hash function or seed needed. One call, split output.
+
+#### 2.7.4 Probing
+
+Group-based Swiss table probing with SSE2 SIMD (4 intrinsics, 1 header `<emmintrin.h>`):
+
+1. Load 16 ctrl bytes (`_mm_loadu_si128`)
+2. Compare against target h2_short (`_mm_cmpeq_epi8`)
+3. Extract match bitmask (`_mm_movemask_epi8`)
+4. For each matching position: compare full 64-bit fingerprint
+
+Probe termination: if any ctrl byte is EMPTY in the scanned group, the key is guaranteed absent (no false negatives possible). Deleted slots do not terminate probing (key may have been inserted past them).
+
+Template parameter: `Probe<FindDeleted>` --- Insert uses `Probe<true>` to record tombstones for reuse; Find/Erase use `Probe<false>` to skip the DELETED SIMD compare entirely (compile-time optimization via `if constexpr`).
+
+**Probe pseudocode** (deviations from standard Swiss table noted):
+
+```
+Probe<FindDeleted>(h1, h2_short, h2):
+  deletedSlot = NONE
+  for group = h1; ; group++ (mod numGroups):
+    mask16 = load_16_ctrl_bytes(group)         // SSE2: _mm_loadu_si128
+    match_mask = compare_eq(mask16, h2_short)   // SSE2: _mm_cmpeq_epi8 + _mm_movemask_epi8
+
+    if constexpr FindDeleted:
+      del_mask = compare_eq(mask16, 0xFE)       // Extra SIMD compare for tombstone tracking
+      for each bit set in del_mask:
+        if deletedSlot == NONE: deletedSlot = {group, bit_position}
+
+    for each bit i set in match_mask:
+      slot = group * 16 + i
+      if slots[slot].fingerprint.load(relaxed) == h2:  // Full 64-bit verification
+        return {slot, deletedSlot}
+
+    empty_mask = compare_eq(mask16, 0x80)
+    if empty_mask != 0:                          // EMPTY terminates probe
+      return {NONE, deletedSlot}
+```
+
+Deviation: standard Swiss table (Abseil) stores only h2_short in ctrl and compares inline. CMap stores the full 64-bit H2 as `atomic<uint64_t>` in each slot, adding a second verification level. The ctrl byte pre-filter eliminates 127/128 candidates via SIMD; the remaining ~1/128 matches are verified by the full fingerprint comparison.
+
+#### 2.7.5 Concurrency Model
+
+Two CAS points, one per architectural concern:
+
+**CAS on ctrl byte** --- structural state transitions:
+
+- INSERT: CAS ctrl EMPTY → OCCUPIED (h2_short)
+- DELETE: CAS ctrl OCCUPIED → DELETED
+
+**CAS on seq counter** --- writer mutual exclusion + reader versioning:
+
+- Any mutation: CAS seq even→odd (acquire), write data, seq odd→even (release)
+- Readers: load seq (acquire), read data, re-check seq. If changed → retry.
+
+Every mutation path acquires seq first:
+
+- INSERT: CAS seq → write fingerprint → CAS ctrl → write value → seq even. Fingerprint is written BEFORE ctrl CAS; the ctrl CAS (ACQ_REL) acts as the publication barrier for fingerprint on x86-64 TSO.
+- UPDATE: CAS seq → write fingerprint + value → seq even
+- DELETE: CAS seq → CAS ctrl → zero data → seq even
+
+Readers (Find): probe ctrl (lock-free, benign stale reads accepted); on candidate: check seq (acquire), memcpy value, re-check seq; return copy of value (`std::optional<Value>` via `alignas(Value) std::byte buf[sizeof(Value)]` + `std::bit_cast<Value>(buf)`).
+
+`Set()` returns `CMapSetResult{Error err, bool inserted}` so callers know INSERT vs UPDATE from a single probe, eliminating the need for a separate `Find()` before `Set()`.
+
+`UpdateInPlace(key, fn)` acquires the slot's seqlock, calls `fn(value)`, releases seqlock. The callback can modify the Value AND perform side effects (e.g., memcpy to page data) under the seqlock.
+
+`FindAndErase(key)` performs a single probe that reads the value under seqlock and marks the slot deleted, returning `FindAndEraseResult {Error, optional<Value>}` distinguishing KEY_NOT_FOUND from ABANDONED_SET.
+
+`FindAndEraseByHash(HashPair)` accepts a pre-computed hash instead of a string key, used by ConcurrentARC for hash-keyed eviction without needing original key strings.
+
+Ctrl array is mostly read-only after insert --- only INSERT and DELETE modify ctrl bytes. UPDATE leaves ctrl untouched, preserving SIMD probing efficiency without false sharing on the read path.
+
+#### 2.7.6 Tombstone Reuse
+
+Deleted slots (`0xFE`) are reused on subsequent inserts. The probe records the first deleted slot encountered; Insert prefers it over empty slots, preventing tombstone accumulation. This is standard Swiss table behavior.
+
+#### 2.7.7 Allocator Interface
+
+CMap uses `CMapAllocFn = void*(*)(size_t)` and `CMapFreeFn = void(*)(void*, size_t)` function pointers, defaulting to `::operator new` / `::operator delete` with `std::align_val_t{64}`. For NUMA-aware allocation, callers pass `Numatic::AllocateLocal` and `Numatic::FreeNUMA`. This keeps CMap NUMA-blind --- memory placement is the caller's responsibility.
+
+#### 2.7.8 Fail-Fast Contention Model
+
+If CAS on seq fails (another writer is active), the operation returns `ABANDONED_SET` immediately --- no spinning. If CAS on ctrl fails after seq was acquired, seq is released (store even) before returning the error. This fail-fast design avoids writer starvation and leaves contention resolution to the caller (ConcurrentARC handles retries at a higher level).
+
+#### 2.7.9 Operation Pseudocode
+
+**Find** (lock-free read via seqlock):
+
+```
+Find(key):
+  {h1, h2} = XXH3_128bits(key)
+  h2_short = h2 >> 57
+
+  {slot, _} = Probe<false>(h1, h2_short, h2)
+  if slot == NONE: return nullopt
+
+  // Seqlock read: retry if writer is active or intervened
+  retry:
+    seq1 = slots[slot].seq.load(acquire)
+    if seq1 is odd: goto retry                    // Writer active
+    fingerprint = slots[slot].fingerprint.load(relaxed)
+    memcpy(value_buf, &slots[slot].value, sizeof(Value))
+    atomic_thread_fence(acquire)
+    seq2 = slots[slot].seq.load(relaxed)
+    if seq1 != seq2: goto retry                   // Writer intervened
+  return bit_cast<Value>(value_buf)
+```
+
+**Set** (single-probe INSERT or UPDATE with dual CAS):
+
+```
+Set(key, value) -> CMapSetResult{err, inserted}:
+  {h1, h2} = XXH3_128bits(key)
+  h2_short = h2 >> 57
+
+  {slot, deletedSlot} = Probe<true>(h1, h2_short, h2)
+
+  if slot != NONE:
+    // UPDATE: existing key, ctrl unchanged
+    if !CAS(slots[slot].seq, even -> odd): return {ABANDONED_SET, false}
+    slots[slot].fingerprint.store(h2, relaxed)
+    memcpy(&slots[slot].value, &value, sizeof(Value))
+    slots[slot].seq.store(seq + 1, release)       // odd -> even
+    return {OK, false}                             // inserted=false
+
+  // INSERT: new key, must claim a slot
+  target = deletedSlot if deletedSlot != NONE else first_empty_from_probe
+  if target == NONE: return {CACHE_FULL, false}
+
+  // Step 1: Acquire seq (writer exclusion)
+  if !CAS(slots[target].seq, even -> odd): return {ABANDONED_SET, false}
+
+  // Step 2: Write fingerprint BEFORE ctrl CAS (publication barrier)
+  slots[target].fingerprint.store(h2, relaxed)
+
+  // Step 3: CAS ctrl (structural claim)
+  if !CAS(ctrl[target], EMPTY -> h2_short):
+    slots[target].seq.store(seq + 1, release)     // Release seq on ctrl failure
+    return {ABANDONED_SET, false}
+
+  // Step 4: Write value, release seq
+  memcpy(&slots[target].value, &value, sizeof(Value))
+  slots[target].seq.store(seq + 1, release)       // odd -> even
+  return {OK, true}                                // inserted=true
+```
+
+Deviation: standard Swiss tables use a single atomic claim on the ctrl byte. CMap adds seq CAS for writer mutual exclusion + reader versioning, and writes fingerprint before ctrl CAS to ensure the fingerprint is visible when the ctrl transition publishes the slot.
+
+**UpdateInPlace** (seqlock-protected callback):
+
+```
+UpdateInPlace(key, fn) -> Error:
+  {h1, h2} = XXH3_128bits(key)
+  {slot, _} = Probe<false>(h1, h2 >> 57, h2)
+  if slot == NONE: return KEY_NOT_FOUND
+
+  if !CAS(slots[slot].seq, even -> odd): return ABANDONED_SET
+  fn(slots[slot].value)                           // Caller modifies value in-place
+  slots[slot].seq.store(seq + 1, release)         // odd -> even
+  return OK
+```
+
+The callback `fn` receives a mutable reference to the slot's value. It can modify the Value AND perform side effects (e.g., `memcpy` into page data at a specific offset) --- all under the seqlock's protection. This eliminates the torn-read bug where page data was written outside any atomic window.
+
+**FindAndErase** (single-probe atomic read + delete):
+
+```
+FindAndErase(key) -> {Error, optional<Value>}:
+  {h1, h2} = XXH3_128bits(key)
+  {slot, _} = Probe<false>(h1, h2 >> 57, h2)
+  if slot == NONE: return {KEY_NOT_FOUND, nullopt}
+
+  if !CAS(slots[slot].seq, even -> odd): return {ABANDONED_SET, nullopt}
+
+  value_copy = memcpy_read(slots[slot].value)     // Read under seqlock
+
+  if !CAS(ctrl[slot], OCCUPIED -> DELETED):
+    slots[slot].seq.store(seq + 1, release)       // Release seq on ctrl failure
+    return {ABANDONED_SET, nullopt}
+
+  memset(&slots[slot].value, 0, sizeof(Value))    // Zero data
+  slots[slot].fingerprint.store(0, relaxed)        // Zero fingerprint
+  slots[slot].seq.store(seq + 1, release)         // odd -> even
+  return {OK, value_copy}
+```
+
+FindAndEraseByHash is identical but accepts `{h1, h2}` directly, skipping the xxHash call. Used by ConcurrentARC for hash-keyed eviction from ArcList entries (which store `HashPair`, not original key strings).
+
+### 2.8 ConcurrentARC
+
+ConcurrentARC wraps CMap + four ARC lists + SpinLock + PromoteBuf into a per-node ARC cache policy. It replaces the Phase 1 flat KeyStore, providing key-level hot/cold tracking with eviction support.
+
+#### 2.8.1 ArcList: Hash-Keyed Doubly-Linked List
+
+ARC requires O(1) membership check, move-to-front, and pop-back on four lists (t1, t2, b1, b2). A naive `std::list<string>` + `std::find` is O(n). ArcList uses `std::list<HashPair>` (16 bytes per entry) + `std::unordered_map<uint64_t, iterator>` (H2 as map key) for O(1) `contains`, `push_front`, `pop_back`, `erase`, and `splice_front`. No string storage anywhere in ARC tracking.
+
+#### 2.8.2 PromoteBuf: Deferred MPSC Promotions
+
+Find() must promote the accessed key in ARC lists, but taking a SpinLock on every Get() was the dominant Phase 2a regression (§5.13). PromoteBuf is a fixed-size circular MPSC buffer (256 slots × 16 bytes = 4KB) that defers ARC promotions:
+
+- Find() enqueues a `HashPair` (16 bytes, no string copy) via `fetch_add` on a write head
+- Every 64th enqueue signals the caller to `try_lock` + drain (cooperative drain)
+- Set() always drains at start under its existing SpinLock
+- The system is self-balancing: more threads = more frequent drain attempts = faster drain. Drain rate equals fill rate regardless of thread count.
+
+#### 2.8.3 SpinLock
+
+TAS lock with `_mm_pause()` backoff. Provides `lock()`, `try_lock()`, `unlock()`. Used for ARC list mutations (t1/t2/b1/b2 operations) and PromoteBuf drain. Not held during CMap operations --- CMap has its own concurrency via seqlock + CAS.
+
+#### 2.8.4 Operations
+
+**Find(key):** `store_.Find()` (lock-free CMap read) + `promoteBuf_.enqueue(hash)` (lock-free). Cooperative `try_lock` drain every 64th call. Returns `std::optional<Value>`.
+
+**Set(key, val):** SpinLock + drain buffer + single `CMap.Set()` probe + hash-keyed ARC list management (standard ARC algorithm using H2 for list tracking). Returns `CMapSetResult`.
+
+**UpdateInPlace(key, fn):** Delegates to `CMap.UpdateInPlace()` --- no SpinLock needed (CMap handles its own concurrency).
+
+**Eviction:** `replaceLocked(h2)` and `evictLocked()` return bool --- false on CAS contention, callers propagate as ABANDONED_SET. List mutation happens AFTER confirmed `FindAndEraseByHash`. EvictionCallback receives `const Value&` (KeyMeta contains all metadata: PageIndex, DataSize, DataOffset, NodeID).
+
+#### 2.8.5 Integration with Furrballs
+
+`PerNodeDetails` was restructured: `rwMutex`, `KeyShard`, and `KeyMetaStore` removed; replaced by `ConcurrentARC<KeyMeta> KeyStore` and `std::atomic<size_t> CurrentPage` (lock-free page advancement). `Set()` tries `UpdateInPlace` first (fast path --- in-place write under CMap's seqlock, no allocation, no SpinLock); falls back to atomic page allocation + `ConcurrentARC.Set()`. `Get()` calls `ConcurrentARC.Find(key)` per node. CreateBall passes `Numatic::AllocateLocal`/`FreeNUMA` for NUMA-local CMap memory.
 
 ## 3. Design Decisions Log
 
@@ -169,6 +447,76 @@ Linux implementation uses libnuma. Windows has stubs/heuristics for functions wi
 **Decision:** Each atomic in `Statistics` sits on its own 64-byte cache line.
 
 **Rationale:** Prevents false sharing between concurrent `HitCount`, `MissCount`, `BytesWritten`, and `BytesRead` updates in multi-threaded benchmarks.
+
+### 3.8 Hash-as-Key (No Stored Keys)
+**Decision:** CMap stores a 64-bit fingerprint (H2) instead of the original key string. Lookup is by hash only.
+
+**Rationale:** Variable-size strings prevent fixed-size slots. A 64-bit fingerprint has collision probability ~2^-64 per pair, effectively zero for cache-scale workloads (~262K entries). Collision = cache miss, functionally indistinguishable from an eviction. Eliminates string storage, string comparison, and per-entry heap allocation.
+
+### 3.9 Separate Ctrl Array for SIMD Probing
+**Decision:** Control bytes are in a separate dense array (1 byte/slot), not interleaved with slot data.
+
+**Rationale:** SIMD probing loads 16 consecutive ctrl bytes in one instruction (16 bytes). If ctrl bytes were interleaved in 64-byte slots, loading 16 ctrl bytes would span 768 bytes. The separate array keeps SIMD loads cache-friendly. The ctrl array is rarely modified (only on insert/delete, not update), so false sharing on the dense ctrl array is minimal.
+
+### 3.10 Compile-Time Slot Layout
+**Decision:** Slot layout adapts to sizeof(Value) at compile time. Values <= 48 bytes share a cacheline with seq+fingerprint; larger values get a separate aligned region.
+
+**Rationale:** Forces each slot's seq counter onto its own cacheline (`alignas(64)` invariant), but avoids wasting an entire cacheline for small values that fit inline. The threshold (48 bytes) is derived: seq(1) + pad(7) + fingerprint(8) = 16 bytes overhead, leaving 48 bytes in a 64-byte line.
+
+### 3.11 CAS on Seq for Writer Serialization
+**Decision:** Writers acquire exclusive access via CAS on the per-slot seq counter (even→odd), not via mutex.
+
+**Rationale:** CAS seq serializes writers without kernel mutex overhead. The same seq counter serves readers (version check) and writers (mutual exclusion), providing a single mechanism for both R/W and W/W concurrency. The odd/even encoding lets readers detect mid-write states without any lock.
+
+### 3.12 `inline` Not `static` on Namespace-Scope Functions in Headers
+**Decision:** `HashKey()` uses `inline` linkage at namespace scope, not `static`.
+
+**Rationale:** `static` in a header creates a separate copy per translation unit (ODR-safe but wasteful). `inline` provides a single definition across TUs, matching the standard library pattern for header-only utilities.
+
+### 3.13 Hash-Keyed ARC Tracking
+**Decision:** ArcList stores `HashPair` (16 bytes: H1 + H2) in `std::list`, indexed by `unordered_map<uint64_t, iterator>` using H2 as key. No string storage in ARC lists.
+
+**Rationale:** ARC tracks entry ordering for eviction decisions --- it needs O(1) contains/erase/splice_front, not the original key string. Storing `HashPair` instead of `std::string` eliminates all string copies in the ARC path. The `unordered_map` index provides O(1) lookup; the `std::list` provides O(1) reordering. `FindAndEraseByHash(HashPair)` enables eviction without the original key string.
+
+### 3.14 PromoteBuf Deferred Promotion with Cooperative Drain
+**Decision:** Find() enqueues `HashPair` (16 bytes) into a fixed-size circular MPSC buffer. Every 64th enqueue signals the caller to `try_lock` + drain. Set() always drains at start under its existing SpinLock.
+
+**Rationale:** Taking SpinLock on every Get() was the dominant Phase 2a regression (concurrent Get dropped to 0.56x vs baseline). Deferred promotions make Find() fully lock-free. The cooperative drain is self-balancing: more threads = more frequent drain attempts = faster drain, regardless of thread count. The 64-slot interval is tuned for low contention; per-thread sharding is the documented upgrade path for 100+ threads per node.
+
+### 3.15 `thread_local` Cache for `GetCurrentNode()`
+**Decision:** `Numatic::GetCurrentNode()` caches the result in a `thread_local int` on first call. Subsequent calls return the cached value without syscall.
+
+**Rationale:** In QEMU, `sched_getcpu()` triggers a VM exit costing ~1000ns per call. Since Furrballs pins threads at initialization, the cached value is valid for the thread's lifetime. On real hardware, the overhead drops from ~1000ns to ~1-10ns (VDSO). The cache eliminates the dominant source of thread-local routing overhead in virtualized environments.
+
+### 3.16 `FindAndEraseByHash` for Hash-Keyed Eviction
+**Decision:** A dedicated `FindAndEraseByHash(HashPair)` operation accepts a pre-computed hash instead of a string key.
+
+**Rationale:** ConcurrentARC's eviction path operates on `HashPair` values from ArcList (no original key string available). Without this operation, eviction would need to store original key strings or perform a reverse lookup. `FindAndEraseByHash` performs the same single-probe read+delete as `FindAndErase` but bypasses string hashing.
+
+### 3.17 Placement-New Slot Initialization
+**Decision:** After raw memory allocation, each slot is initialized via `new (&slots_[i]) Slot{}`.
+
+**Rationale:** Raw memory from the allocator does not construct `std::atomic` members, leaving them in an indeterminate state. Reading an uninitialized `atomic<uint8_t>` is undefined behavior. Placement-new zero-initializes all members: seq starts at 0 (even = stable), fingerprint starts at 0.
+
+### 3.18 `bool` Return on `replaceLocked`/`evictLocked`
+**Decision:** `replaceLocked` and `evictLocked` return `bool` --- false on CAS contention, callers propagate as ABANDONED_SET.
+
+**Rationale:** These operations combine CMap mutation (CAS-based) with ARC list mutation. If the CMap CAS fails, the list must not be modified. The bool return enforces ordering: list mutation happens AFTER confirmed successful `FindAndEraseByHash`.
+
+### 3.19 Unsigned Underflow Guard for `p_` Adjustment
+**Decision:** `p_` decrement uses `p_ = (p_ >= dec) ? p_ - dec : 0;` instead of `std::max((size_t)0, p_ - dec)`.
+
+**Rationale:** `p_` is `size_t` (unsigned). `p_ - dec` wraps to `SIZE_MAX` when `dec > p_`, and `std::max((size_t)0, SIZE_MAX)` returns `SIZE_MAX` (a no-op). The conditional guard prevents this silent underflow.
+
+### 3.20 EvictionCallback Receives Only `const Value&`
+**Decision:** The eviction callback signature is `std::function<void(const Value&)>`, not `std::function<void(const std::string&, const Value&)>`.
+
+**Rationale:** The Value (KeyMeta) already contains all metadata needed for eviction: PageIndex, DataSize, DataOffset, NodeID. The key string was only used for ARC list tracking, which is now hash-keyed (§3.13). Passing the key string would require storing it or reconstructing it --- unnecessary overhead.
+
+### 3.21 `CMapSetResult` for Single-Probe INSERT/UPDATE Detection
+**Decision:** `Set()` returns `CMapSetResult{Error err, bool inserted}` so callers know INSERT vs UPDATE from a single probe.
+
+**Rationale:** Without this, ConcurrentARC::Set() would need to call `Find()` then `Set()` on CMap, probing the same key twice. The `inserted` flag enables ConcurrentARC to distinguish new entries (add to t1) from updates (no list change) with a single CMap operation.
 
 ## 4. Related Work
 
@@ -342,7 +690,7 @@ The simulated latency reduces concurrent Get throughput by 23% and single-thread
 
 **QEMU does not simulate hardware NUMA latency.** All memory accesses within the QEMU VM have identical latency regardless of which NUMA node the data resides on. The measured cross-node overheads (4-11.7%) reflect scheduling artifacts, not genuine memory latency differences. On real multi-socket hardware, cross-node access overhead is typically 30-100ns (Intel Xeon: ~70ns, AMD EPYC: ~50ns) on top of ~100ns local access. This means: (a) the p50 NUMA overhead measured in QEMU underestimates the real hardware signal, (b) results like §5.5 where cross-node is *faster* than local are impossible on real hardware, and (c) the cross-VM baseline comparison (§5.7) captures the architectural benefit (lock partitioning) but not the hardware NUMA cost. Real hardware validation is **load-bearing** for the thesis---the current results validate the methodology and architecture, not the performance claims.
 
-**Lock-free reads are conditioned on a read-heavy workload pattern.** `Get()` calls `unordered_map::find()` without synchronization. This is safe when no concurrent `insert()` targets the same shard, because `find()` on a stable map is thread-safe. The benchmark warmup-then-read pattern guarantees this condition. In production mixed read/write workloads where concurrent `Set()` inserts new keys into the same shard, `find()` may observe a partially-constructed map state. This is a known limitation that requires either: (a) a concurrent hash map (e.g., F14, `folly::ConcurrentHashMap`), or (b) per-key locking that allows concurrent reads but serializes reads with inserts. The Phase 4 roadmap addresses this. **All SeqLock-derived results in §5.4, §5.6, and §5.7 are valid only under the warmup-then-read workload pattern.**
+**Lock-free reads are conditioned on a read-heavy workload pattern (Phase 1).** `Get()` calls `unordered_map::find()` without synchronization. This is safe when no concurrent `insert()` targets the same shard, because `find()` on a stable map is thread-safe. The benchmark warmup-then-read pattern guarantees this condition. In production mixed read/write workloads where concurrent `Set()` inserts new keys into the same shard, `find()` may observe a partially-constructed map state. **Phase 2a resolves this limitation**: CMap provides safe concurrent reads during writes via the seqlock protocol (§2.7.5). Phase 1 results in §5.4, §5.6, and §5.7 are valid under the warmup-then-read pattern; Phase 2a results in §5.13--§5.16 are valid under concurrent read/write workloads.
 
 512-byte cross-node overhead remains noisy under QEMU. Requires real hardware validation.
 
@@ -350,7 +698,7 @@ Cross-node reads in Phase 1 execute on the calling thread (synchronous). Phase 2
 
 Memory fragmentation from the bump allocator is not yet measured.
 
-The per-key `unique_ptr<SeqLock<KeyMeta>>` adds one heap allocation per key and one pointer indirection per read. A slab allocator for SeqLock entries would reduce this overhead and should be implemented before Phase 2 ARC measurements to avoid confounding eviction behavior.
+The per-key `unique_ptr<SeqLock<KeyMeta>>` heap allocation overhead was eliminated in Phase 2a: CMap stores values inline in cacheline-aligned slots with no per-key heap allocation or pointer indirection.
 
 The inline baseline comparison (same VM, same process) shows Furrballs slower than the non-NUMA baseline (0.65x concurrent Set, 0.81x concurrent Get). The cross-VM comparison (§5.7) shows the opposite (3.24x concurrent Set, 1.20x concurrent Get). The discrepancy is likely due to the non-NUMA baseline benefiting from the NUMA VM's 4 vCPUs without paying sharding overhead, while in a dedicated non-NUMA VM (1 node, less vCPU scheduling flexibility), the single-lock baseline bottlenecks. This cross-VM vs inline discrepancy requires real hardware validation to resolve.
 
@@ -459,11 +807,115 @@ NUMA awareness in Furrballs involves the following measurable tradeoffs:
 
 The net tradeoff is favorable when: (a) concurrent writes dominate (lock partitioning benefit), or (b) the working set exhibits locality (most accesses hit the local node). It is unfavorable for: (a) uniform random access across all nodes (every access is remote), or (b) single-threaded latency-critical Get workloads where 17% shard iteration overhead is unacceptable. The shared-nothing variant is favorable for workloads with high cross-node miss rates (>21 cache misses per operation on Xeon) and unfavorable for small-value cross-node reads where the queue round-trip exceeds the cumulative NUMA latency.
 
+### 5.13 Phase 2a: Single-Threaded Performance (QEMU VM, 5 iterations averaged)
+
+Phase 2a replaces the Phase 1 `unordered_map` + `SeqLock` + `shared_mutex` stack with CMap + ConcurrentARC (§2.7, §2.8). This section measures the architectural overhead of the concurrent Swiss table and ARC policy against Phase 1's simpler data structures.
+
+| Value Size | Operation | Phase 1 p50 (ns) | Phase 2a p50 (ns) | Delta |
+|-----------|-----------|------------------:|------------------:|------:|
+| 64B | Set | 695 | 981 | +41% |
+| 64B | Get | 655 | 862 | +32% |
+| 512B | Set | 760 | 895 | +18% |
+| 512B | Get | 672 | 785 | +17% |
+| 4KB | Set | 1,561 | 1,649 | +6% |
+| 4KB | Get | 799 | 946 | +18% |
+
+**Analysis:** Phase 2a is consistently 6--41% slower than Phase 1 in single-threaded latency. The overhead comes from three sources: (1) Swiss table probing (SIMD group scan + fingerprint comparison) vs `unordered_map`'s direct bucket lookup, (2) seqlock protocol (CAS even→odd → write → odd→even) vs Phase 1's SeqLock read, and (3) ARC list management on every Set (SpinLock acquire/release, list splice operations). The 4KB Set delta (+6%) is the smallest because the data copy dominates the fixed overhead of the Swiss table probe. On real hardware with genuine NUMA latency, the ARC eviction benefit (evicting wrong-placed data to make room for well-placed data) should outweigh this overhead for sustained workloads.
+
+### 5.14 Phase 2a: Concurrent Throughput (QEMU VM, 4 threads, 5 iterations averaged)
+
+| Value Size | Mode | Phase 2a Set (ops/s) | Phase 2a Get (ops/s) | Phase 1 Set (ops/s) | Phase 1 Get (ops/s) |
+|-----------|------|--------------------:|--------------------:|--------------------:|--------------------:|
+| 64B | All local | 1,203,019 | 1,216,877 | 761,315 | 1,197,488 |
+| 64B | All cross-node | 1,429,497 | 1,441,187 | 952,933 | 1,592,695 |
+
+**Analysis:** Concurrent Set throughput improved by 50--58% over Phase 1. The mechanism is CMap's per-slot CAS: concurrent writes to different keys proceed in parallel without shared_mutex serialization. Phase 1's `shared_mutex` serialized all writes to the same node shard; Phase 2a's CMap allows concurrent writes to different slots within the same CMap, limited only by the SpinLock for ARC list mutations.
+
+Concurrent Get throughput is within 2% of Phase 1 for local access but 10% lower for cross-node. The PromoteBuf's `fetch_add` on a shared writeHead creates cache line bouncing that Phase 1's lock-free SeqLock reads did not. The cooperative drain (every 64th call) adds occasional `try_lock` overhead. The net effect is small for local access (amortized across 64 operations) but amplified by QEMU's scheduling for cross-node access.
+
+### 5.15 Phase 2a: Baseline Comparison (QEMU VM, 5 iterations averaged)
+
+Phase 2a comparison against the same non-NUMA BaselineCache from §5.7, using both inline (same VM, same process) and cross-VM methodology.
+
+**Inline single-threaded 64B:**
+
+| Implementation | Set p50 (ns) | Get p50 (ns) |
+|---|---:|---:|
+| Furrballs (Phase 2a) | 981 | 862 |
+| Baseline (non-NUMA, inline) | 1,408 | 1,082 |
+| Delta | -30.4% | -20.3% |
+
+**Inline concurrent 4-thread 64B:**
+
+| Implementation | Set ops/s | Get ops/s |
+|---|---:|---:|
+| Furrballs (Phase 2a) | 1,203K | 1,217K |
+| Baseline (non-NUMA, inline) | 1,677K | 1,525K |
+| Ratio | 0.72x | 0.80x |
+
+**Cross-VM concurrent 4-thread 64B (3 runs averaged):**
+
+| Implementation | Set ops/s | Get ops/s |
+|---|---:|---:|
+| Furrballs (Phase 2a, NUMA VM) | 916K | 1,129K |
+| Baseline (non-NUMA VM) | 353K | 1,582K |
+| Ratio | **2.60x** | 0.71x |
+
+**Analysis:** The inline baseline now shows Furrballs 20--30% faster than baseline in single-threaded (vs Phase 1's +3%/+17%). This inversion is because CMap's Swiss table probe is more efficient than `unordered_map`'s bucket chain for single operations. However, the concurrent inline baseline still outperforms Furrballs (0.72x Set, 0.80x Get) because the non-NUMA baseline benefits from the NUMA VM's 4 vCPUs without per-node sharding overhead.
+
+The cross-VM comparison maintains the Phase 1 pattern: Set advantage (2.60x) from lock partitioning, Get disadvantage (0.71x, worse than Phase 1's 1.20x) from CMap probe overhead. The Get regression is specific to QEMU's uniform memory latency --- on real hardware, Furrballs' per-node data locality should partially compensate.
+
+### 5.16 Phase 2a: Routing Strategy Comparison (QEMU VM, 2 threads, 5 iterations averaged)
+
+**Phase 2a (CMap + ConcurrentARC):**
+
+| Metric | Round-robin (ns) | Thread-local (ns) | Improvement |
+|--------|-----------------:|-------------------:|------------:|
+| Set p50 | 1,476 | 1,101 | **25.4%** |
+| Set p99 | 5,057 | 3,343 | **33.9%** |
+| Self-Get p50 | 891 | 862 | **3.3%** |
+| Self-Get p99 | 1,756 | 1,498 | **14.7%** |
+| Cross-Get p50 | 869 | 929 | -6.9% |
+| Cross-Get p99 | 1,718 | 2,026 | -17.9% |
+
+**Analysis:** Thread-local routing improvement is significantly smaller than Phase 1's 26--41%. The `thread_local` cache in `GetCurrentNode()` (§3.15) eliminated the ~1000ns VM exit per call, making both routing strategies fast. The remaining 3.3% self-Get improvement comes from the local-first probe optimization in CMap (fewer SIMD group scans when probing the local shard first). The cross-Get regression (-6.9%) reflects the thread-local routing's less uniform key distribution: when keys are concentrated on the writing thread's node, the remote shard has fewer entries, but the probe cost is dominated by the fixed Swiss table metadata scan rather than entry count.
+
+### 5.17 Phase 2a: Ablation Study (QEMU VM, 3 runs averaged)
+
+The same five-step ablation structure as §5.10, re-measured with Phase 2a's CMap + ConcurrentARC stack.
+
+| Step | Configuration | ST Set p50 (ns) | ST Get p50 (ns) | Self-Get p50 (ns) | Cross-Get p50 (ns) | Cross-OH |
+|---|---|---:|---:|---:|---:|---:|
+| A | Baseline: `malloc`, single CMap, single SpinLock | 817 | 824 | 850 | 844 | -0.8% |
+| B | + NUMA-aware allocation (per-node pages, single CMap) | 934 | 795 | 977 | 915 | -6.3% |
+| C | + Per-node sharding (separate CMaps per node) | 984 | 938 | 1,032 | 1,007 | -2.5% |
+| D | + Thread-local routing (`GetCurrentNode()` with `thread_local` cache) | 924 | 859 | 1,049 | 1,020 | -2.8% |
+| E | + Shared-nothing cross-node reads (MPSC queue) | 1,020 | 919 | 934 | 2,354 | +152.1% |
+
+**Step-by-step analysis:**
+
+**A→B (NUMA-aware allocation):** ST Set increases by 14% (817→934ns) --- larger than Phase 1's +2% --- because CMap's allocator interface calls `Numatic::AllocateLocal` for both ctrl and slot arrays, adding NUMA allocation overhead on top of the baseline's `malloc`. ST Get actually *improves* by 3.5% (824→795ns), likely due to QEMU scheduling artifacts.
+
+**B→C (Per-node sharding):** ST Set +5% (934→984ns), ST Get +18% (795→938ns). The sharding overhead is larger than Phase 1's +11% Get because CMap's Swiss table probe is more expensive per-shard than `unordered_map::find()`, and the shard iteration now probes N separate CMaps.
+
+**C→D (Thread-local routing):** Unlike Phase 1's +34% Set increase from `GetCurrentNode()` syscall overhead, Step D shows a *decrease* in both Set (-6%, 984→924ns) and Get (-8%, 938→859ns). The `thread_local` cache (§3.15) eliminated the syscall, and thread-local routing provides better cache locality for the Swiss table's ctrl array when keys are concentrated on one node. Cross-OH remains flat (-2.5% → -2.8%), confirming the NUMA signal is still invisible in QEMU.
+
+**D→E (Shared-nothing):** Cross-Get p50 increases by 130% (1,020→2,354ns), consistent with Phase 1's +112% from the MPSC queue round-trip. The absolute overhead is lower (1,334ns vs 1,578ns) because CMap's lock-free local read is faster than Phase 1's SeqLock read.
+
+**Key differences from Phase 1 ablation:**
+
+| Difference | Phase 1 | Phase 2a | Explanation |
+|---|---|---|---|
+| B→C Get overhead | +11% | +18% | CMap probe cost > unordered_map::find per shard |
+| C→D Set delta | +34% | -6% | `thread_local` cache eliminates syscall |
+| C→D Get delta | +28% | -8% | Same as above |
+| Cross-OH at step D | +18.3% | -2.8% | Thread-local cache makes routing cheap; NUMA signal remains invisible |
+
 ## 6. Current Status
 
-**Phase 1 is complete.** The NUMA-aware core is fully implemented, benchmarked, and documented.
+**Phase 1 is complete.** **Phase 2a is complete.**
 
-Delivered artifacts:
+Phase 1 delivered artifacts:
 - Key-based Set/Get API with flat KeyStore (CAS bump allocator, round-robin + thread-local routing, per-node shards; no eviction policy in Phase 1)
 - Per-node physical block allocation with PMR-backed containers
 - Lock-free reads via SeqLock on per-node sharded KeyMeta (validated under warmup-then-read pattern; see §5.9 for mixed-workload limitation)
@@ -476,7 +928,18 @@ Delivered artifacts:
 - Five-step ablation study isolating each architectural decision
 - 7/7 unit tests passing
 
-Phase 1 validated the following:
+Phase 2a delivered artifacts:
+- CMap: lock-free-read, CAS-based-write concurrent Swiss table (SSE2 SIMD probing, per-slot seqlock, separate ctrl/slot allocations, allocator interface)
+- ConcurrentARC: CMap + ArcList + PromoteBuf + SpinLock (ARC eviction policy with hash-keyed tracking)
+- ArcList: O(1) hash-keyed doubly-linked list for ARC list management
+- PromoteBuf: deferred MPSC promotions with cooperative drain (lock-free Find)
+- UpdateInPlace: in-place value modification under CMap seqlock (torn-read fix)
+- `thread_local` cache in `Numatic::GetCurrentNode()` (eliminates ~1000ns VM exit per call)
+- `std::atomic<size_t> CurrentPage` for lock-free page advancement
+- `rwMutex`, `KeyShard`, `KeyMetaStore` removed from PerNodeDetails
+- Phase 2a benchmark suite (ST, concurrent, routing, inline baseline, cross-VM baseline, ablation)
+
+Phase 1 validated:
 1. **SeqLock exposes the true NUMA signal** (11.7% p50 cross-node overhead vs 5.1% under shared_mutex)
 2. **Thread-local routing + SeqLock = 26--41% improvement** over round-robin
 3. **Per-node sharding = 3x concurrent Set throughput** through lock partitioning
@@ -484,6 +947,16 @@ Phase 1 validated the following:
 5. **Per-node sharding is an architectural prerequisite** for NUMA-aware allocation to be viable
 6. **Shared-nothing MPSC queue adds ~1,500ns per cross-node read**, with a break-even at ~21 cache misses per operation on Xeon hardware
 7. **Single-threaded cost: Set +3%, Get +17%** (shard iteration overhead)
+
+Phase 2a validated:
+1. **Concurrent Set throughput improved +58%** over Phase 1 via CMap's per-slot CAS (eliminates shared_mutex serialization)
+2. **CMap provides safe concurrent reads during writes** --- resolves Phase 1's `unordered_map::find()` data race
+3. **PromoteBuf makes Find() lock-free** --- recovers concurrent Get from 0.56x (SpinLock per Get) to 0.80x vs baseline
+4. **Hash-keyed ArcList eliminates string copies** --- 16-byte HashPair vs variable-length string in ARC tracking
+5. **`thread_local` GetCurrentNode cache eliminates syscall overhead** --- thread-local routing becomes faster than round-robin (ablation D < C)
+6. **Single-threaded latency regression (+6--41%)** is the architectural cost of concurrent data structures --- expected to be offset by ARC eviction benefit on real hardware with genuine NUMA latency
+7. **Cross-VM concurrent Set advantage maintained (2.60x)** --- lock partitioning via per-node CMaps still effective
+8. **The NUMA signal remains invisible in QEMU** --- CMap's SpinLock noise + QEMU's uniform memory latency obscure it. Real hardware validation is critical.
 
 The project is on the `numa-focus` branch. Licensed under MIT. Build and test artifacts are excluded from version control.
 
@@ -493,7 +966,7 @@ The project is on the `numa-focus` branch. Licensed under MIT. Build and test ar
 - Can the 11.7% p50 NUMA overhead measured on QEMU be replicated on real hardware with larger NUMA distances?
 - Will Phase 2's L2 page eviction (ARC eviction) introduce latency spikes during page flush?
 - How does the bump allocator's fragmentation ratio evolve under real workloads?
-- Will the per-key `unique_ptr<SeqLock>` allocation overhead become a bottleneck at scale?
+- ~~Will the per-key `unique_ptr<SeqLock>` allocation overhead become a bottleneck at scale?~~ **Answered: eliminated in Phase 2a.** CMap stores values inline in cacheline-aligned slots with no per-key heap allocation.
 - **Hypothesized scaling advantage (untested):** Per-node sharding creates N independent contention domains, so contention per mutex grows as `threads_per_node` rather than `total_threads`. In a non-NUMA cache with a single mutex, adding threads increases contention on one lock. In Furrballs, threads pinned to different nodes contend on separate locks. This should produce smoother scaling as thread count increases---the non-NUMA cache hits a scaling cliff while Furrballs does not. This is a corollary of the lock partitioning result (§5.7: 3x Set throughput with 4 threads) generalized to higher thread counts. Requires real hardware (8+ cores across 2+ sockets) to validate; the current 4-vCPU QEMU VM has too few contention domains (2) to show a meaningful divergence.
 
 ## 8. Roadmap
@@ -518,13 +991,25 @@ The project is on the `numa-focus` branch. Licensed under MIT. Build and test ar
 - [ ] Real hardware benchmark validation (deferred; requires multi-socket hardware)
 
 ### Phase 2: Two-Level ARC
-- [ ] L1 key-level ARC (per-node, tracks hot/cold keys with ghost lists)
+
+#### Phase 2a: Concurrent Key Store (Complete)
+- [x] CMap: concurrent Swiss table with SSE2 SIMD probing, per-slot seqlock, separate ctrl/slot allocations
+- [x] ConcurrentARC: CMap + ArcList + PromoteBuf + SpinLock
+- [x] ArcList: hash-keyed O(1) doubly-linked list for ARC tracking
+- [x] PromoteBuf: deferred MPSC promotions with cooperative drain
+- [x] UpdateInPlace: in-place value modification under seqlock
+- [x] `thread_local` cache in `GetCurrentNode()` (eliminates VM exit)
+- [x] Lock-free page advancement (`atomic<size_t> CurrentPage`)
+- [x] Phase 2a benchmark suite (ST, concurrent, routing, inline/cross-VM baseline, ablation)
+- [x] Per-node `rwMutex`, `KeyShard`, `KeyMetaStore` removed
+
+#### Phase 2b: Eviction + Persistence
+- [ ] Wire eviction callback to flush dirty values to RocksDB
 - [ ] NUMA-aware eviction preference (cross-node accessed keys preferred for eviction)
 - [ ] L2 ARC for page-level eviction
 - [ ] Per-page key list for L2 eviction cleanup
 - [ ] RocksDB page reload on L2 miss
 - [ ] L1 ghost hit handling (key promoted, page still resident)
-- [ ] SeqLock slab allocator (replace per-key unique_ptr before ARC measurements)
 
 ### Phase 3: Adaptive Memory Pooling (AMP)
 - [ ] Dynamic page pool expansion under eviction pressure
@@ -572,9 +1057,9 @@ After a broadcast-race resolves a cold-miss location, the result (key → nodeID
 
 - [ ] Score-based eviction policy for the location-store metadata (key → owner-node hints, including optional negative hints). This policy applies only to ownership hints used to reduce discovery/refetch cost; it does not replace the planned two-level ARC for key/page data eviction (Phase 2). Configurable weight vector (recency, frequency, cross-node access count) enables empirical testing across a range of combinations. On broadcast-race hit: cache positive owner hint. On broadcast-race miss: optionally cache short-TTL negative hint. Stale hint: rerun discovery and refresh.
 - [ ] Ablation of dispatch models: sequential probe vs broadcast-race vs broadcast-race + location cache vs MPSC queue, measuring compound effect with/without NUMA pinning
-- [ ] O(1) ARC lookup (hash map + list iterator, replacing linear search)
-- [ ] Concurrent hash map for per-node shards (safe lock-free reads during writes)
-- [ ] Reference counting on pages (dangling pointer safety for Phase 2 eviction)
+- [x] O(1) ARC lookup (hash-keyed ArcList with parallel unordered_map index, §2.8.1)
+- [x] Concurrent hash map for per-node shards (CMap, §2.7 --- safe lock-free reads during writes)
+- [ ] Reference counting on pages (dangling pointer safety for Phase 2b eviction)
 - [ ] Theoretical scaling validation: per-node contention domains should scale as `threads_per_node` rather than `total_threads`, producing smoother scaling than non-NUMA caches as thread count increases. Requires real hardware (8+ cores across 2+ sockets) to measure.
 
 #### 4.4 Shared-Nothing + Broadcast-Race (Third Variant)
@@ -605,11 +1090,13 @@ The resulting model is a third variant combining shared-nothing data access with
 
 Phase 1 of Furrballs demonstrates that NUMA topology can serve as a meaningful input to cache placement decisions. The architecture---per-node physical allocation, bump-packed multi-value pages, and a planned two-level ARC hierarchy---provides a structured foundation for NUMA-aware caching where the **page** is the locality unit and the **key** is the access unit.
 
-The critical finding is that synchronization overhead masks the true NUMA memory latency signal: under `shared_mutex`, cross-node overhead was 5.1% at p50; under SeqLock lock-free reads, it is 11.7%---more than double. Thread-local routing with SeqLock achieves 26--41% improvement over round-robin, confirming that NUMA-aware placement provides compound benefits. Per-node sharding provides 3x concurrent Set throughput through natural lock partitioning at a mixed single-threaded cost (Set +3%, Get +17%). A five-step ablation study isolates the contribution of each design decision: NUMA-aware allocation alone produces no measurable signal in QEMU (no hardware NUMA latency), per-node sharding acts as an architectural enabler for routing decisions (and is a prerequisite for NUMA-aware allocation to be viable), thread-local routing creates the first measurable locality signal (+18.3% cross-node overhead), and a shared-nothing variant using an MPSC slot queue for cross-node reads adds +114% cross-node overhead (~1,500ns queue round-trip). Analytical projection shows the shared-nothing approach becomes competitive when cross-node cache misses per operation exceed ~21 on Xeon hardware.
+The critical Phase 1 finding is that synchronization overhead masks the true NUMA memory latency signal: under `shared_mutex`, cross-node overhead was 5.1% at p50; under SeqLock lock-free reads, it is 11.7%---more than double. Thread-local routing with SeqLock achieves 26--41% improvement over round-robin, confirming that NUMA-aware placement provides compound benefits. Per-node sharding provides 3x concurrent Set throughput through natural lock partitioning at a mixed single-threaded cost (Set +3%, Get +17%).
 
-Phase 2 will introduce the novel contribution: a two-level ARC hierarchy where NUMA placement and cross-node access frequency serve as eviction policy inputs. The broadcast-race dispatch model (Phase 4) provides O(N) aggregate work with O(1)-round parallel latency (all N node workers probe concurrently), using structural single-writer guarantees and WaitGroup coordination. A location cache over discovery results (key → owner-node hints) then provides a true O(1) lookup path for subsequent accesses to the same key.
+Phase 2a replaces the Phase 1 data structures with a concurrent Swiss table (CMap) and ARC policy (ConcurrentARC). The results reveal a tradeoff: single-threaded latency increases by 6--41% (architectural cost of CAS-based concurrency and ARC list management), but concurrent Set throughput improves by 58% (per-slot CAS eliminates shared_mutex serialization). CMap resolves the Phase 1 data race on `unordered_map::find()` during concurrent reads, making the system safe under mixed read/write workloads. PromoteBuf recovers concurrent Get from 0.56x to 0.80x vs baseline by deferring ARC promotions out of the critical read path. Hash-keyed ArcList eliminates all string copies from ARC tracking, and a `thread_local` cache in `GetCurrentNode()` eliminates ~1000ns VM exit per routing decision.
 
-When a cross-node access occurs, Furrballs tracks the access and defers action to the eviction policy (Phase 2), which will prefer evicting wrong-placed data. A compile-time simulated latency feature (`-DSIMULATE_NUMA_LATENCY_NS=N`) validates that the architecture responds to NUMA signals. QEMU does not simulate real cross-node memory latency, so Phase 1 results validate the methodology and architecture but not the performance claims. Real hardware validation and Phase 2's ARC eviction implementation are the remaining steps before publication.
+The five-step ablation study (§5.10, §5.17) isolates the contribution of each architectural decision across both phases. The Phase 2a ablation reveals that the `thread_local` cache fundamentally changed the routing dynamics: thread-local routing is now *faster* than round-robin (ablation D < C), unlike Phase 1 where the `GetCurrentNode()` syscall made it 34% slower. The NUMA signal remains invisible in QEMU across both phases, reinforcing the need for real hardware validation.
+
+Phase 2b will wire the eviction callback to flush dirty values to RocksDB, completing the L1 key-level ARC. The broadcast-race dispatch model (Phase 4) provides O(N) aggregate work with O(1)-round parallel latency. QEMU does not simulate real cross-node memory latency, so results validate the methodology and architecture but not the performance claims. Real hardware validation remains the critical step before publication.
 
 ## Appendix A: Repository Structure
 ```
@@ -617,13 +1104,14 @@ Furrballs/
   Furrballs/          # Core library (C++20, MIT license)
     include/
       Furrballs.h     # Public API, ARC, configs, KeyMeta
+      CMap.h          # Concurrent Swiss table (CMap), ArcList, PromoteBuf, ConcurrentARC, SpinLock
       Page.h          # Page struct with bump allocator
       Logger.h        # Thread-safe logging
       Error.h         # Categorized error enum
       NodeJob.h       # Per-node worker threading
       WaitGroup.h     # StreamLine synchronization (copied)
       Concept.h       # StreamLine Lockable concept (copied)
-      SeqLock.h       # StreamLine SeqLock for lock-free reads (copied)
+      SeqLock.h       # StreamLine SeqLock for lock-free reads (copied, used by BaselineCache)
       MemoryManager.h # General allocation, padded_size utilities
     src/
       Furrballs.cpp   # Core: Bootstrap, CreateBall, Set, Get, Flush, Evict
@@ -638,8 +1126,8 @@ Furrballs/
   numatic/            # NUMA platform abstraction
     include/Numatic.h  # Free function declarations + CRTP PMR allocators
     src/
-      NumaticUnix.cpp  # Linux implementation (libnuma)
-      NumaticWin.cpp   # Windows stubs/heuristics
+      NumaticUnix.cpp  # Linux implementation (libnuma, thread_local GetCurrentNode cache)
+      NumaticWin.cpp   # Windows stubs/heuristics (thread_local GetCurrentNode cache)
   Benchmark/          # Benchmark harness
     BaselineCache.h   # Non-NUMA control group (malloc, single map, SeqLock)
     NUMAAllocCache.h  # Ablation step B (per-node alloc, single map, round-robin)
