@@ -342,7 +342,7 @@ int main() {
     FurrBall::Bootstrap();
 
     int numNodes = Numatic::GetNodeCount();
-    int iterations = 5;
+    int iterations = 10;
     std::cout << "=== Furrballs Benchmark ===" << std::endl;
     std::cout << "NUMA nodes: " << numNodes << std::endl;
     std::cout << "NUMA page size: " << Numatic::GetNodePageSize() << std::endl;
