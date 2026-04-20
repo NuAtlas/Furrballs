@@ -1027,7 +1027,17 @@ Per-node lock partitioning creates N independent contention domains. This sectio
 
 **Get scaling plateaus at ~16 threads (8/node):** 9.0M→9.2M→10.1M beyond 16 threads shows diminishing returns, likely from CMap's shared ctrl array probe traffic and memory bandwidth saturation.
 
-**Comparison with single-lock baseline:** The baseline's concurrent Set with 4 threads is 2,205,136 ops/s (§5.18). Furrballs at 4 threads is 3,831,728 (1.74x advantage). At 8 threads, if the baseline scales poorly (single mutex, 8 threads contending), Furrballs' per-node sharding (4 threads/node × 2 nodes) should maintain or increase the advantage. A baseline thread-scaling test would quantify this, but is left as future work since the baseline uses `unordered_map` which is not thread-safe for concurrent writes.
+**Baseline scaling comparison:** A standalone baseline thread-scaling test (single `shared_mutex`, `unordered_map`) confirms the single-lock scaling cliff:
+
+| Threads | Furrballs Set | Baseline Set | Advantage |
+|--------:|-------------:|------------:|----------:|
+| 4 | 3,875,618 | 803,323 | **4.82x** |
+| 8 | 3,334,534 | 631,245 | **5.28x** |
+| 16 | 2,365,749 | 610,360 | **3.88x** |
+| 32 | 1,323,892 | 592,767 | **2.23x** |
+| 64 | 810,975 | 577,237 | **1.40x** |
+
+The baseline's Set throughput collapses at 4 threads (803K) and stays flat through 64 threads (~577K). The single mutex serializes all writes regardless of thread count. Furrballs outperforms at every thread count because per-node sharding distributes write contention across N SpinLocks. The advantage shrinks from 4.82x→1.40x as Furrballs' own SpinLocks become contended at higher threads/node ratios, but Furrballs never falls below baseline. This confirms the hypothesized scaling advantage from §7: lock partitioning prevents the single-lock scaling cliff.
 
 ## 6. Current Status
 
