@@ -167,6 +167,7 @@ Two separate allocations via `CMapAllocFn` (caller-provided allocator, defaultin
 
 - `0x80` = EMPTY, `0xFE` = DELETED, `0xFF` = SENTINEL (after last group)
 - `0x00--0x7F` = OCCUPIED (lower 7 bits = h2_short, top 7 bits of H2)
+- Values `0x81--0xFD` are structurally unreachable: h2_short occupies only the lower 7 bits (0--127), so OCCUPIED ctrl bytes are always `<= 0x7F`. The only special values above `0x80` are `0xFE` (DELETED) and `0xFF` (SENTINEL).
 - Modified only on INSERT (CAS EMPTY→OCCUPIED) and DELETE (CAS OCCUPIED→DELETED). Not modified during UPDATE.
 - Enables SIMD probing: 16 consecutive bytes per group, single SSE2 load.
 
@@ -234,8 +235,10 @@ Two CAS points, one per architectural concern:
 
 **CAS on ctrl byte** --- structural state transitions:
 
-- INSERT: CAS ctrl EMPTY → OCCUPIED (h2_short)
+- INSERT: CAS ctrl DELETED → OCCUPIED (h2_short), or EMPTY → OCCUPIED (h2_short)
 - DELETE: CAS ctrl OCCUPIED → DELETED
+
+Ctrl bytes are plain `uint8_t`, not `std::atomic<uint8_t>`. CAS uses `__atomic_compare_exchange_n` (GCC/Clang builtin) on plain bytes --- the same approach as Google/Abseil's `raw_hash_set`. This is necessary because SIMD loads (`_mm_loadu_si128`) cannot operate on `std::atomic` types; using `std::atomic<uint8_t>` would require dropping SIMD probing or invoking undefined behavior. The `__atomic_*` builtins provide the required atomicity guarantees without preventing SIMD access.
 
 **CAS on seq counter** --- writer mutual exclusion + reader versioning:
 
@@ -323,8 +326,9 @@ Set(key, value) -> CMapSetResult{err, inserted}:
   // Step 2: Write fingerprint BEFORE ctrl CAS (publication barrier)
   slots[target].fingerprint.store(h2, relaxed)
 
-  // Step 3: CAS ctrl (structural claim)
-  if !CAS(ctrl[target], EMPTY -> h2_short):
+  // Step 3: CAS ctrl (structural claim) — try tombstone first, then empty
+  if !CAS(ctrl[target], DELETED -> h2_short) &&
+     !CAS(ctrl[target], EMPTY   -> h2_short):
     slots[target].seq.store(seq + 1, release)     // Release seq on ctrl failure
     return {ABANDONED_SET, false}
 
@@ -392,6 +396,10 @@ Find() must promote the accessed key in ARC lists, but taking a SpinLock on ever
 - Every 64th enqueue signals the caller to `try_lock` + drain (cooperative drain)
 - Set() always drains at start under its existing SpinLock
 - The system is self-balancing: more threads = more frequent drain attempts = faster drain. Drain rate equals fill rate regardless of thread count.
+
+**Overflow behavior:** If the circular buffer wraps before a slot is drained, `enqueue()` checks the slot's `ready` flag. If the slot is still occupied, the enqueue returns false and the promotion is lost. Lost promotions are acceptable --- a missed promotion means the key stays in its current ARC list position rather than being promoted, which is functionally correct (the key remains cache-resident, just with a slightly stale recency ranking). The next access will attempt a new promotion.
+
+**Stale promotions:** During drain, a promotion may target a key already evicted by another thread's concurrent `Set()`. The drain logic checks `t1.contains(h2)` and `t2.contains(h2)` before promoting; if neither list contains the key, the promotion is silently discarded. This is the correct behavior --- the key no longer exists in the cache, and promoting a ghost entry would corrupt ARC state.
 
 #### 2.8.3 SpinLock
 
@@ -833,6 +841,8 @@ Phase 2a replaces the Phase 1 `unordered_map` + `SeqLock` + `shared_mutex` stack
 
 Concurrent Get throughput is within 2% of Phase 1 for local access but 10% lower for cross-node. The PromoteBuf's `fetch_add` on a shared writeHead creates cache line bouncing that Phase 1's lock-free SeqLock reads did not. The cooperative drain (every 64th call) adds occasional `try_lock` overhead. The net effect is small for local access (amortized across 64 operations) but amplified by QEMU's scheduling for cross-node access.
 
+**PromoteBuf recovery:** Before PromoteBuf was added, ConcurrentARC's Find() took a SpinLock for every ARC promotion, reducing concurrent Get to 0.56x vs the inline baseline (987K ops/s vs baseline's 1,752K). Introducing PromoteBuf with string-based promotions recovered this to 0.73x (1,331K ops/s). Switching to hash-keyed ArcList (eliminating string copies in the promotion path) yielded the final 0.80x (1,217K ops/s) reported above. The 0.56x → 0.80x recovery confirms that the SpinLock on the read path was the dominant bottleneck, and that deferred promotions via a lock-free MPSC buffer effectively eliminate it.
+
 ### 5.15 Phase 2a: Baseline Comparison (QEMU VM, 5 iterations averaged)
 
 Phase 2a comparison against the same non-NUMA BaselineCache from §5.7, using both inline (same VM, same process) and cross-VM methodology.
@@ -865,6 +875,10 @@ Phase 2a comparison against the same non-NUMA BaselineCache from §5.7, using bo
 
 The cross-VM comparison maintains the Phase 1 pattern: Set advantage (2.60x) from lock partitioning, Get disadvantage (0.71x, worse than Phase 1's 1.20x) from CMap probe overhead. The Get regression is specific to QEMU's uniform memory latency --- on real hardware, Furrballs' per-node data locality should partially compensate.
 
+**Inline vs cross-VM discrepancy:** The inline comparison shows Furrballs 20--30% faster in single-threaded and 0.72--0.80x in concurrent; the cross-VM comparison shows 2.60x Set advantage and 0.71x Get disadvantage. These tell opposite stories for Get performance. The inline baseline runs in the same NUMA VM process, benefiting from the VM's 4 vCPUs without paying sharding overhead. The cross-VM baseline runs in a dedicated non-NUMA VM with less vCPU scheduling flexibility, where the single-lock baseline bottlenecks.
+
+**Cross-VM Set regression vs same-VM improvement:** Phase 2a's concurrent Set improved +58% over Phase 1 in the same-VM comparison (§5.14: 1,203K vs 761K), but regressed -26% in the cross-VM comparison (916K vs Phase 1's 1,240K from §5.7). The same-VM comparison measures Furrballs Phase 2a vs Phase 1 under identical conditions; the cross-VM comparison measures against a different baseline in a different VM. The cross-VM baseline's Set throughput dropped from 383K (Phase 1 era) to 353K (Phase 2a era), but Furrballs' absolute throughput also dropped (1,240K → 916K), likely due to CMap's fixed overhead (seqlock protocol, Swiss table probe) being amplified by QEMU's emulation overhead on each CAS instruction. On real hardware, the per-CAS overhead would be ~10ns rather than ~600ns, and the +58% same-VM improvement should dominate.
+
 ### 5.16 Phase 2a: Routing Strategy Comparison (QEMU VM, 2 threads, 5 iterations averaged)
 
 **Phase 2a (CMap + ConcurrentARC):**
@@ -878,7 +892,7 @@ The cross-VM comparison maintains the Phase 1 pattern: Set advantage (2.60x) fro
 | Cross-Get p50 | 869 | 929 | -6.9% |
 | Cross-Get p99 | 1,718 | 2,026 | -17.9% |
 
-**Analysis:** Thread-local routing improvement is significantly smaller than Phase 1's 26--41%. The `thread_local` cache in `GetCurrentNode()` (§3.15) eliminated the ~1000ns VM exit per call, making both routing strategies fast. The remaining 3.3% self-Get improvement comes from the local-first probe optimization in CMap (fewer SIMD group scans when probing the local shard first). The cross-Get regression (-6.9%) reflects the thread-local routing's less uniform key distribution: when keys are concentrated on the writing thread's node, the remote shard has fewer entries, but the probe cost is dominated by the fixed Swiss table metadata scan rather than entry count.
+**Analysis:** Thread-local routing improvement is significantly smaller than Phase 1's 26--41%. The `thread_local` cache in `GetCurrentNode()` (§3.15) eliminated the ~1000ns VM exit per call, making both routing strategies fast. The remaining 3.3% self-Get improvement comes from the local-first probe optimization in CMap (fewer SIMD group scans when probing the local shard first). The cross-Get regression (-6.9%) is a structural consequence of thread-local key placement: with round-robin, ~50% of cross-reads find the key on the local shard (it was round-robined there), avoiding a remote probe entirely. With thread-local routing, cross-reads always miss the local shard and must scan the remote shard --- a guaranteed two-shard path versus round-robin's 50% one-shard / 50% two-shard mix.
 
 ### 5.17 Phase 2a: Ablation Study (QEMU VM, 3 runs averaged)
 
@@ -1043,7 +1057,7 @@ $$\text{net\_gain} = \text{latency\_saved} - (N - 1) \times \text{loser\_probe\_
 
 where `latency_saved` is the sequential probe time eliminated and `loser_probe_cost` is the per-worker cost of an unsuccessful `KeyStore::find()` (a hash lookup returning empty). Since a miss costs only a single hash lookup with no SeqLock read, no memcpy, and no result write, `loser_probe_cost` is minimal.
 
-**Fail-safe conditions:** Disable the race when (a) the location cache hit-rate is high (race unnecessary), or (b) `loser_probe_cost × (N - 1)` exceeds sequential probe latency (race wasteful at high node counts).
+**Fail-safe condition:** Disable the race when `loser_probe_cost × (N - 1)` exceeds sequential probe latency (race wasteful at high node counts or when the location cache miss rate is high, causing frequent all-worker dispatches with only one winner).
 
 **Partial analogy:** Distributed speculative reads (Amazon Dynamo's hinted handoff). However, Dynamo operates across machines over a network; Furrballs applies the same principle across NUMA nodes within a single machine, leveraging the structural guarantee that exactly one node holds the key.
 
@@ -1094,7 +1108,7 @@ The critical Phase 1 finding is that synchronization overhead masks the true NUM
 
 Phase 2a replaces the Phase 1 data structures with a concurrent Swiss table (CMap) and ARC policy (ConcurrentARC). The results reveal a tradeoff: single-threaded latency increases by 6--41% (architectural cost of CAS-based concurrency and ARC list management), but concurrent Set throughput improves by 58% (per-slot CAS eliminates shared_mutex serialization). CMap resolves the Phase 1 data race on `unordered_map::find()` during concurrent reads, making the system safe under mixed read/write workloads. PromoteBuf recovers concurrent Get from 0.56x to 0.80x vs baseline by deferring ARC promotions out of the critical read path. Hash-keyed ArcList eliminates all string copies from ARC tracking, and a `thread_local` cache in `GetCurrentNode()` eliminates ~1000ns VM exit per routing decision.
 
-The five-step ablation study (§5.10, §5.17) isolates the contribution of each architectural decision across both phases. The Phase 2a ablation reveals that the `thread_local` cache fundamentally changed the routing dynamics: thread-local routing is now *faster* than round-robin (ablation D < C), unlike Phase 1 where the `GetCurrentNode()` syscall made it 34% slower. The NUMA signal remains invisible in QEMU across both phases, reinforcing the need for real hardware validation.
+The five-step ablation study (§5.10, §5.17) isolates the contribution of each architectural decision across both phases. The Phase 2a ablation reveals that the `thread_local` cache fundamentally changed the routing dynamics: thread-local routing is now *faster* than round-robin (ablation D < C), unlike Phase 1 where the `GetCurrentNode()` syscall made it 34% slower. This has a methodological implication: Phase 1's routing overhead findings (26--41% improvement from thread-local routing, ablation C→D +34% Set increase) are **environment-specific** rather than architectural. They reflect QEMU's VM exit cost on `sched_getcpu()`, not an inherent property of NUMA-aware routing. On real hardware where `GetCurrentNode()` costs ~1--10ns via VDSO, the Phase 1 routing story would resemble Phase 2a's. The NUMA signal remains invisible in QEMU across both phases, reinforcing the need for real hardware validation.
 
 Phase 2b will wire the eviction callback to flush dirty values to RocksDB, completing the L1 key-level ARC. The broadcast-race dispatch model (Phase 4) provides O(N) aggregate work with O(1)-round parallel latency. QEMU does not simulate real cross-node memory latency, so results validate the methodology and architecture but not the performance claims. Real hardware validation remains the critical step before publication.
 
