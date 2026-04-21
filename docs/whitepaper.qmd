@@ -1,6 +1,6 @@
 ---
 title: "Furrballs: A NUMA-Aware, High-Performance Caching Library"
-subtitle: "Technical Report v1.7.2"
+subtitle: "Technical Report v1.7.3"
 author: "Hamza Jamil Saied (The Sphynx)"
 date: last-modified
 doi: "10.5281/zenodo.19669844"
@@ -43,7 +43,7 @@ format:
 ---
 
 ## Status
-v1.7.2 --- Fix factual error: Set scaling bottleneck is SpinLock (ARC list mutations), not PromoteBuf (read-path deferred promotions)
+v1.7.3 --- Wide pass review: update stale forward references (§2.1.2, §2.4), align methodology with real hardware iterations (§5.1), mark completed items (§4.3 scaling, §5.9 validation), note Phase 2a resolution in tradeoff model (§5.12)
 
 ## Abstract
 Furrballs is a NUMA-aware caching library that uses NUMA topology as a first-class input to cache placement and eviction decisions. The core contribution is per-page allocation on specific NUMA nodes, with a two-level ARC hierarchy: key-level ARC (L1) for hot/cold key tracking with NUMA-aware eviction preference, and page-level ARC (L2) for page eviction backed by RocksDB persistence (L3). Pages are pre-allocated at initialization via one physical allocation per NUMA node, subdivided into logical pages filled by a bump allocator. Key routing supports round-robin distribution and thread-local placement (via a runtime config flag). The library is implemented in C++20, uses a platform abstraction layer (Numatic) for NUMA operations, and integrates a custom synchronization library (StreamLine) for thread coordination.
@@ -65,13 +65,12 @@ Furrballs targets this gap: allocate cache pages on the NUMA node of the thread 
 ### 2.1 Architecture Overview
 
 ```
-L1: Flat KeyStore (current)   -- Key→metadata mapping, no eviction (Phase 1)
-L1: ARC<string, KeyMeta>      -- Key-level cache with hot/cold tracking (Phase 2)
-L2: ARC<PageIndex, Page*>     -- Page-level cache, tracks hot pages (Phase 2)
+L1: ConcurrentARC<KeyMeta>    -- Key-level ARC with CMap backing (Phase 2a, current)
+L2: ARC<PageIndex, Page*>     -- Page-level cache, tracks hot pages (Phase 2b)
 L3: RocksDB                   -- Persistent storage, written on eviction/shutdown
 ```
 
-Phase 1 (current): flat key store + pre-allocated pages + RocksDB write-on-shutdown. Pages are never evicted from memory. No ARC eviction policy is active; all inserted keys remain resident until shutdown.
+Phase 2a (current): CMap-based concurrent key store with ARC policy via ConcurrentARC. Pages are never evicted from memory; the ARC lists track key hot/cold state but eviction callbacks are not yet wired. All inserted keys remain resident until shutdown.
 
 ### 2.1.1 Locality Unit
 
@@ -81,7 +80,7 @@ The separation of locality unit (page) from access unit (key) is deliberate: it 
 
 ### 2.1.2 Cross-Node Access Behavior
 
-When a `Get()` accesses data on a remote NUMA node, Furrballs **tracks the cross-node access and defers action to the eviction policy**. The current implementation records the access in global statistics (`HitCount`, `BytesRead` via atomic counters). Phase 2's L1 ARC will record per-key access frequency and cross-node access count in the ARC metadata, enabling the eviction policy to prefer evicting keys/pages that exhibit high cross-node access patterns---their data is "wrong-placed" relative to the accessing thread. This design choice (track-and-defer rather than immediate migration or replication) avoids the complexity and consistency overhead of runtime data movement, deferring the decision to the eviction boundary where it is cheapest.
+When a `Get()` accesses data on a remote NUMA node, Furrballs **tracks the cross-node access and defers action to the eviction policy**. Phase 2a's ConcurrentARC (L1) tracks per-key access frequency via ARC list membership (t1/t2/b1/b2) and provides eviction callbacks, but does not yet record per-key cross-node access counts. Phase 2b will add cross-node access tracking to the ARC metadata, enabling the eviction policy to prefer evicting keys/pages that exhibit high cross-node access patterns---their data is "wrong-placed" relative to the accessing thread. This design choice (track-and-defer rather than immediate migration or replication) avoids the complexity and consistency overhead of runtime data movement, deferring the decision to the eviction boundary where it is cheapest.
 
 ### 2.1.3 Locality Terminology
 
@@ -118,7 +117,7 @@ Key routing supports two strategies, selectable at runtime via `NumaConfig::UseT
 
 ### 2.4 Bump Allocator
 
-Multi-value pages use an append-only bump allocator with 8-byte alignment. Each page tracks `UsedBytes` (atomic, CAS-based concurrent bump) and `DataWastedByPadding` for fragmentation metrics. No per-value deallocation -- pages are evicted wholesale by ARC (Phase 2).
+Multi-value pages use an append-only bump allocator with 8-byte alignment. Each page tracks `UsedBytes` (atomic, CAS-based concurrent bump) and `DataWastedByPadding` for fragmentation metrics. No per-value deallocation --- pages are evicted wholesale by ARC. Phase 2a's ConcurrentARC tracks key-level hot/cold state and provides eviction callbacks; Phase 2b will wire these callbacks to flush dirty values to RocksDB and reclaim page memory.
 
 ### 2.5 Concurrency
 
@@ -552,7 +551,7 @@ Benchmarks run on two platforms:
 - **Host (baseline):** Single NUMA node, VPS, Ubuntu 24.04, x86_64, GCC 14, CMake Release
 - **QEMU VM (NUMA simulation):** 2 NUMA nodes, 4 vCPUs (2 per node), 4GB RAM, Ubuntu 24.04
 
-Each scenario is repeated 3--5 times depending on section. Reported values are averages across iterations. The QEMU VM adds approximately 600ns of emulation overhead per operation. To isolate the NUMA effect, we compare local vs cross-node reads under identical conditions within the VM.
+Each scenario is repeated 3--10 times depending on section (QEMU sections: 3--5 runs; real hardware sections: 10 runs). Reported values are averages across iterations. The QEMU VM adds approximately 600ns of emulation overhead per operation. To isolate the NUMA effect, we compare local vs cross-node reads under identical conditions within the VM.
 
 **Thread placement:** Multi-threaded benchmarks pin each worker thread to a specific NUMA node via `PinCurrentThreadToNode()` (wrapping `numa_run_on_node()`). This is strictly a measurement concession to isolate local vs cross-node latencies without scheduler migration confounds. It is not part of the library's contract — Furrballs treats NUMA as a first-class internal concern: per-node allocation, key routing, and eviction are all handled by the library without requiring callers to be NUMA-aware or to pin threads. The internal `NodeJob` workers are the only permanently pinned threads. In production, callers run unmodified; the library detects and adapts to the topology at initialization.
 
@@ -700,7 +699,7 @@ The simulated latency reduces concurrent Get throughput by 23% and single-thread
 
 ### 5.9 Limitations
 
-**QEMU does not simulate hardware NUMA latency.** All memory accesses within the QEMU VM have identical latency regardless of which NUMA node the data resides on. The measured cross-node overheads (4-11.7%) reflect scheduling artifacts, not genuine memory latency differences. On real multi-socket hardware, cross-node access overhead is typically 30-100ns (Intel Xeon: ~70ns, AMD EPYC: ~50ns) on top of ~100ns local access. This means: (a) the p50 NUMA overhead measured in QEMU underestimates the real hardware signal, (b) results like §5.5 where cross-node is *faster* than local are impossible on real hardware, and (c) the cross-VM baseline comparison (§5.7) captures the architectural benefit (lock partitioning) but not the hardware NUMA cost. Real hardware validation is **load-bearing** for the thesis---the current results validate the methodology and architecture, not the performance claims.
+**QEMU does not simulate hardware NUMA latency.** All memory accesses within the QEMU VM have identical latency regardless of which NUMA node the data resides on. The measured cross-node overheads (4-11.7%) reflect scheduling artifacts, not genuine memory latency differences. On real multi-socket hardware, cross-node access overhead is typically 30-100ns (Intel Xeon: ~70ns, AMD EPYC: ~50ns) on top of ~100ns local access. This means: (a) the p50 NUMA overhead measured in QEMU underestimates the real hardware signal, (b) results like §5.5 where cross-node is *faster* than local are impossible on real hardware, and (c) the cross-VM baseline comparison (§5.7) captures the architectural benefit (lock partitioning) but not the hardware NUMA cost. Real hardware validation **was load-bearing** for the thesis and has been completed (§5.18, §5.19) --- the current results now validate both the methodology/architecture and the performance claims.
 
 **Lock-free reads are conditioned on a read-heavy workload pattern (Phase 1).** `Get()` calls `unordered_map::find()` without synchronization. This is safe when no concurrent `insert()` targets the same shard, because `find()` on a stable map is thread-safe. The benchmark warmup-then-read pattern guarantees this condition. In production mixed read/write workloads where concurrent `Set()` inserts new keys into the same shard, `find()` may observe a partially-constructed map state. **Phase 2a resolves this limitation**: CMap provides safe concurrent reads during writes via the seqlock protocol (§2.7.5). Phase 1 results in §5.4, §5.6, and §5.7 are valid under the warmup-then-read pattern; Phase 2a results in §5.13--§5.16 are valid under concurrent read/write workloads.
 
@@ -712,7 +711,7 @@ Memory fragmentation from the bump allocator is not yet measured.
 
 The per-key `unique_ptr<SeqLock<KeyMeta>>` heap allocation overhead was eliminated in Phase 2a: CMap stores values inline in cacheline-aligned slots with no per-key heap allocation or pointer indirection.
 
-The inline baseline comparison (same VM, same process) shows Furrballs slower than the non-NUMA baseline (0.65x concurrent Set, 0.81x concurrent Get). The cross-VM comparison (§5.7) shows the opposite (3.24x concurrent Set, 1.20x concurrent Get). The discrepancy is likely due to the non-NUMA baseline benefiting from the NUMA VM's 4 vCPUs without paying sharding overhead, while in a dedicated non-NUMA VM (1 node, less vCPU scheduling flexibility), the single-lock baseline bottlenecks. This cross-VM vs inline discrepancy requires real hardware validation to resolve.
+The inline baseline comparison (same VM, same process) shows Furrballs slower than the non-NUMA baseline (0.65x concurrent Set, 0.81x concurrent Get). The cross-VM comparison (§5.7) shows the opposite (3.24x concurrent Set, 1.20x concurrent Get). The discrepancy is likely due to the non-NUMA baseline benefiting from the NUMA VM's 4 vCPUs without paying sharding overhead, while in a dedicated non-NUMA VM (1 node, less vCPU scheduling flexibility), the single-lock baseline bottlenecks. Real hardware validation (§5.18) resolved this for the concurrent Set dimension (1.74x advantage confirmed); the concurrent Get dimension remains affected by the baseline's unsynchronized `unordered_map::find()` (see §5.18 baseline comparison discussion).
 
 ### 5.10 Ablation Study (QEMU VM, 3 runs averaged)
 
@@ -813,7 +812,7 @@ NUMA awareness in Furrballs involves the following measurable tradeoffs:
 | Concurrent read throughput | Modest (1.2x advantage from lock partitioning, offset on real hardware by NUMA latency) | Per-node shards reduce map size, improve cache locality |
 | Concurrent write throughput | None measured (3x advantage from lock partitioning) | N separate mutexes vs 1, reducing contention proportionally |
 | Memory overhead | One physical block per NUMA node, pre-allocated | No per-page syscall overhead, deterministic memory layout |
-| Synchronization freedom | `unordered_map::find()` not safe during concurrent `insert()` | Lock-free reads with deterministic consistency via SeqLock |
+| Synchronization freedom | `unordered_map::find()` not safe during concurrent `insert()` (Phase 1); **resolved in Phase 2a** via CMap seqlock protocol (§2.7.5) | Lock-free reads with deterministic consistency via seqlock |
 | Shared-nothing variant (local) | +11-22% overhead in QEMU (CPU competition from spin-polling workers; expected ~0% on real hardware with dedicated cores) | Worker exclusively owns node state; no synchronization needed for local ops |
 | Shared-nothing variant (cross-node) | ~1,500ns queue round-trip per cross-node read | Eliminates all cross-node cache line misses; wins when misses × 70ns > 1,500ns |
 
@@ -1223,7 +1222,7 @@ After a broadcast-race resolves a cold-miss location, the result (key → nodeID
 - [x] O(1) ARC lookup (hash-keyed ArcList with parallel unordered_map index, §2.8.1)
 - [x] Concurrent hash map for per-node shards (CMap, §2.7 --- safe lock-free reads during writes)
 - [ ] Reference counting on pages (dangling pointer safety for Phase 2b eviction)
-- [ ] Theoretical scaling validation: per-node contention domains should scale as `threads_per_node` rather than `total_threads`, producing smoother scaling than non-NUMA caches as thread count increases. Requires real hardware (8+ cores across 2+ sockets) to measure.
+- [x] Theoretical scaling validation: per-node contention domains scale as `threads_per_node` rather than `total_threads`, producing smoother scaling than non-NUMA caches as thread count increases. Validated on c6i.metal (§5.19): Get +72% from 4→64 threads; Set degrades -79% (SpinLock bottleneck). Baseline single-lock Set collapses at 4 threads and stays flat.
 
 #### 4.4 Shared-Nothing + Broadcast-Race (Third Variant)
 
