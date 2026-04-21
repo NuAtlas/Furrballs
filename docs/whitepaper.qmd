@@ -1,6 +1,6 @@
 ---
 title: "Furrballs: A NUMA-Aware, High-Performance Caching Library"
-subtitle: "Technical Report v1.7.3"
+subtitle: "Technical Report v1.8.0"
 author: "Hamza Jamil Saied (The Sphynx)"
 date: last-modified
 doi: "10.5281/zenodo.19669844"
@@ -43,7 +43,7 @@ format:
 ---
 
 ## Status
-v1.7.3 --- Wide pass review: update stale forward references (§2.1.2, §2.4), align methodology with real hardware iterations (§5.1), mark completed items (§4.3 scaling, §5.9 validation), note Phase 2a resolution in tradeoff model (§5.12)
+v1.8.0 --- Phase 2b design: migration-based eviction (compactor, page lifecycle HOT/COLD/EMPTY/FREEZE, TempCtrl, whole-page persistence, cross-node migration)
 
 ## Abstract
 Furrballs is a NUMA-aware caching library that uses NUMA topology as a first-class input to cache placement and eviction decisions. The core contribution is per-page allocation on specific NUMA nodes, with a two-level ARC hierarchy: key-level ARC (L1) for hot/cold key tracking with NUMA-aware eviction preference, and page-level ARC (L2) for page eviction backed by RocksDB persistence (L3). Pages are pre-allocated at initialization via one physical allocation per NUMA node, subdivided into logical pages filled by a bump allocator. Key routing supports round-robin distribution and thread-local placement (via a runtime config flag). The library is implemented in C++20, uses a platform abstraction layer (Numatic) for NUMA operations, and integrates a custom synchronization library (StreamLine) for thread coordination.
@@ -80,7 +80,9 @@ The separation of locality unit (page) from access unit (key) is deliberate: it 
 
 ### 2.1.2 Cross-Node Access Behavior
 
-When a `Get()` accesses data on a remote NUMA node, Furrballs **tracks the cross-node access and defers action to the eviction policy**. Phase 2a's ConcurrentARC (L1) tracks per-key access frequency via ARC list membership (t1/t2/b1/b2) and provides eviction callbacks, but does not yet record per-key cross-node access counts. Phase 2b will add cross-node access tracking to the ARC metadata, enabling the eviction policy to prefer evicting keys/pages that exhibit high cross-node access patterns---their data is "wrong-placed" relative to the accessing thread. This design choice (track-and-defer rather than immediate migration or replication) avoids the complexity and consistency overhead of runtime data movement, deferring the decision to the eviction boundary where it is cheapest.
+When a `Get()` accesses data on a remote NUMA node, Furrballs **tracks the cross-node access and defers action to the eviction policy**. Phase 2a's ConcurrentARC (L1) tracks per-key access frequency via ARC list membership (t1/t2/b1/b2) and provides eviction callbacks, but does not yet record per-key cross-node access counts. Phase 2b adds `CrossNodeAccesses` (atomic counter in `KeyMeta`) to `Get()`: when the accessing thread's node differs from the key's `NodeID`, the counter is incremented with `fetch_add(1, relaxed)`. When `CrossNodeAccesses` exceeds a configurable threshold, the key is a candidate for cross-node migration: the key's CMap entry is removed from the source node and re-inserted on the accessing node's CMap, with `memcpy` of the value data to a page on the destination node. This moves the key's data closer to the threads that access it, eliminating repeated cross-node latency.
+
+This design choice (track-and-defer rather than immediate migration or replication) avoids the complexity and consistency overhead of runtime data movement, deferring the decision to the eviction boundary where it is cheapest. Cross-node migration is rare (high threshold) compared to intra-node migration (compaction of cold keys to cold pages, §2.9).
 
 ### 2.1.3 Locality Terminology
 
@@ -117,7 +119,43 @@ Key routing supports two strategies, selectable at runtime via `NumaConfig::UseT
 
 ### 2.4 Bump Allocator
 
-Multi-value pages use an append-only bump allocator with 8-byte alignment. Each page tracks `UsedBytes` (atomic, CAS-based concurrent bump) and `DataWastedByPadding` for fragmentation metrics. No per-value deallocation --- pages are evicted wholesale by ARC. Phase 2a's ConcurrentARC tracks key-level hot/cold state and provides eviction callbacks; Phase 2b will wire these callbacks to flush dirty values to RocksDB and reclaim page memory.
+Multi-value pages use an append-only bump allocator with 8-byte alignment. Each page tracks `UsedBytes` (atomic, CAS-based concurrent bump) and `DataWastedByPadding` for fragmentation metrics. No per-value deallocation --- pages are recycled wholesale (§2.9).
+
+#### 2.4.1 Page Lifecycle
+
+Pages transition through four states:
+
+| State | Description |
+|-------|-------------|
+| **HOT** | Receives new `Set()` writes. Active bump allocator. May contain cold keys awaiting compaction. |
+| **COLD** | Receives migrated values from HOT pages only. Bump allocator advancing from compaction traffic. |
+| **EMPTY** | No active keys. Available for reuse as HOT or COLD. Bump allocator reset. |
+| **FREEZE** | Mid-eviction. No writes allowed. Page data being flushed to persistent storage (§2.9). |
+
+Transitions: HOT $\to$ EMPTY (all keys migrated out by compactor) $\to$ COLD (reused as migration destination). COLD $\to$ FREEZE (eviction triggered) $\to$ EMPTY (after persistent storage flush). Pages recycle indefinitely --- no new physical allocation needed after initialization.
+
+`PageTier` is `std::atomic<PageTier>` to prevent `Set()` from writing to a page mid-eviction (the `FREEZE` check adds one branch to the bump path, negligible in the common case).
+
+#### 2.4.2 Page Metadata (Phase 2b)
+
+```cpp
+struct Page {
+    char* Data;
+    uint8_t NodeId;
+    std::atomic<size_t> UsedBytes;
+    std::atomic<size_t> DataWastedByPadding;
+
+    // Phase 2b:
+    std::atomic<bool> HasColdKeys;       // ARC eviction callback sets this
+    std::atomic<uint16_t> ActiveKeys;    // keys currently live on this page
+    std::vector<HashPair> KeyIndex;      // reverse index: which keys live here
+    std::vector<uint8_t> TempCtrl;       // parallel to KeyIndex: 0x00=HOT, 0x01=COLD
+    std::atomic<PageTier> Tier;          // HOT, COLD, EMPTY, FREEZE
+    void ResetBump();                    // resets UsedBytes and DataWastedByPadding to 0
+};
+```
+
+`KeyIndex` and `TempCtrl` are parallel arrays: `TempCtrl[i]` corresponds to `KeyIndex[i]`. `TempCtrl` encodes each key's temperature in a byte (inspired by Swiss table ctrl bytes, §2.7), enabling SIMD-scannable cold key detection by the compactor (§2.9). The eviction callback writes under ConcurrentARC's SpinLock; the compactor reads without a lock (benign stale reads are acceptable).
 
 ### 2.5 Concurrency
 
@@ -125,9 +163,10 @@ Phase 1 used per-node `shared_mutex` for writes and `SeqLock<KeyMeta>` for lock-
 
 Phase 2a replaces the per-node `unordered_map` + `SeqLock` + `shared_mutex` combination with CMap (§2.7) inside ConcurrentARC (§2.8). The concurrency model is now:
 
-- **Find (Get):** Lock-free CMap read via seqlock protocol. PromoteBuf enqueue for deferred ARC promotion (lock-free `fetch_add`). No SpinLock on the read path.
-- **Set (insert/update):** UpdateInPlace fast path (CMap seqlock only, no SpinLock) for existing keys that fit. New-key path: SpinLock for ARC list management + CMap for concurrent key→value storage. CMap's per-slot CAS eliminates shared_mutex serialization.
-- **Eviction:** SpinLock + CMap's `FindAndEraseByHash` (hash-keyed, no string needed).
+- **Find (Get):** Lock-free CMap read via seqlock protocol. PromoteBuf enqueue for deferred ARC promotion (lock-free `fetch_add`). No SpinLock on the read path. Phase 2b adds `CrossNodeAccesses.fetch_add(1, relaxed)` when the accessing thread's node differs from the key's `NodeID`.
+- **Set (insert/update):** UpdateInPlace fast path (CMap seqlock only, no SpinLock) for existing keys that fit. New-key path: SpinLock for ARC list management + CMap for concurrent key→value storage. CMap's per-slot CAS eliminates shared_mutex serialization. Phase 2b adds cooperative migration: every 16th `Set()` on a page with `HasColdKeys == true` migrates one cold key to a COLD page (§2.9).
+- **Eviction:** SpinLock + CMap's `FindAndEraseByHash` (hash-keyed, no string needed). Phase 2b's eviction callback sets `page.HasColdKeys = true` and updates `TempCtrl` (§2.9). No I/O on the eviction path --- persistent storage writes happen during cold page eviction (whole-page flush), not during ARC eviction.
+- **Compaction (Phase 2b):** NodeJob worker(s) scan pages with `HasColdKeys == true`, SIMD-scan `TempCtrl` for cold keys (0x01), migrate values to COLD pages via `CMap.UpdateInPlace`. Background compaction amortized across idle cycles; cooperative migration on the Set path provides additional throughput under load (§2.9).
 
 Statistics use `alignas(64)` on all atomic fields to prevent false sharing. `Numatic::GetCurrentNode()` uses a `thread_local` cache (§3.15) to eliminate syscall overhead per routing decision.
 
@@ -408,19 +447,175 @@ TAS lock with `_mm_pause()` backoff. Provides `lock()`, `try_lock()`, `unlock()`
 
 #### 2.8.4 Operations
 
-**Find(key):** `store_.Find()` (lock-free CMap read) + `promoteBuf_.enqueue(hash)` (lock-free). Cooperative `try_lock` drain every 64th call. Returns `std::optional<Value>`.
+**Find(key):** `store_.Find()` (lock-free CMap read) + `promoteBuf_.enqueue(hash)` (lock-free). Cooperative `try_lock` drain every 64th call. Returns `std::optional<Value>`. Phase 2b: `CrossNodeAccesses.fetch_add(1, relaxed)` if accessing from a different node than the key's `NodeID`.
 
-**Set(key, val):** SpinLock + drain buffer + single `CMap.Set()` probe + hash-keyed ARC list management (standard ARC algorithm using H2 for list tracking). Returns `CMapSetResult`.
+**Set(key, val):** SpinLock + drain buffer + single `CMap.Set()` probe + hash-keyed ARC list management (standard ARC algorithm using H2 for list tracking). Returns `CMapSetResult`. Phase 2b: cooperative migration --- every 16th `Set()` on a page with `HasColdKeys == true` migrates one cold key to a COLD page (§2.9).
 
 **UpdateInPlace(key, fn):** Delegates to `CMap.UpdateInPlace()` --- no SpinLock needed (CMap handles its own concurrency).
 
 **Eviction:** `replaceLocked(h2)` and `evictLocked()` return bool --- false on CAS contention, callers propagate as ABANDONED_SET. List mutation happens AFTER confirmed `FindAndEraseByHash`. EvictionCallback receives `const Value&` (KeyMeta contains all metadata: PageIndex, DataSize, DataOffset, NodeID).
 
+**Phase 2b eviction callback:** When ARC evicts a key (t1/t2 → b1/b2), the callback sets `page.HasColdKeys = true` and updates `page.TempCtrl[i] = 0x01` (COLD) for the evicted key. This flags the page for the compactor (§2.9). The callback runs under ConcurrentARC's SpinLock, so `TempCtrl` writes are serialized per node. No I/O, no allocation, no blocking operation on the callback path.
+
+**Phase 2b promotion callback:** When PromoteBuf drain promotes a key (b1/b2 → t1/t2), the corresponding `page.TempCtrl[i]` is set back to `0x00` (HOT). This prevents the compactor from unnecessarily migrating a re-promoted key. The promotion drain already holds the SpinLock, so the `TempCtrl` write is serialized.
+
 #### 2.8.5 Integration with Furrballs
 
-`PerNodeDetails` was restructured: `rwMutex`, `KeyShard`, and `KeyMetaStore` removed; replaced by `ConcurrentARC<KeyMeta> KeyStore` and `std::atomic<size_t> CurrentPage` (lock-free page advancement). `Set()` tries `UpdateInPlace` first (fast path --- in-place write under CMap's seqlock, no allocation, no SpinLock); falls back to atomic page allocation + `ConcurrentARC.Set()`. `Get()` calls `ConcurrentARC.Find(key)` per node. CreateBall passes `Numatic::AllocateLocal`/`FreeNUMA` for NUMA-local CMap memory.
+`PerNodeDetails` was restructured: `rwMutex`, `KeyShard`, and `KeyMetaStore` removed; replaced by `ConcurrentARC<KeyMeta> KeyStore` and `std::atomic<size_t> CurrentPage` (lock-free page advancement). `Set()` tries `UpdateInPlace` first (fast path --- in-place write under CMap's seqlock, no allocation, no SpinLock); falls back to atomic page allocation + `ConcurrentARC.Set()`. `Get()` calls `ConcurrentARC.Find(key)` per node. CreateBall passes `Numatic::AllocateLocal`/`FreeNUMA` for NUMA-local CMap memory. Phase 2b: `KeyMeta` gains `Dirty` flag (set on `Set`, cleared on persistent storage flush) and `CrossNodeAccesses` atomic counter (incremented on cross-node `Get`).
 
-## 3. Design Decisions Log
+### 2.9 Compactor and Migration-Based Eviction
+
+Phase 2b introduces a migration-based eviction model that replaces per-key eviction from bump-allocated pages with value migration between pages, followed by wholesale page eviction. This solves the fundamental constraint of the append-only bump allocator: per-key eviction leaves holes that cannot be reclaimed without compaction.
+
+#### 2.9.1 Migration Model
+
+Values flow from HOT pages to COLD pages via migration, and COLD pages are evicted wholesale to persistent storage. Pages recycle between states (§2.4.1).
+
+```
+[HOT PAGE] ──ARC marks key cold──→ [HasColdKeys flag set]
+                                         │
+                                    [compactor scans TempCtrl]
+                                         │
+                                    [memcpy value to COLD page]
+                                    [CMap.UpdateInPlace: new PageIndex/Offset]
+                                         ▼
+                                   [COLD PAGE] ──page full or memory pressure──→ [FREEZE → persistent storage flush → EMPTY]
+                                         ▲
+                                         │
+                              [ghost hit: reload from storage → HOT PAGE]
+```
+
+**Why migration over per-key eviction:** Per-key eviction from a bump-allocated page leaves holes in the page. Reclaiming those holes requires compaction (copy remaining values, update all KeyMetas) --- expensive and constant under eviction pressure. Migration avoids holes entirely: values are copied to a receiving page, and the source page's wasted space is reclaimed only when the entire page is emptied and recycled. The worst case is temporary memory overhead proportional to pages "in transit," which is bounded and self-correcting.
+
+#### 2.9.2 Compactor Trigger: Hybrid ARC + Background + Cooperative
+
+The compactor uses a hybrid trigger model:
+
+1. **ARC signals (free):** When ARC evicts a key (t1/t2 → b1/b2), the eviction callback sets `page.HasColdKeys = true` and writes `TempCtrl[i] = 0x01`. Zero-cost on the eviction path (atomic store under existing SpinLock).
+2. **Background compaction:** NodeJob worker(s) scan pages with `HasColdKeys == true` between dispatches. The scan interval is shorter under memory pressure and longer when memory is plentiful. Self-balancing: idle workers = more frequent compaction.
+3. **Cooperative migration (Set path):** Every 16th `Set()` on a page with `HasColdKeys == true` migrates one cold key as a side effect before bumping. Under high write throughput, N threads provide free compaction labor. Throttled to avoid significant latency impact on the write path.
+
+#### 2.9.3 Compactor Algorithm
+
+```
+compactor_run(node):
+  for each page where page.HasColdKeys == true:
+    // SIMD scan TempCtrl for COLD keys (0x01)
+    for each batch of 16 TempCtrl bytes:
+      cold_mask = _mm_cmpeq_epi8(TempCtrl[batch], 0x01)
+      for each bit i set in cold_mask:
+        hashPair = page.KeyIndex[batch + i]
+        keyMeta = CMap.Find(hashPair)
+        if keyMeta has_value:
+          coldPage = find_cold_page_with_space(node)
+          if coldPage found:
+            newOffset = coldPage.TryBump(keyMeta.DataSize)
+            if newOffset valid:
+              memcpy(coldPage.Data + newOffset, page.Data + keyMeta.DataOffset, keyMeta.DataSize)
+              CMap.UpdateInPlace(hashPair, [&](KeyMeta& km) {
+                km.PageIndex = coldPage_index
+                km.DataOffset = newOffset
+              })
+              page.ActiveKeys--
+              page.KeyIndex.remove(hashPair)
+              coldPage.ActiveKeys++
+              coldPage.KeyIndex.push_back(hashPair)
+              coldPage.TempCtrl.push_back(0x00)  // newly migrated = HOT initially
+
+    page.HasColdKeys.store(false, relaxed)
+
+    if page.ActiveKeys == 0:
+      page.Tier.store(EMPTY, relaxed)
+      page.ResetBump()
+      page.KeyIndex.clear()
+      page.TempCtrl.clear()
+```
+
+**Finding a COLD page with space:** Check existing COLD pages for one where `TryBump` succeeds. If none, convert an EMPTY page to COLD. If no EMPTY pages available, migration stalls --- the system is self-correcting (eviction of full COLD pages frees EMPTY pages for reuse).
+
+**Re-promoted keys:** If a key was evicted from ARC (TempCtrl = COLD) then re-promoted via ghost hit (TempCtrl = HOT), the compactor skips it on the next scan. The TempCtrl byte is the single source of truth for "should this key be migrated?" --- no SpinLock or ARC membership query needed.
+
+**Unnecessary migrations:** In the window between ARC eviction and compactor scan, a key might be re-promoted back to t1/t2. If the promotion callback hasn't cleared TempCtrl yet, the compactor migrates it unnecessarily. This is harmless: the key lives on a COLD page but is hot in ARC, and reads from COLD pages have identical latency to HOT pages (same memory, same NUMA node).
+
+#### 2.9.4 Cross-Node Migration
+
+When `KeyMeta.CrossNodeAccesses` exceeds a configurable threshold (e.g., 100--1000 accesses), the key is a candidate for cross-node migration:
+
+```
+cross_node_migrate(hashPair, destNode):
+  // Remove from source node's CMap
+  FindAndEraseByHash(hashPair) on source node
+  // Allocate space on destination node's HOT page
+  newOffset = destPage.TryBump(keyMeta.DataSize)
+  memcpy(destPage.Data + newOffset, sourcePage.Data + keyMeta.DataOffset, keyMeta.DataSize)
+  // Insert into destination node's CMap
+  CMap.Insert(hashPair, KeyMeta{destPage, newOffset, ...})
+  keyMeta.CrossNodeAccesses = 0
+  // Update page bookkeeping on both nodes
+```
+
+The CMap entry fully relocates to the destination node, preserving the sole-owner invariant (a key belongs to exactly one node at any time). Cross-node migration is rare (high threshold) and represents the thesis's NUMA-aware placement contribution: data moves to where the threads that access it are.
+
+#### 2.9.5 Whole-Page Persistent Storage
+
+When a COLD page fills up or memory pressure requires reclamation, the page is evicted to persistent storage:
+
+**PageBlob format:**
+```cpp
+struct PageBlob {
+    uint8_t NodeId;
+    uint16_t ActiveKeys;
+    uint16_t KeyCount;
+    // Per-key metadata array:
+    struct { uint64_t H1; uint64_t H2; uint32_t DataOffset; uint32_t DataSize; bool Dirty; } Keys[KeyCount];
+    // Raw page data:
+    uint8_t ValueData[UsedBytes];
+};
+```
+
+**Eviction flow:**
+1. `page.Tier.store(FREEZE, release)` --- block new writes
+2. Serialize PageBlob from page data + KeyIndex + TempCtrl
+3. `RocksDB.Put(PageId, serialized_blob)` --- single write per eviction
+4. Update `evictedKeyIndex_[h2] = PageId` for each key on the page (in-memory H2 → PageId mapping for ghost hit recovery)
+5. `CMap.FindAndEraseByHash(h2)` for each key on the page
+6. `page.Tier.store(EMPTY, release)` + `page.ResetBump()` + clear bookkeeping
+
+**Why whole-page, not per-key:** Single RocksDB write per eviction vs N writes. The page's temporal locality (keys that went cold around the same time) makes whole-page reload on ghost hit speculative but effective (§2.9.6). RocksDB's LSM tree overhead is amortized over larger writes.
+
+#### 2.9.6 Ghost Hit Recovery
+
+Two recovery scenarios:
+
+**Scenario A: Key in CMap, in ARC ghost list (b1/b2).**
+- `CMap.Find()` returns the value (data still in memory, on a COLD page)
+- ARC promotes back to t1/t2 via PromoteBuf drain
+- `TempCtrl` byte set to HOT (0x00)
+- No persistent storage I/O
+
+**Scenario B: Key NOT in CMap (COLD page was evicted).**
+- `CMap.Find()` returns nullopt on all nodes
+- Look up `evictedKeyIndex_[h2]` → PageId
+- `RocksDB.Get(PageId)` → deserialize PageBlob
+- Reload entire page into memory:
+  - Allocate an EMPTY page as HOT
+  - `memcpy` the ValueData
+  - Re-insert all keys into CMap with their original KeyMeta
+  - Rebuild page bookkeeping (KeyIndex, TempCtrl, ActiveKeys)
+  - Remove all entries from `evictedKeyIndex_` for this page
+- Return the requested key's value
+
+**Speculative whole-page reload:** When one key on an evicted page is accessed, the entire page is reloaded. Since the compactor migrates keys in temporal order (ARC evicts keys by recency), COLD pages contain keys that "went cold around the same time." Accessing one often means others will follow. This is the same principle as OS page fault handling.
+
+#### 2.9.7 Evicted Page Lifecycle Management
+
+Evicted pages accumulate in RocksDB. For the thesis, cleanup strategies:
+
+- **TTL per page:** Each evicted page gets a timestamp. After N seconds, RocksDB compaction deletes it. Access after TTL = true `KEY_NOT_FOUND`.
+- **On shutdown:** Full RocksDB cleanup/compaction. Speed is irrelevant at shutdown.
+- **Separate process:** Persistent storage maintenance is orthogonal to the thesis contribution (NUMA-aware in-memory caching). Could be a standalone tool that compacts and prunes RocksDB independently of Furrballs.
+
+The `evictedKeyIndex_` (H2 → PageId) is in-memory only. If the process restarts, the index is lost --- but this is a cache, not a database. Cold restart warms up from scratch, which is the expected behavior for a caching layer.
 
 ### 3.1 Per-Node Physical Block with Subdivision
 **Decision:** One `Numatic::AllocateOnNode()` call per NUMA node at init, manually partitioned into logical pages.
@@ -527,7 +722,30 @@ TAS lock with `_mm_pause()` backoff. Provides `lock()`, `try_lock()`, `unlock()`
 
 **Rationale:** Without this, ConcurrentARC::Set() would need to call `Find()` then `Set()` on CMap, probing the same key twice. The `inserted` flag enables ConcurrentARC to distinguish new entries (add to t1) from updates (no list change) with a single CMap operation.
 
-## 4. Related Work
+### 3.22 Migration-Based Eviction over Per-Key Eviction
+**Decision:** Cold keys are migrated from HOT pages to COLD pages rather than individually evicted from bump-allocated pages. Pages are evicted wholesale only when fully cold.
+
+**Rationale:** The append-only bump allocator cannot reclaim per-key space without compaction (copy remaining values, update all KeyMetas). Per-key eviction leaves holes that accumulate under sustained eviction pressure. Migration avoids holes entirely: values are copied to receiving pages, and source page space is reclaimed when the page is emptied and recycled. The worst case is temporary memory overhead proportional to pages in transit, which is bounded and self-correcting.
+
+### 3.23 Page Lifecycle: HOT/COLD/EMPTY/FREEZE
+**Decision:** Pages cycle through four states: HOT (receives Set writes), COLD (receives migrated cold values), EMPTY (recyclable), FREEZE (mid-eviction, no writes allowed).
+
+**Rationale:** The three productive states (HOT/COLD/EMPTY) cover all operational needs. FREEZE prevents the race where `Set()` writes to a page mid-eviction (new value would be lost when the page is flushed to persistent storage). `PageTier` is `std::atomic<PageTier>` to ensure `Set()` sees the FREEZE state without additional synchronization.
+
+### 3.24 TempCtrl: Swiss Table-Style Temperature Tracking
+**Decision:** Each page has a `TempCtrl` byte array parallel to `KeyIndex`, encoding each key's temperature (0x00 = HOT, 0x01 = COLD). The compactor uses SSE2 SIMD to scan for cold keys.
+
+**Rationale:** This eliminates the need for the compactor to query ARC list membership (which requires the SpinLock). The eviction callback writes 0x01 under the existing SpinLock; the promotion callback writes 0x00 under the same SpinLock; the compactor reads without any lock (benign stale reads). SIMD scanning finds cold keys in O(keys/16) iterations. The byte array is inspired by Swiss table ctrl bytes (§2.7) and provides the same benefits: compact representation, SIMD-friendly, lock-free reads.
+
+### 3.25 Hybrid Compaction Trigger
+**Decision:** The compactor uses three complementary trigger mechanisms: ARC eviction callback sets `HasColdKeys` (free signal), background NodeJob worker(s) scan and migrate (amortizable), and cooperative migration on every 16th `Set()` on a flagged page (free labor under high write throughput).
+
+**Rationale:** Pure ARC-triggered migration is expensive (memcpy + CMap ops on every eviction). Pure periodic scanning is fragile (interval tuning, cold keys linger). Pure pressure-based migration is bursty (latency spikes under memory pressure). The hybrid model decouples the signal (ARC, near-free) from the work (compaction, deferred and batched) while allowing the Set path to contribute cooperatively under load.
+
+### 3.26 Whole-Page Persistent Storage over Per-Key Writes
+**Decision:** Evicted COLD pages are persisted as a single PageBlob (metadata + raw page data) rather than N individual RocksDB.Put() calls. Ghost hit recovery reloads the entire page speculatively.
+
+**Rationale:** Single write per eviction amortizes RocksDB's LSM tree overhead (memtable, WAL, compaction) over the full page size (~4KB). Whole-page reload leverages the temporal locality of COLD pages: since the compactor migrates keys in ARC recency order, keys on a COLD page "went cold around the same time." Accessing one key often means others will follow soon (same principle as OS page fault handling). The PageBlob format preserves all per-key metadata (DataOffset, DataSize, Dirty) so reloaded pages have identical layout without recomputation.
 
 | System | NUMA Approach | Difference from Furrballs |
 |---|---|---|
@@ -1165,13 +1383,19 @@ The project is on the `numa-focus` branch. Licensed under MIT. Build and test ar
 - [x] Phase 2a benchmark suite (ST, concurrent, routing, inline/cross-VM baseline, ablation)
 - [x] Per-node `rwMutex`, `KeyShard`, `KeyMetaStore` removed
 
-#### Phase 2b: Eviction + Persistence
-- [ ] Wire eviction callback to flush dirty values to RocksDB
-- [ ] NUMA-aware eviction preference (cross-node accessed keys preferred for eviction)
-- [ ] L2 ARC for page-level eviction
-- [ ] Per-page key list for L2 eviction cleanup
-- [ ] RocksDB page reload on L2 miss
-- [ ] L1 ghost hit handling (key promoted, page still resident)
+#### Phase 2b: Migration-Based Eviction + Persistence
+- [ ] KeyMeta additions: `Dirty` flag (seqlock-protected), `CrossNodeAccesses` atomic counter
+- [ ] Page lifecycle: `PageTier` enum (HOT/COLD/EMPTY/FREEZE), `HasColdKeys`, `ActiveKeys`, `KeyIndex`, `TempCtrl`
+- [ ] `CrossNodeAccesses` increment in `Get()` (relaxed fetch_add when accessing from different node)
+- [ ] Eviction callback wiring: set `HasColdKeys` + `TempCtrl[i] = COLD` on ARC eviction
+- [ ] Promotion callback wiring: set `TempCtrl[i] = HOT` on ghost hit promotion
+- [ ] Compactor: NodeJob worker(s) scan `HasColdKeys` pages, SIMD-scan `TempCtrl` for COLD keys, migrate to COLD pages
+- [ ] Page recycling: HOT → EMPTY → COLD → FREEZE → EMPTY transitions, `ResetBump()`
+- [ ] Cold page eviction → whole-page RocksDB persistence (PageBlob format)
+- [ ] Ghost hit recovery → whole-page RocksDB reload (speculative, full page)
+- [ ] `evictedKeyIndex_` (H2 → PageId) for ghost hit lookup
+- [ ] Cooperative `Set()` migration (every 16th Set on HasColdKeys page migrates one cold key)
+- [ ] Cross-node migration: `FindAndErase` source → `memcpy` → `Insert` dest (triggered by CrossNodeAccesses threshold)
 
 ### Phase 3: Adaptive Memory Pooling (AMP)
 - [ ] Dynamic page pool expansion under eviction pressure
