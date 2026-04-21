@@ -1,6 +1,6 @@
 ---
 title: "Furrballs: A NUMA-Aware, High-Performance Caching Library"
-subtitle: "Technical Report v1.8.1"
+subtitle: "Technical Report v1.8.2"
 author: "Hamza Jamil Saied (The Sphynx)"
 date: last-modified
 doi: "10.5281/zenodo.19669844"
@@ -43,7 +43,7 @@ format:
 ---
 
 ## Status
-v1.8.1 --- Fix concurrency bugs in Phase 2b design: compactor data-loss race (memcpy inside UpdateInPlace), KeyIndex/TempCtrl concurrent modification (per-page CompactLock), SIMD overread mask, FREEZE page skip, transient miss window on cross-node migration, eviction callback signature change
+v1.8.2 --- Cross-node migration uses insert-before-erase ordering to eliminate transient miss window (no forwarding mechanism needed)
 
 ## Abstract
 Furrballs is a NUMA-aware caching library that uses NUMA topology as a first-class input to cache placement and eviction decisions. The core contribution is per-page allocation on specific NUMA nodes, with a two-level ARC hierarchy: key-level ARC (L1) for hot/cold key tracking with NUMA-aware eviction preference, and page-level ARC (L2) for page eviction backed by RocksDB persistence (L3). Pages are pre-allocated at initialization via one physical allocation per NUMA node, subdivided into logical pages filled by a bump allocator. Key routing supports round-robin distribution and thread-local placement (via a runtime config flag). The library is implemented in C++20, uses a platform abstraction layer (Numatic) for NUMA operations, and integrates a custom synchronization library (StreamLine) for thread coordination.
@@ -557,20 +557,29 @@ When `KeyMeta.CrossNodeAccesses` exceeds a configurable threshold (e.g., 100--10
 
 ```
 cross_node_migrate(hashPair, destNode):
-  // Remove from source node's CMap
-  FindAndEraseByHash(hashPair) on source node
-  // Allocate space on destination node's HOT page
+  // 1. Copy value data to destination page
   newOffset = destPage.TryBump(keyMeta.DataSize)
+  if newOffset invalid: return CACHE_FULL
   memcpy(destPage.Data + newOffset, sourcePage.Data + keyMeta.DataOffset, keyMeta.DataSize)
-  // Insert into destination node's CMap
-  CMap.Insert(hashPair, KeyMeta{destPage, newOffset, ...})
+
+  // 2. Insert into destination node's CMap FIRST (key now on both nodes)
+  result = destCMap.Insert(hashPair, KeyMeta{destPage_index, newOffset, ...})
+  if result failed: return error  // dead space on dest page, acceptable bump waste
+
+  // 3. Erase from source node's CMap (retry until success)
+  retry:
+    result = sourceCMap.FindAndEraseByHash(hashPair)
+    if result failed (CAS contention): goto retry
+
   keyMeta.CrossNodeAccesses = 0
   // Update page bookkeeping on both nodes (under CompactLock)
 ```
 
-The CMap entry fully relocates to the destination node, preserving the sole-owner invariant (a key belongs to exactly one node at any time). Cross-node migration is rare (high threshold) and represents the thesis's NUMA-aware placement contribution: data moves to where the threads that access it are.
+**Insert-before-erase ordering:** The destination insert happens before the source erase. During the brief window between insert and erase, the key exists on both nodes --- concurrent `Get()` calls find it on whichever node they check first, always returning a correct result. No transient miss window, no wrong answers, no forwarding mechanism needed. CMap's per-slot CAS protects both operations independently (insert and erase target different slots on different nodes), so contention probability and surface area are minimal.
 
-**Transient miss window:** Between `FindAndEraseByHash` (source) and `CMap.Insert` (dest), the key exists in no CMap. Concurrent `Get()` calls during this window see a spurious cache miss. This window is ~200--500ns on real hardware (two CAS cycles + one memcpy). Since cross-node migration is triggered only when `CrossNodeAccesses` exceeds a high threshold (the key has been cross-accessed hundreds of times), the probability of a concurrent Get hitting this exact window is negligible. A future optimization could add a `MIGRATING` ctrl byte state as a forwarding tombstone (readers follow the forwarding pointer to the destination node), but this is not required for Phase 2b.
+**Failure handling:** If the dest insert fails (CAS contention), the value data occupies dead space on the dest page (reclaimed on page eviction). If the source erase fails (CAS contention), the retry loop eventually succeeds. During retries, the key is on both nodes --- dual ownership is invisible to readers and correct for Gets. A concurrent `Set()` targeting this key during the dual-ownership window would hit the source (pre-erase) or the dest (post-insert) --- both correct.
+
+The CMap entry fully relocates to the destination node, restoring the sole-owner invariant after the erase completes. Cross-node migration is rare (high threshold) and represents the thesis's NUMA-aware placement contribution: data moves to where the threads that access it are.
 
 #### 2.9.5 Whole-Page Persistent Storage
 
