@@ -1,6 +1,6 @@
 ---
 title: "Furrballs: A NUMA-Aware, High-Performance Caching Library"
-subtitle: "Technical Report v1.8.2"
+subtitle: "Technical Report v1.8.3"
 author: "Hamza Jamil Saied (The Sphynx)"
 date: last-modified
 doi: "10.5281/zenodo.19669844"
@@ -43,7 +43,7 @@ format:
 ---
 
 ## Status
-v1.8.2 --- Cross-node migration uses insert-before-erase ordering to eliminate transient miss window (no forwarding mechanism needed)
+v1.8.3 --- Fix stale roadmap checklist: cross-node migration ordering updated to insert-before-erase
 
 ## Abstract
 Furrballs is a NUMA-aware caching library that uses NUMA topology as a first-class input to cache placement and eviction decisions. The core contribution is per-page allocation on specific NUMA nodes, with a two-level ARC hierarchy: key-level ARC (L1) for hot/cold key tracking with NUMA-aware eviction preference, and page-level ARC (L2) for page eviction backed by RocksDB persistence (L3). Pages are pre-allocated at initialization via one physical allocation per NUMA node, subdivided into logical pages filled by a bump allocator. Key routing supports round-robin distribution and thread-local placement (via a runtime config flag). The library is implemented in C++20, uses a platform abstraction layer (Numatic) for NUMA operations, and integrates a custom synchronization library (StreamLine) for thread coordination.
@@ -1420,7 +1420,7 @@ The project is on the `numa-focus` branch. Licensed under MIT. Build and test ar
 - [ ] Ghost hit recovery → whole-page RocksDB reload (speculative, full page)
 - [ ] `evictedKeyIndex_` (H2 → PageId) for ghost hit lookup
 - [ ] Cooperative `Set()` migration (every 16th Set on HasColdKeys page migrates one cold key)
-- [ ] Cross-node migration: `FindAndErase` source → `memcpy` → `Insert` dest (triggered by CrossNodeAccesses threshold)
+- [ ] Cross-node migration: `memcpy` → `Insert` dest → `FindAndErase` source (insert-before-erase, triggered by CrossNodeAccesses threshold)
 
 ### Phase 3: Adaptive Memory Pooling (AMP)
 - [ ] Dynamic page pool expansion under eviction pressure
