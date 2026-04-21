@@ -1,6 +1,6 @@
 ---
 title: "Furrballs: A NUMA-Aware, High-Performance Caching Library"
-subtitle: "Technical Report v1.8.0"
+subtitle: "Technical Report v1.8.1"
 author: "Hamza Jamil Saied (The Sphynx)"
 date: last-modified
 doi: "10.5281/zenodo.19669844"
@@ -43,7 +43,7 @@ format:
 ---
 
 ## Status
-v1.8.0 --- Phase 2b design: migration-based eviction (compactor, page lifecycle HOT/COLD/EMPTY/FREEZE, TempCtrl, whole-page persistence, cross-node migration)
+v1.8.1 --- Fix concurrency bugs in Phase 2b design: compactor data-loss race (memcpy inside UpdateInPlace), KeyIndex/TempCtrl concurrent modification (per-page CompactLock), SIMD overread mask, FREEZE page skip, transient miss window on cross-node migration, eviction callback signature change
 
 ## Abstract
 Furrballs is a NUMA-aware caching library that uses NUMA topology as a first-class input to cache placement and eviction decisions. The core contribution is per-page allocation on specific NUMA nodes, with a two-level ARC hierarchy: key-level ARC (L1) for hot/cold key tracking with NUMA-aware eviction preference, and page-level ARC (L2) for page eviction backed by RocksDB persistence (L3). Pages are pre-allocated at initialization via one physical allocation per NUMA node, subdivided into logical pages filled by a bump allocator. Key routing supports round-robin distribution and thread-local placement (via a runtime config flag). The library is implemented in C++20, uses a platform abstraction layer (Numatic) for NUMA operations, and integrates a custom synchronization library (StreamLine) for thread coordination.
@@ -148,6 +148,7 @@ struct Page {
     // Phase 2b:
     std::atomic<bool> HasColdKeys;       // ARC eviction callback sets this
     std::atomic<uint16_t> ActiveKeys;    // keys currently live on this page
+    SpinLock CompactLock;                // protects KeyIndex, TempCtrl modifications
     std::vector<HashPair> KeyIndex;      // reverse index: which keys live here
     std::vector<uint8_t> TempCtrl;       // parallel to KeyIndex: 0x00=HOT, 0x01=COLD
     std::atomic<PageTier> Tier;          // HOT, COLD, EMPTY, FREEZE
@@ -155,7 +156,7 @@ struct Page {
 };
 ```
 
-`KeyIndex` and `TempCtrl` are parallel arrays: `TempCtrl[i]` corresponds to `KeyIndex[i]`. `TempCtrl` encodes each key's temperature in a byte (inspired by Swiss table ctrl bytes, §2.7), enabling SIMD-scannable cold key detection by the compactor (§2.9). The eviction callback writes under ConcurrentARC's SpinLock; the compactor reads without a lock (benign stale reads are acceptable).
+`KeyIndex` and `TempCtrl` are parallel arrays: `TempCtrl[i]` corresponds to `KeyIndex[i]`. `TempCtrl` encodes each key's temperature in a byte (inspired by Swiss table ctrl bytes, §2.7), enabling SIMD-scannable cold key detection by the compactor (§2.9). Both arrays are protected by `CompactLock` (per-page SpinLock): the eviction callback and promotion callback acquire it under ConcurrentARC's SpinLock, the compactor acquires it during migration, and cooperative `Set()` migration acquires it. Lock ordering is consistent: `CompactLock` is always taken after ConcurrentARC's SpinLock (never before), preventing deadlock.
 
 ### 2.5 Concurrency
 
@@ -453,11 +454,11 @@ TAS lock with `_mm_pause()` backoff. Provides `lock()`, `try_lock()`, `unlock()`
 
 **UpdateInPlace(key, fn):** Delegates to `CMap.UpdateInPlace()` --- no SpinLock needed (CMap handles its own concurrency).
 
-**Eviction:** `replaceLocked(h2)` and `evictLocked()` return bool --- false on CAS contention, callers propagate as ABANDONED_SET. List mutation happens AFTER confirmed `FindAndEraseByHash`. EvictionCallback receives `const Value&` (KeyMeta contains all metadata: PageIndex, DataSize, DataOffset, NodeID).
+**Eviction:** `replaceLocked(h2)` and `evictLocked()` return bool --- false on CAS contention, callers propagate as ABANDONED_SET. List mutation happens AFTER confirmed `FindAndEraseByHash`. Phase 2a EvictionCallback receives `const Value&` (KeyMeta contains all metadata: PageIndex, DataSize, DataOffset, NodeID). Phase 2b changes the signature to `void(uint64_t h2, const Value&)` to carry the hash needed for `TempCtrl` index lookup.
 
-**Phase 2b eviction callback:** When ARC evicts a key (t1/t2 → b1/b2), the callback sets `page.HasColdKeys = true` and updates `page.TempCtrl[i] = 0x01` (COLD) for the evicted key. This flags the page for the compactor (§2.9). The callback runs under ConcurrentARC's SpinLock, so `TempCtrl` writes are serialized per node. No I/O, no allocation, no blocking operation on the callback path.
+**Phase 2b eviction callback:** When ARC evicts a key (t1/t2 → b1/b2), the callback acquires `page.CompactLock`, looks up the HashPair in `page.KeyIndex` to find index `i`, sets `page.TempCtrl[i] = 0x01` (COLD), releases `CompactLock`, then sets `page.HasColdKeys = true`. This flags the page for the compactor (§2.9). The callback runs under ConcurrentARC's SpinLock, so `CompactLock` is always taken after the ARC SpinLock (consistent lock ordering). No I/O, no allocation, no blocking operation on the callback path.
 
-**Phase 2b promotion callback:** When PromoteBuf drain promotes a key (b1/b2 → t1/t2), the corresponding `page.TempCtrl[i]` is set back to `0x00` (HOT). This prevents the compactor from unnecessarily migrating a re-promoted key. The promotion drain already holds the SpinLock, so the `TempCtrl` write is serialized.
+**Phase 2b promotion callback:** When PromoteBuf drain promotes a key (b1/b2 → t1/t2), the callback acquires `page.CompactLock`, looks up the HashPair in `page.KeyIndex` to find index `i`, sets `page.TempCtrl[i] = 0x00` (HOT), releases `CompactLock`. This prevents the compactor from unnecessarily migrating a re-promoted key. The promotion drain already holds the ARC SpinLock, so `CompactLock` is taken after the ARC SpinLock (same ordering as eviction).
 
 #### 2.8.5 Integration with Furrballs
 
@@ -499,10 +500,13 @@ The compactor uses a hybrid trigger model:
 
 ```
 compactor_run(node):
-  for each page where page.HasColdKeys == true:
+  for each page where page.HasColdKeys == true && page.Tier != FREEZE:
+    page.CompactLock.lock()
     // SIMD scan TempCtrl for COLD keys (0x01)
     for each batch of 16 TempCtrl bytes:
+      remaining = min(16, TempCtrl.size() - batch)
       cold_mask = _mm_cmpeq_epi8(TempCtrl[batch], 0x01)
+      cold_mask &= (1 << remaining) - 1  // mask final batch to avoid overread
       for each bit i set in cold_mask:
         hashPair = page.KeyIndex[batch + i]
         keyMeta = CMap.Find(hashPair)
@@ -511,24 +515,34 @@ compactor_run(node):
           if coldPage found:
             newOffset = coldPage.TryBump(keyMeta.DataSize)
             if newOffset valid:
-              memcpy(coldPage.Data + newOffset, page.Data + keyMeta.DataOffset, keyMeta.DataSize)
+              // CRITICAL: memcpy inside UpdateInPlace to prevent data loss.
+              // A concurrent Set() between an external memcpy and UpdateInPlace
+              // would overwrite source data. Under seqlock, both the read and
+              // the metadata update are atomic.
               CMap.UpdateInPlace(hashPair, [&](KeyMeta& km) {
+                memcpy(coldPage.Data + newOffset,
+                       page.Data + km.DataOffset, km.DataSize)
                 km.PageIndex = coldPage_index
                 km.DataOffset = newOffset
               })
               page.ActiveKeys--
               page.KeyIndex.remove(hashPair)
               coldPage.ActiveKeys++
+              coldPage.CompactLock.lock()
               coldPage.KeyIndex.push_back(hashPair)
               coldPage.TempCtrl.push_back(0x00)  // newly migrated = HOT initially
+              coldPage.CompactLock.unlock()
+    page.CompactLock.unlock()
 
     page.HasColdKeys.store(false, relaxed)
 
     if page.ActiveKeys == 0:
       page.Tier.store(EMPTY, relaxed)
       page.ResetBump()
+      page.CompactLock.lock()
       page.KeyIndex.clear()
       page.TempCtrl.clear()
+      page.CompactLock.unlock()
 ```
 
 **Finding a COLD page with space:** Check existing COLD pages for one where `TryBump` succeeds. If none, convert an EMPTY page to COLD. If no EMPTY pages available, migration stalls --- the system is self-correcting (eviction of full COLD pages frees EMPTY pages for reuse).
@@ -551,10 +565,12 @@ cross_node_migrate(hashPair, destNode):
   // Insert into destination node's CMap
   CMap.Insert(hashPair, KeyMeta{destPage, newOffset, ...})
   keyMeta.CrossNodeAccesses = 0
-  // Update page bookkeeping on both nodes
+  // Update page bookkeeping on both nodes (under CompactLock)
 ```
 
 The CMap entry fully relocates to the destination node, preserving the sole-owner invariant (a key belongs to exactly one node at any time). Cross-node migration is rare (high threshold) and represents the thesis's NUMA-aware placement contribution: data moves to where the threads that access it are.
+
+**Transient miss window:** Between `FindAndEraseByHash` (source) and `CMap.Insert` (dest), the key exists in no CMap. Concurrent `Get()` calls during this window see a spurious cache miss. This window is ~200--500ns on real hardware (two CAS cycles + one memcpy). Since cross-node migration is triggered only when `CrossNodeAccesses` exceeds a high threshold (the key has been cross-accessed hundreds of times), the probability of a concurrent Get hitting this exact window is negligible. A future optimization could add a `MIGRATING` ctrl byte state as a forwarding tombstone (readers follow the forwarding pointer to the destination node), but this is not required for Phase 2b.
 
 #### 2.9.5 Whole-Page Persistent Storage
 
