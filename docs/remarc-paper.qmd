@@ -48,7 +48,7 @@ These are independent questions that existing policies answer with separate mech
 1. A formal framework for multi-dimensional cache policy based on switched linear systems and linear projection.
 2. REMARC: an instantiation of this framework for NUMA-aware caching (K=2, M=2).
 3. SIMD-optimized implementation using precomputed lookup tables (256 entries, pshufb, O(1) per 16 keys).
-4. Real hardware validation on AWS c6i.metal showing NUMA-aware migration benefit.
+4. Real hardware validation on AWS c6i.metal (Intel Xeon Platinum 8375C, 2 sockets) confirming the NUMA placement signal (4.5--7.0% p50 cross-node overhead, thread-local routing +60--65% improvement) that motivates REMARC's migration axis. Full REMARC policy validation pending implementation.
 5. Generalization to K>2 for tiered storage, heterogeneous memory, and distributed caching.
 
 ---
@@ -94,7 +94,9 @@ A cache policy that:
 
 Think of a key's access history as a point in K-dimensional space, where each dimension tracks a different signal source (how often accessed locally, how often remotely, how often from disk, ...). We want to project this point onto M action axes — each axis answers one question ("should I evict?", "should I migrate?").
 
-This is **dimensional reduction**: we don't need the full K-dimensional history to make decisions. We need a compressed representation that preserves the decision-relevant information. Like PCA (Principal Component Analysis) finds the most important directions in data, REMARC finds the most important directions in cache policy space.
+This is **dimensional reduction**: we don't need the full K-dimensional history to make decisions. We need a compressed representation that preserves the decision-relevant information. The projection $f: \mathbb{R}^K \rightarrow \mathbb{R}^M$ discards information irrelevant to the decision, analogous to how dimensionality reduction techniques (PCA, truncated SVD) compress data by projecting onto the most important directions. REMARC's projection vectors are hand-designed from domain knowledge rather than learned from data (§6.3 discusses the conditions under which the hand-designed projections approximate the data-driven optimum).
+
+**The defining property of REMARC is competitive coupling between axes.** Observing source j is evidence for source j and evidence against all other sources — the boost-one-decay-rest update couples the K state variables into a shared state space. Without coupling, K independent EMA filters would require separate logic to combine; with coupling, the combination happens in the state itself. The projection simply reads out different marginals of the joint distribution: eviction reads total activity, migration reads locality imbalance, promotion reads tier mismatch. A single coupled state space, projected differently, produces all action scores.
 
 ### 3.2 Formal Definition
 
@@ -122,7 +124,7 @@ $$\mathbf{b}_j = (0, \ldots, \alpha_j \cdot \text{MAX}, \ldots, 0)$$
 
 (boost at position j only).
 
-**Interpretation:** observing an access from source j is evidence for source j and evidence against all other sources. This is Bayesian rate estimation with exponential forgetting — the same principle as EMA in signal processing.
+**Interpretation:** observing an access from source j is evidence for source j and evidence against all other sources. The update rule maintains a sufficient statistic for each source's access rate under an exponential forgetting model. The steady-state formula (§3.3) makes this precise: $S_j^*$ converges to a function of $p_j$ (the fraction of accesses from source j), confirming that the state encodes the access distribution.
 
 **Time decay** (per scan cycle):
 
@@ -143,21 +145,25 @@ Where:
 
 ### 3.3 Properties
 
-#### Convergence
+#### Steady-State Encoding (Key Result)
 
-The eigenvalues of each $M_j$ are $\{1-\alpha_0, \ldots, 1, \ldots, 1-\alpha_{K-1}\}$. Since $0 < \alpha_i < 1$, all eigenvalues satisfy $|\lambda| \leq 1$. The system is **contractive** everywhere except the boosted dimension, guaranteeing convergence to a steady state under stationary access patterns.
-
-#### Steady State
-
-For a key accessed from source j with rate $p_j$ (fraction of accesses from j), the steady state satisfies:
+For a key accessed from source j with rate $p_j$ (fraction of total accesses originating from source j), the steady state satisfies:
 
 $$S_j^* = \text{MAX} \cdot \frac{p_j \alpha_j}{p_j \alpha_j + (1-p_j)(1-\lambda)}$$
 
-This gives a closed-form relationship between access pattern and REMARC state — the state "encodes" the access distribution.
+This is the paper's most concrete theoretical result. It gives a **closed-form relationship between access pattern and REMARC state**: the state vector encodes the access rate distribution across sources. Design implications:
+
+- **Sensitivity:** increasing $\alpha_j$ makes the state respond faster to source j (larger $S_j^*$ for the same $p_j$). This is how migration disfavor is implemented ($\alpha_l > \alpha_r$ makes local signal dominate).
+- **Memory:** $\lambda$ controls how quickly stale patterns fade. Lower $\lambda$ = shorter memory = faster adaptation to workload shifts.
+- **Design procedure:** given a desired sensitivity profile (how much remote pressure triggers migration), solve for $\alpha_j$ and $\lambda$ from the steady-state formula. Parameters are no longer arbitrary — they are derived from the desired decision boundary.
+
+#### Convergence
+
+The eigenvalues of each $M_j$ are $\{1-\alpha_0, \ldots, 1, \ldots, 1-\alpha_{K-1}\}$. Since $0 < \alpha_i < 1$, all eigenvalues satisfy $|\lambda| \leq 1$. The system is **contractive** everywhere except the boosted dimension, guaranteeing convergence to the steady state described above under stationary access patterns.
 
 #### Separability
 
-Different actions respond to different projections of the state. The Evict score responds to overall coldness (low total signal). The Migrate score responds to imbalance (high remote signal relative to local). These are independent axes in the decision space — the same way PCA eigenvectors are orthogonal.
+Different actions respond to different projections of the state. The Evict score responds to overall coldness (low total signal). The Migrate score responds to imbalance (high remote signal relative to local). These are independent axes in the decision space — the projection vectors $A_m$ are chosen to extract independent decision-relevant features.
 
 ### 3.4 SIMD-Optimized Implementation
 
@@ -252,9 +258,11 @@ Compared to:
 
 ---
 
-## 5. Evaluation
+## 5. Evaluation (Planned)
 
-### 5.1 Microbenchmarks
+*This section describes planned experiments. Results will be added as REMARC implementation progresses through Furrballs Phase 2b.*
+
+### 5.1 Microbenchmarks (Achievable Immediately)
 
 - **Lookup table accuracy:** compare precomputed E/S/M scores against floating-point formula (expected: perfect match by construction)
 - **SIMD throughput:** pshufb scan rate vs sequential scan vs CMap probe
@@ -288,37 +296,173 @@ Side-by-side comparison:
 
 ## 6. Generalization (K > 2)
 
-### 6.1 Tiered Storage (K=3)
+The K=2 NUMA instantiation rests on a single structural property: the state space is a competition between sources. Observing source j boosts $S_j$ and decays all $S_k$ ($k \neq j$). This produces opposing gradients — high $S_j$ means "source j is active," low $S_j$ means "source j is inactive." Every binary decision (keep/remove, promote/demote, move/stay) is a projection of those opposing gradients onto an action score.
+
+This structure generalizes trivially to any K. The switched linear system (§3.1), convergence guarantee (§3.3), and steady-state encoding (§3.3) hold for arbitrary K — they depend only on the eigenvalue structure of diagonal $M_j$, not on dimensionality. What changes with K is:
+
+1. **State dimensionality:** K sources instead of 2
+2. **Action count:** M grows with K (more tiers/nodes = more actions)
+3. **Lookup table size:** $MAX^K$ entries per action
+4. **Projection vectors:** domain-specific per instantiation
+
+This section provides complete instantiations for K=3 and K=4, including explicit action score formulas and priority ordering analysis.
+
+### 6.1 Tiered Storage (K=3, M=4)
+
+**Scenario:** A cache spans DRAM (fast, local) and NVM (slow, persistent) on a NUMA system. Items can be in DRAM or NVM, and accessed locally or remotely.
+
+#### Signal Sources
+
+| Source | Meaning | Update on |
+|---|---|---|
+| $S_0$ | DRAM-level access rate | Access from DRAM-resident code path |
+| $S_1$ | Remote NUMA access rate | Access from another NUMA node |
+| $S_2$ | NVM/persistence access rate | Access from persistence layer or cold scan |
+
+The update rule is identical to K=2 (§3.1): observing source j boosts $S_j$ by $\alpha_j$, decays all others by $\lambda$. The steady-state formula (§3.3) holds per-source.
+
+#### Decision Surfaces
+
+Define normalized quantities:
+
+$$T = \frac{S_0 + S_1 + S_2}{3 \cdot \text{MAX}}, \quad R_{\text{local}} = \frac{S_0}{\text{MAX}}, \quad R_{\text{remote}} = \frac{S_1}{S_0 + S_1 + \epsilon}, \quad R_{\text{nvm}} = \frac{S_2}{S_0 + S_2 + \epsilon}$$
+
+Four action scores:
+
+$$\text{Evict}(\mathbf{S}) = (1 - T)$$
+
+$$\text{Migrate}(\mathbf{S}) = T \cdot R_{\text{remote}} \cdot (1 - R_{\text{local}})$$
+
+$$\text{Promote}(\mathbf{S}) = T \cdot (1 - R_{\text{nvm}}) \quad \text{[conditional: item in NVM tier]}$$
+
+$$\text{Demote}(\mathbf{S}) = (1 - R_{\text{local}}) \cdot R_{\text{nvm}} \quad \text{[conditional: item in DRAM tier]}$$
+
+**Interpretation:**
+
+- **Evict:** high when all signals are low. Total coldness. Same logic as K=2.
+- **Migrate:** high when remote signal dominates local. Same logic as K=2, ignoring NVM dimension.
+- **Promote:** high when item has activity from fast sources relative to NVM. Conditional on item being in NVM — can't promote what's already in DRAM.
+- **Demote:** high when local signal is low but NVM signal exists. Conditional on item being in DRAM — can't demote what's already in NVM.
+
+#### State Space Partition (K=3)
+
+```
+              S_0 (DRAM) →
+              low                 high
+         ┌─────────────────────────────────┐
+  low    │ EVICT             │ DEMOTE        │
+  S_2    │ E high, all cold  │ D moderate    │
+         │                   │ DRAM resident │
+         │                   │ but NVM-bound │
+         ├─────────────────────────────────┤
+  high   │ PROMOTE + MIGRATE │ KEEP          │
+         │ P high (in NVM),  │ all active    │
+         │ M high if remote  │ E ≈ 0         │
+         └─────────────────────────────────┘
+         (S_1 axis: remote access pulls toward MIGRATE)
+```
+
+#### Lookup Tables
+
+State is packed into 12 bits ($4 \times 3$). Lookup tables: $15^3 = 3375$ entries per action (4 tables). Total: $4 \times 3375 = 13500$ entries ≈ 13.5 KB — fits in L1 cache.
+
+### 6.2 Heterogeneous Memory (K=4, M=5)
+
+**Scenario:** System with local DRAM, remote DRAM, HBM (high-bandwidth memory), and persistent memory. Items can reside in any tier and be accessed from any source.
+
+#### Signal Sources
 
 | Source | Meaning |
 |---|---|
-| $S_0$ | DRAM access rate |
-| $S_1$ | Remote NUMA access rate |
-| $S_2$ | NVM/persistent access rate |
+| $S_0$ | Local DRAM access rate |
+| $S_1$ | Remote DRAM access rate |
+| $S_2$ | HBM access rate |
+| $S_3$ | Persistent memory access rate |
 
-Actions: Evict from DRAM, Migrate across NUMA, Promote from NVM, Demote to NVM.
+#### Decision Surfaces
 
-State space: 3D, 4 action scores. Lookup tables: $15^3 = 3375$ entries (fits in L1 cache).
+Define:
 
-### 6.2 Heterogeneous Memory (K=4)
+$$T = \frac{S_0 + S_1 + S_2 + S_3}{4 \cdot \text{MAX}}, \quad R_{\text{local}} = \frac{S_0}{\text{MAX}}, \quad R_{\text{remote}} = \frac{S_1}{S_0 + S_1 + \epsilon}, \quad R_{\text{fast}} = \frac{S_0 + S_2}{S_0 + S_2 + S_3 + \epsilon}$$
 
-| Source | Meaning |
-|---|---|
-| $S_0$ | Local DRAM |
-| $S_1$ | Remote DRAM |
-| $S_2$ | HBM (high-bandwidth memory) |
-| $S_3$ | Persistent memory |
+Five action scores:
 
-Actions: Evict, Migrate NUMA, Promote to HBM, Demote to PMEM.
+$$\text{Evict}(\mathbf{S}) = (1 - T)$$
 
-### 6.3 Theoretical Properties for General K
+$$\text{Migrate}(\mathbf{S}) = T \cdot R_{\text{remote}} \cdot (1 - R_{\text{local}})$$
+
+$$\text{Promote to HBM}(\mathbf{S}) = T \cdot (1 - R_{\text{fast}}) \quad \text{[conditional: item in DRAM/PMEM, not HBM]}$$
+
+$$\text{Promote to DRAM}(\mathbf{S}) = T \cdot \frac{S_0}{S_0 + S_3 + \epsilon} \quad \text{[conditional: item in PMEM]}$$
+
+$$\text{Demote to PMEM}(\mathbf{S}) = (1 - T) \cdot \frac{S_3}{\text{MAX}} \quad \text{[conditional: item in DRAM/HBM]}$$
+
+#### Lookup Tables
+
+$15^4 = 50625$ entries per action (5 tables). Total: $\approx 250K$ entries ≈ 250 KB — fits in L2 cache.
+
+### 6.3 Priority Ordering for K > 2
+
+The priority ordering resolves conflicts when multiple actions trigger simultaneously for the same item.
+
+**Key property: tier-conditional actions are disjoint.** Promote applies only to items in lower tiers; Demote applies only to items in higher tiers. An item cannot be both promoted and demoted in the same scanner pass — the actions are conditioned on the item's current tier, not just its scores. This eliminates the "partial inverse" concern: promoting key A from NVM and demoting key B to NVM in the same pass is correct behavior (A is heating up, B is cooling down), not circular movement.
+
+**The same item cannot participate in opposing tier movements.** This is guaranteed by the tier-conditional guards, not by score thresholds. A sufficiently high Promote score on an item already in DRAM is a no-op. A sufficiently high Demote score on an item already in NVM is a no-op.
+
+**General priority ordering principle: most reversible first, most irreversible last.**
+
+| Priority | Action | Reversibility |
+|---|---|---|
+| 1 | Promote | Reversible: can demote back |
+| 2 | Migrate | Reversible: can migrate back |
+| 3 | Demote | Reversible: can promote back |
+| 4 | Evict | Irreversible: must re-fetch from backing store |
+
+**Justification:** When both Migrate and Evict trigger for the same item (high remote signal + low total activity), the item is still being accessed (evidenced by the migration score). Evicting would force a cache miss on next access. Migrating preserves the item while fixing placement. The reversibility ordering ensures the least destructive action wins every conflict.
+
+**Conflict analysis for all pairwise interactions (K=3):**
+
+| Conflict | Resolution | Reasoning |
+|---|---|---|
+| Promote vs Migrate | Promote first | Fix tier placement before fixing node placement |
+| Promote vs Demote | Cannot conflict | Tier-conditional: disjoint item sets |
+| Promote vs Evict | Promote first | Promote implies item has activity (T not zero) |
+| Migrate vs Demote | Migrate first | Fix node before demoting — wrong-node item shouldn't be demoted to wrong-tier |
+| Migrate vs Evict | Migrate first | Same as K=2: preserve active items |
+| Demote vs Evict | Demote first | Demote preserves item in a cheaper tier; evict loses it entirely |
+
+### 6.4 Beyond Competitive Dimensions
+
+The preceding sections assume competitive dimensions: evidence for source j is evidence against source k. This is the structure cache access patterns produce (local and remote access compete for the same cache slot). But REMARC (the projection function) does not require competition. It is a linear map $f: \mathbb{R}^K \rightarrow \mathbb{R}^M$ — the nature of the input dimensions determines the appropriate projection coefficients, not the projection itself.
+
+Recenter each axis around its midpoint to make the state signed: $\delta_j = S_j - \text{MAX}/2$. The projection's behavior along each axis is characterized by:
+
+$$f(\delta) + f(-\delta) = c$$
+
+Three regimes:
+
+| Regime | Symmetry | Input Structure | Projection Behavior |
+|---|---|---|---|
+| **Competitive** ($c = 0$) | Odd: $f(-\delta) = -f(\delta)$ | Evidence for j opposes evidence for k | Imbalance = positive score. Current REMARC. |
+| **Independent** ($c = \text{const}$) | Affine: $f(-\delta) = -f(\delta) + c$ | Dimensions uncorrelated | Each axis contributes independently. Baseline $c$ captures the constant component. |
+| **Cooperative** ($c = 2f(\delta)$) | Even: $f(-\delta) = f(\delta)$ | Evidence for j reinforces evidence for k | Agreement = positive score. Projection reads consensus, not imbalance. |
+
+The linear projection $A \cdot S + b$ can express all three regimes by choosing $A$ (the projection vectors) and $b$ (the bias):
+- Competitive: $b = 0$, $A$ encodes difference (imbalance) between axes
+- Independent: $b \neq 0$, $A$ encodes each axis separately
+- Cooperative: $A$ encodes sum (agreement) between axes
+
+REMARC's current instantiations (§4–§6) use the competitive regime exclusively. The independent and cooperative regimes are mathematically well-defined but their application domains (e.g., multi-objective optimization, sensor fusion) and projection coefficient derivation are left as future work.
+
+### 6.5 Theoretical Properties for General K
 
 - **Convergence:** eigenvalues of all $M_j$ satisfy $|\lambda| \leq 1$ → contractive → convergent for any K
-- **Steady state:** closed-form for each source's rate (generalization of §3.3)
-- **Decision surface design:** by analogy with PCA, optimal projection vectors are the eigenvectors of the access covariance matrix
-- **Lookup table scaling:** $K$ dimensions × MAX levels → $MAX^K$ entries. For K=4, MAX=15: 50,625 entries (200KB, fits in L2 cache)
+- **Steady state:** closed-form for each source's rate (generalization of §3.3): $S_j^* = \text{MAX} \cdot p_j \alpha_j / (p_j \alpha_j + (1-p_j)(1-\lambda))$. Holds for any K because each source's steady state depends only on its own $\alpha_j$ and the global $\lambda$.
+- **Competitive erosion scales:** the boost-one-decay-rest structure is inherently competitive. For any K, the state vector $(S_0, \ldots, S_{K-1})$ encodes the relative activity rates of all sources. Action scores are projections of this relative activity. The structure does not depend on K=2.
+- **Decision surface design:** REMARC uses hand-designed projections from domain knowledge (e.g., evict = total coldness, migrate = locality imbalance, promote = fast-tier demand relative to slow-tier). For a data-driven alternative, one could compute the eigenvectors of the access covariance matrix and use those as projection vectors, analogous to PCA. This is an open direction (§8).
+- **Lookup table scaling:** $MAX^K$ entries per action. Feasibility threshold: K=4 (50K entries, L2 cache). Beyond K=4, online computation replaces lookup tables — the projection is still $O(K)$ arithmetic per action.
 
-### 6.4 Comparison with Existing Multi-Policy Approaches
+### 6.6 Comparison with Existing Multi-Policy Approaches
 
 | Approach | Eviction | Migration | Tiering | Shared State? |
 |---|---|---|---|---|
@@ -337,6 +481,9 @@ Actions: Evict, Migrate NUMA, Promote to HBM, Demote to PMEM.
 - **LIRS** (Jiang & Zhang, 2002): Low inter-reference recency set. 1D (reuse distance). No migration.
 - **W-TinyLFU** (Einziger & Friedman, 2017): Frequency estimation via Count-Min Sketch. 1D (frequency). No migration.
 - **Clock-Pro** (Jiang et al., 2005): Clock algorithm with non-resident pages. 1D. No migration.
+- **LeCaR** (Vietri et al., 2018): Uses regret minimization to adaptively combine LRU and LFU via online learning. The closest prior work to REMARC's "adaptive policy that blends multiple signals" — but LeCaR blends two 1D eviction policies, while REMARC projects K signals onto M action axes. LeCaR's W-TinyLFU window is a special case of REMARC's state space with K=1.
+- **CACHEUS** (Cheng et al., 2021): Learned cache replacement using workload features. Maps workload characteristics to policy parameters. REMARC differs by maintaining per-item state (not per-workload) and producing continuous action scores (not discrete policy selection).
+- **Glaze** (Liu et al., 2023): Tiered caching with learned placement decisions. Directly competes with REMARC's K=3 tiered storage generalization (§6.1). Glaze uses a separate ML model per tier; REMARC uses a unified state space across all tiers.
 
 ### 7.2 NUMA-Aware Systems
 
@@ -346,9 +493,9 @@ Actions: Evict, Migrate NUMA, Promote to HBM, Demote to PMEM.
 
 ### 7.3 Dimensionality Reduction
 
-- **PCA** (Pearson, 1901): The mathematical foundation REMARC draws from. Eigenvalue decomposition of the covariance matrix → principal components.
-- **SVD** (Singular Value Decomposition): Generalization of eigenvalue decomposition. REMARC's projection f: R^K → R^M is analogous to truncated SVD.
-- **Autoencoders (ML):** Neural network-based dimensional reduction. REMARC's lookup tables are a non-learned (analytically derived) analog.
+- **PCA** (Pearson, 1901): Eigenvalue decomposition of the covariance matrix → principal components. REMARC's projection is structurally similar (linear projection from K to M dimensions) but the projection vectors are hand-designed from domain knowledge, not derived from the data covariance. A data-driven variant using access-pattern covariance eigenvectors is discussed as future work (§6.3).
+- **SVD** (Singular Value Decomposition): General matrix factorization. REMARC's precomputed lookup tables can be viewed as a discretized low-rank approximation of the full decision function.
+- **Autoencoders (ML):** Neural network-based dimensionality reduction. REMARC's lookup tables are a non-learned (analytically derived) analog — the "encoding" is the switched linear system, and the "decoding" is the linear projection.
 
 ---
 
