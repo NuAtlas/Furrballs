@@ -1,6 +1,6 @@
 ---
 title: "Furrballs: A NUMA-Aware, High-Performance Caching Library"
-subtitle: "Technical Report v1.9.3"
+subtitle: "Technical Report v1.9.4"
 author: "Hamza Jamil Saied (The Sphynx)"
 date: last-modified
 doi: "10.5281/zenodo.19669844"
@@ -43,7 +43,7 @@ format:
 ---
 
 ## Status
-v1.9.3 --- Adam-style adaptive smoothing noted as future optimization, ML parallels documented for thesis framing
+v1.9.4 --- REMARC paper outline drafted (docs/remarc-paper.md), Steps 1-4 of REMARC implementation (Remarc.h, Page.h, Furrballs.h, CMakeLists.txt)
 
 ## Abstract
 Furrballs is a NUMA-aware caching library that uses NUMA topology as a first-class input to cache placement and eviction decisions. The core contribution is per-page allocation on specific NUMA nodes, with REMARC (Reduction-Modeled Adaptive Replacement Cache) as the unified eviction and migration policy. REMARC reduces three access dimensions (recency, frequency, locality) into a 2D state space (S_local, S_remote), producing dual action scores (Evict, Migrate) via precomputed SIMD lookup tables scanned with pshufb. The per-key Evict scores aggregate to per-page eviction decisions, collapsing the key-level and page-level policies into a single mechanism with one scanner and two thresholds. Pages are pre-allocated at initialization via one physical allocation per NUMA node, subdivided into logical pages filled by a bump allocator. Key routing supports round-robin distribution and thread-local placement (via a runtime config flag). The library is implemented in C++20, uses a platform abstraction layer (Numatic) for NUMA operations, and integrates a custom synchronization library (StreamLine) for thread coordination.

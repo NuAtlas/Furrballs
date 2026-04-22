@@ -1,8 +1,8 @@
 #pragma once
 #include "Error.h"
+#include "Remarc.h"
 #include <bit>
 #include <atomic>
-#include <emmintrin.h>
 #include <xxh3.h>
 #include <xxhash.h>
 #include <optional>
@@ -16,26 +16,6 @@
 #include <unordered_map>
 
 namespace NuAtlas {
-
-    struct HashPair {
-        uint64_t h1, h2;
-    };
-
-    class SpinLock {
-        std::atomic<bool> locked_{false};
-    public:
-        void lock() noexcept {
-            while (locked_.exchange(true, std::memory_order_acquire)) {
-                _mm_pause();
-            }
-        }
-        bool try_lock() noexcept {
-            return !locked_.exchange(true, std::memory_order_acquire);
-        }
-        void unlock() noexcept {
-            locked_.store(false, std::memory_order_release);
-        }
-    };
 
     class ArcList {
         std::list<HashPair> list_;

@@ -14,9 +14,12 @@ set(HEADERS
     include/NodeJob.h
     include/WaitGroup.h
     include/CMap.h
+    include/Remarc.h
 )
 
 add_library(Furrballs STATIC ${SOURCES} ${HEADERS})
+
+target_compile_options(Furrballs PUBLIC -mssse3)
 
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR}/src PREFIX "Source Files" FILES ${SOURCES})
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR}/include PREFIX "Header Files" FILES ${HEADERS})

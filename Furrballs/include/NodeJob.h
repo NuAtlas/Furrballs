@@ -11,7 +11,7 @@
 
 namespace NuAtlas
 {
-
+    //TODO: plan a thread-pool per node expansion
     class NodeJob
     {
     private:

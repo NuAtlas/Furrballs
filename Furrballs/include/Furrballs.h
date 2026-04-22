@@ -1,4 +1,4 @@
-﻿/*****************************************************************//**
+/*****************************************************************//**
  * \file   Furrballs.h
  * \brief Primary interface for the Furrball library.
  *
@@ -212,9 +212,10 @@ private:
 
     struct FurrConfig final {
         size_t CapacityLimit = 1024 * 1024;
-        size_t InitialPageCount = 2; //< This is a hint, more (logcial) pages may be allocated. 
-        size_t PageSize = 4096; //< This is used for Logical division of the Page, The actually page may be larger (NUMA case, AMP may also expand a page, etc...)
+        size_t InitialPageCount = 2;
+        size_t PageSize = 4096;
         Cache<size_t, void*>::EvictionCallback evictionCallback = [](const size_t&, void*&) {};
+        RemarcConfig remarcConfig;
 
         union {
             struct {
@@ -268,8 +269,8 @@ private:
             size_t PageIndex, DataSize;
             void* DataOffset;
             int NodeID;
-            // bool Live = true; //Will be active when eviction and revival is needed, which will be soon
-            // size TTL, CreatedAt;
+            uint8_t HotNode;
+            uint8_t TempCtrlIdx;
         };
 
         class Statistics {
