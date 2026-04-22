@@ -1,0 +1,32 @@
+project:
+  type: website
+  output-dir: _site
+  render:
+    - index.qmd
+    - whitepaper.qmd
+  resources:
+    - CNAME
+
+website:
+  title: "Furrballs"
+  navbar:
+    left:
+      - href: index.qmd
+        text: Home
+      - href: whitepaper.qmd
+        text: Whitepaper
+
+format:
+  html:
+    toc: true
+    number-sections: true
+    code-fold: false
+  pdf:
+    toc: true
+    number-sections: true
+  docx:
+    toc: true
+    number-sections: true
+
+execute:
+  enabled: false

@@ -4,6 +4,18 @@
 ## Get latest from https://github.com/github/gitignore/blob/master/VisualStudio.gitignore
 
 [Bb]uild/
+[Bb]uilddebug/
+[Bb]uildtest/
+[Bb]uildsim/
+[Bb]uildhost/
+[Bb]uildrel/
+
+TestDB/
+BenchDB/
+BenchDB_*/
+*.pid
+
+.cache/
 
 # User-specific files
 *.rsuser
@@ -18,6 +30,9 @@
 # Mono auto generated files
 mono_crash.*
 
+.vscode/*
+!.vscode/launch.json
+!.vscode/tasks.json
 # Build results
 [Dd]ebug/
 [Dd]ebugPublic/
@@ -34,6 +49,7 @@ bld/
 [Oo]ut/
 [Ll]og/
 [Ll]ogs/
+[Bb]uild
 
 # Visual Studio 2015/2017 cache/options directory
 .vs/
@@ -363,3 +379,4 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+BenchDB_TL/

@@ -1,0 +1,23 @@
+BasedOnStyle: LLVM
+PointerAlignment: Left
+ReferenceAlignment: Left
+IndentWidth: 4
+UseTab: Never
+ColumnLimit: 120
+Language: Cpp
+BreakBeforeBraces: Attach
+NamespaceIndentation: All
+BraceWrapping:
+  AfterNamespace: false
+  AfterClass: false
+  AfterStruct: false
+  AfterEnum: false
+  AfterFunction: false
+  AfterControlStatement: false
+  BeforeCatch: false
+  BeforeElse: false
+AllowShortIfStatementsOnASingleLine: AllIfsAndElse
+AllowShortBlocksOnASingleLine: Always
+AllowShortFunctionsOnASingleLine: All
+AllowShortLoopsOnASingleLine: true
+AllowShortNamespacesOnASingleLine: false

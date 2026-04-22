@@ -1,0 +1,1302 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.9.36">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+<meta name="author" content="The Sphynx">
+<meta name="dcterms.date" content="2026-04-15">
+
+<title>Furrballs: A NUMA-Aware, High-Performance Caching Library – Furrballs</title>
+<style>
+/* Default styles provided by pandoc.
+** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+*/
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+/* CSS for syntax highlighting */
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+  { counter-reset: source-line 0; }
+pre.numberSource code > span
+  { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+  { content: counter(source-line);
+    position: relative; left: -1em; text-align: right; vertical-align: baseline;
+    border: none; display: inline-block;
+    -webkit-touch-callout: none; -webkit-user-select: none;
+    -khtml-user-select: none; -moz-user-select: none;
+    -ms-user-select: none; user-select: none;
+    padding: 0 4px; width: 4em;
+  }
+pre.numberSource { margin-left: 3em;  padding-left: 4px; }
+div.sourceCode
+  {   }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+</style>
+
+
+<script src="site_libs/quarto-nav/quarto-nav.js"></script>
+<script src="site_libs/quarto-nav/headroom.min.js"></script>
+<script src="site_libs/clipboard/clipboard.min.js"></script>
+<script src="site_libs/quarto-search/autocomplete.umd.js"></script>
+<script src="site_libs/quarto-search/fuse.min.js"></script>
+<script src="site_libs/quarto-search/quarto-search.js"></script>
+<meta name="quarto:offset" content="./">
+<script src="site_libs/quarto-html/quarto.js" type="module"></script>
+<script src="site_libs/quarto-html/tabsets/tabsets.js" type="module"></script>
+<script src="site_libs/quarto-html/popper.min.js"></script>
+<script src="site_libs/quarto-html/tippy.umd.min.js"></script>
+<script src="site_libs/quarto-html/anchor.min.js"></script>
+<link href="site_libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="site_libs/quarto-html/quarto-syntax-highlighting-845c23b38eaddc0f92fda52bfe77a8c8.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="site_libs/bootstrap/bootstrap.min.js"></script>
+<link href="site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="site_libs/bootstrap/bootstrap-dfc51589f449def494cb716363d8617b.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+<script id="quarto-search-options" type="application/json">{
+  "location": "navbar",
+  "copy-button": false,
+  "collapse-after": 3,
+  "panel-placement": "end",
+  "type": "overlay",
+  "limit": 50,
+  "keyboard-shortcut": [
+    "f",
+    "/",
+    "s"
+  ],
+  "show-item-context": false,
+  "language": {
+    "search-no-results-text": "No results",
+    "search-matching-documents-text": "matching documents",
+    "search-copy-link-title": "Copy link to search",
+    "search-hide-matches-text": "Hide additional matches",
+    "search-more-match-text": "more match in this document",
+    "search-more-matches-text": "more matches in this document",
+    "search-clear-button-title": "Clear",
+    "search-text-placeholder": "",
+    "search-detached-cancel-button-title": "Cancel",
+    "search-submit-button-title": "Submit",
+    "search-label": "Search"
+  }
+}</script>
+
+
+</head>
+
+<body class="nav-fixed quarto-light">
+
+<div id="quarto-search-results"></div>
+  <header id="quarto-header" class="headroom fixed-top">
+    <nav class="navbar navbar-expand-lg " data-bs-theme="dark">
+      <div class="navbar-container container-fluid">
+      <div class="navbar-brand-container mx-auto">
+    <a class="navbar-brand" href="./index.html">
+    <span class="navbar-title">Furrballs</span>
+    </a>
+  </div>
+            <div id="quarto-search" class="" title="Search"></div>
+          <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarCollapse" aria-controls="navbarCollapse" role="menu" aria-expanded="false" aria-label="Toggle navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">
+  <span class="navbar-toggler-icon"></span>
+</button>
+          <div class="collapse navbar-collapse" id="navbarCollapse">
+            <ul class="navbar-nav navbar-nav-scroll me-auto">
+  <li class="nav-item">
+    <a class="nav-link" href="./index.html"> 
+<span class="menu-text">Home</span></a>
+  </li>  
+  <li class="nav-item">
+    <a class="nav-link active" href="./whitepaper.html" aria-current="page"> 
+<span class="menu-text">Whitepaper</span></a>
+  </li>  
+</ul>
+          </div> <!-- /navcollapse -->
+            <div class="quarto-navbar-tools">
+</div>
+      </div> <!-- /container-fluid -->
+    </nav>
+</header>
+<!-- content -->
+<div id="quarto-content" class="quarto-container page-columns page-rows-contents page-layout-article page-navbar">
+<!-- sidebar -->
+<!-- margin-sidebar -->
+    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar">
+        <nav id="TOC" role="doc-toc" class="toc-active">
+    <h2 id="toc-title">On this page</h2>
+   
+  <ul>
+  <li><a href="#status" id="toc-status" class="nav-link active" data-scroll-target="#status"><span class="header-section-number">1</span> Status</a></li>
+  <li><a href="#abstract" id="toc-abstract" class="nav-link" data-scroll-target="#abstract"><span class="header-section-number">2</span> Abstract</a></li>
+  <li><a href="#problem-statement" id="toc-problem-statement" class="nav-link" data-scroll-target="#problem-statement"><span class="header-section-number">3</span> 1. Problem Statement</a></li>
+  <li><a href="#design" id="toc-design" class="nav-link" data-scroll-target="#design"><span class="header-section-number">4</span> 2. Design</a>
+  <ul class="collapse">
+  <li><a href="#architecture-overview" id="toc-architecture-overview" class="nav-link" data-scroll-target="#architecture-overview"><span class="header-section-number">4.1</span> 2.1 Architecture Overview</a></li>
+  <li><a href="#memory-allocation" id="toc-memory-allocation" class="nav-link" data-scroll-target="#memory-allocation"><span class="header-section-number">4.2</span> 2.2 Memory Allocation</a></li>
+  <li><a href="#key-based-api" id="toc-key-based-api" class="nav-link" data-scroll-target="#key-based-api"><span class="header-section-number">4.3</span> 2.3 Key-Based API</a></li>
+  <li><a href="#bump-allocator" id="toc-bump-allocator" class="nav-link" data-scroll-target="#bump-allocator"><span class="header-section-number">4.4</span> 2.4 Bump Allocator</a></li>
+  <li><a href="#concurrency" id="toc-concurrency" class="nav-link" data-scroll-target="#concurrency"><span class="header-section-number">4.5</span> 2.5 Concurrency</a></li>
+  <li><a href="#platform-abstraction-numatic" id="toc-platform-abstraction-numatic" class="nav-link" data-scroll-target="#platform-abstraction-numatic"><span class="header-section-number">4.6</span> 2.6 Platform Abstraction (Numatic)</a></li>
+  </ul></li>
+  <li><a href="#design-decisions-log" id="toc-design-decisions-log" class="nav-link" data-scroll-target="#design-decisions-log"><span class="header-section-number">5</span> 3. Design Decisions Log</a>
+  <ul class="collapse">
+  <li><a href="#per-node-physical-block-with-subdivision" id="toc-per-node-physical-block-with-subdivision" class="nav-link" data-scroll-target="#per-node-physical-block-with-subdivision"><span class="header-section-number">5.1</span> 3.1 Per-Node Physical Block with Subdivision</a></li>
+  <li><a href="#pmr-backed-per-node-containers" id="toc-pmr-backed-per-node-containers" class="nav-link" data-scroll-target="#pmr-backed-per-node-containers"><span class="header-section-number">5.2</span> 3.2 PMR-Backed Per-Node Containers</a></li>
+  <li><a href="#key-routing-strategy" id="toc-key-routing-strategy" class="nav-link" data-scroll-target="#key-routing-strategy"><span class="header-section-number">5.3</span> 3.3 Key Routing Strategy</a></li>
+  <li><a href="#all-or-nothing-numa-init" id="toc-all-or-nothing-numa-init" class="nav-link" data-scroll-target="#all-or-nothing-numa-init"><span class="header-section-number">5.4</span> 3.4 All-or-Nothing NUMA Init</a></li>
+  <li><a href="#waitgroup-for-parallel-init" id="toc-waitgroup-for-parallel-init" class="nav-link" data-scroll-target="#waitgroup-for-parallel-init"><span class="header-section-number">5.5</span> 3.5 WaitGroup for Parallel Init</a></li>
+  <li><a href="#error-codes-not-exceptions" id="toc-error-codes-not-exceptions" class="nav-link" data-scroll-target="#error-codes-not-exceptions"><span class="header-section-number">5.6</span> 3.6 Error Codes, Not Exceptions</a></li>
+  <li><a href="#alignas64-on-statistics-atomics" id="toc-alignas64-on-statistics-atomics" class="nav-link" data-scroll-target="#alignas64-on-statistics-atomics"><span class="header-section-number">5.7</span> 3.7 <code>alignas(64)</code> on Statistics Atomics</a></li>
+  </ul></li>
+  <li><a href="#related-work" id="toc-related-work" class="nav-link" data-scroll-target="#related-work"><span class="header-section-number">6</span> 4. Related Work</a></li>
+  <li><a href="#evaluation" id="toc-evaluation" class="nav-link" data-scroll-target="#evaluation"><span class="header-section-number">7</span> 5. Evaluation</a>
+  <ul class="collapse">
+  <li><a href="#methodology" id="toc-methodology" class="nav-link" data-scroll-target="#methodology"><span class="header-section-number">7.1</span> 5.1 Methodology</a></li>
+  <li><a href="#single-threaded-baseline-host-1-numa-node-5-iterations-averaged" id="toc-single-threaded-baseline-host-1-numa-node-5-iterations-averaged" class="nav-link" data-scroll-target="#single-threaded-baseline-host-1-numa-node-5-iterations-averaged"><span class="header-section-number">7.2</span> 5.2 Single-Threaded Baseline (Host, 1 NUMA Node, 5 iterations averaged)</a></li>
+  <li><a href="#single-threaded-qemu-vm-2-numa-nodes-5-iterations-averaged" id="toc-single-threaded-qemu-vm-2-numa-nodes-5-iterations-averaged" class="nav-link" data-scroll-target="#single-threaded-qemu-vm-2-numa-nodes-5-iterations-averaged"><span class="header-section-number">7.3</span> 5.3 Single-Threaded (QEMU VM, 2 NUMA Nodes, 5 iterations averaged)</a></li>
+  <li><a href="#numa-effect-qemu-vm-2-threads-5-iterations-averaged" id="toc-numa-effect-qemu-vm-2-threads-5-iterations-averaged" class="nav-link" data-scroll-target="#numa-effect-qemu-vm-2-threads-5-iterations-averaged"><span class="header-section-number">7.4</span> 5.4 NUMA Effect (QEMU VM, 2 threads, 5 iterations averaged)</a></li>
+  <li><a href="#concurrent-throughput-qemu-vm-4-threads-5-iterations-averaged" id="toc-concurrent-throughput-qemu-vm-4-threads-5-iterations-averaged" class="nav-link" data-scroll-target="#concurrent-throughput-qemu-vm-4-threads-5-iterations-averaged"><span class="header-section-number">7.5</span> 5.5 Concurrent Throughput (QEMU VM, 4 threads, 5 iterations averaged)</a></li>
+  <li><a href="#routing-strategy-comparison-qemu-vm-2-threads-5-iterations-averaged" id="toc-routing-strategy-comparison-qemu-vm-2-threads-5-iterations-averaged" class="nav-link" data-scroll-target="#routing-strategy-comparison-qemu-vm-2-threads-5-iterations-averaged"><span class="header-section-number">7.6</span> 5.6 Routing Strategy Comparison (QEMU VM, 2 threads, 5 iterations averaged)</a></li>
+  <li><a href="#limitations" id="toc-limitations" class="nav-link" data-scroll-target="#limitations"><span class="header-section-number">7.7</span> 5.7 Limitations</a></li>
+  </ul></li>
+  <li><a href="#current-status" id="toc-current-status" class="nav-link" data-scroll-target="#current-status"><span class="header-section-number">8</span> 6. Current Status</a></li>
+  <li><a href="#risks-and-open-questions" id="toc-risks-and-open-questions" class="nav-link" data-scroll-target="#risks-and-open-questions"><span class="header-section-number">9</span> 7. Risks and Open Questions</a></li>
+  <li><a href="#roadmap" id="toc-roadmap" class="nav-link" data-scroll-target="#roadmap"><span class="header-section-number">10</span> 8. Roadmap</a>
+  <ul class="collapse">
+  <li><a href="#phase-1-numa-aware-core-current" id="toc-phase-1-numa-aware-core-current" class="nav-link" data-scroll-target="#phase-1-numa-aware-core-current"><span class="header-section-number">10.1</span> Phase 1: NUMA-Aware Core (Current)</a></li>
+  <li><a href="#phase-2-two-level-arc" id="toc-phase-2-two-level-arc" class="nav-link" data-scroll-target="#phase-2-two-level-arc"><span class="header-section-number">10.2</span> Phase 2: Two-Level ARC</a></li>
+  <li><a href="#phase-3-adaptive-memory-pooling-amp" id="toc-phase-3-adaptive-memory-pooling-amp" class="nav-link" data-scroll-target="#phase-3-adaptive-memory-pooling-amp"><span class="header-section-number">10.3</span> Phase 3: Adaptive Memory Pooling (AMP)</a></li>
+  <li><a href="#phase-4-optimization" id="toc-phase-4-optimization" class="nav-link" data-scroll-target="#phase-4-optimization"><span class="header-section-number">10.4</span> Phase 4: Optimization</a></li>
+  <li><a href="#phase-5-publication" id="toc-phase-5-publication" class="nav-link" data-scroll-target="#phase-5-publication"><span class="header-section-number">10.5</span> Phase 5: Publication</a></li>
+  </ul></li>
+  <li><a href="#conclusion" id="toc-conclusion" class="nav-link" data-scroll-target="#conclusion"><span class="header-section-number">11</span> 9. Conclusion</a></li>
+  <li><a href="#appendix-a-repository-structure" id="toc-appendix-a-repository-structure" class="nav-link" data-scroll-target="#appendix-a-repository-structure"><span class="header-section-number">12</span> Appendix A: Repository Structure</a></li>
+  <li><a href="#appendix-b-build-and-run" id="toc-appendix-b-build-and-run" class="nav-link" data-scroll-target="#appendix-b-build-and-run"><span class="header-section-number">13</span> Appendix B: Build and Run</a></li>
+  </ul>
+<div class="quarto-alternate-formats"><h2>Other Formats</h2><ul><li><a href="whitepaper.pdf"><i class="bi bi-file-pdf"></i>PDF</a></li><li><a href="whitepaper.docx"><i class="bi bi-file-word"></i>MS Word</a></li></ul></div></nav>
+    </div>
+<!-- main -->
+<main class="content" id="quarto-document-content">
+
+<header id="title-block-header" class="quarto-title-block default">
+<div class="quarto-title">
+<h1 class="title">Furrballs: A NUMA-Aware, High-Performance Caching Library</h1>
+<p class="subtitle lead">Technical Report v0.6</p>
+</div>
+
+
+
+<div class="quarto-title-meta">
+
+    <div>
+    <div class="quarto-title-meta-heading">Author</div>
+    <div class="quarto-title-meta-contents">
+             <p>The Sphynx </p>
+          </div>
+  </div>
+    
+    <div>
+    <div class="quarto-title-meta-heading">Published</div>
+    <div class="quarto-title-meta-contents">
+      <p class="date">April 15, 2026</p>
+    </div>
+  </div>
+  
+    
+  </div>
+  
+
+
+</header>
+
+
+<section id="status" class="level2" data-number="1">
+<h2 data-number="1" class="anchored" data-anchor-id="status"><span class="header-section-number">1</span> Status</h2>
+<p>Draft v0.6 (living document)</p>
+</section>
+<section id="abstract" class="level2" data-number="2">
+<h2 data-number="2" class="anchored" data-anchor-id="abstract"><span class="header-section-number">2</span> Abstract</h2>
+<p>Furrballs is a NUMA-aware caching library that uses NUMA topology as a first-class input to cache placement and eviction decisions. The core contribution is per-page allocation on specific NUMA nodes, with a two-level ARC hierarchy: key-level ARC (L1) and page-level ARC (L2), backed by RocksDB persistence (L3). Pages are pre-allocated at initialization via one physical allocation per NUMA node, subdivided into logical pages filled by a bump allocator. Key routing supports both round-robin distribution and thread-local placement (via a runtime config flag). The library is implemented in C++20, uses a platform abstraction layer (Numatic) for NUMA operations, and integrates a custom synchronization library (StreamLine) for thread coordination. Lock-free reads are implemented via SeqLock on per-node sharded KeyMeta, eliminating shared_mutex overhead from the read path. Benchmark results on a QEMU NUMA simulation (2 nodes, 6 vCPUs) demonstrate that lock-free reads expose an 11.7% p50 and 13.3% p99 cross-node overhead—more than double the signal visible under shared_mutex (5.1% p50). Thread-local routing achieves 26-30% p50 and 31-41% p99 improvement over round-robin with lock-free reads, confirming that NUMA-aware placement provides compound benefits in both memory locality and synchronization reduction.</p>
+</section>
+<section id="problem-statement" class="level2" data-number="3">
+<h2 data-number="3" class="anchored" data-anchor-id="problem-statement"><span class="header-section-number">3</span> 1. Problem Statement</h2>
+<p>Modern multi-socket servers expose NUMA topology where memory access latency depends on which socket the data resides on. Remote NUMA access (cross-socket) can be 1.2-2x slower than local access. Existing caching systems either ignore NUMA topology entirely (Redis, Memcached) or handle it at coarse granularity (Meta’s CacheLib uses static per-node sharding). No published system combines NUMA topology as an adaptive input to per-page cache placement decisions.</p>
+<p>Furrballs targets this gap: allocate cache pages on the NUMA node of the thread that accesses them, measure the locality benefit, and provide a structured architecture for evolving the policy.</p>
+</section>
+<section id="design" class="level2" data-number="4">
+<h2 data-number="4" class="anchored" data-anchor-id="design"><span class="header-section-number">4</span> 2. Design</h2>
+<section id="architecture-overview" class="level3" data-number="4.1">
+<h3 data-number="4.1" class="anchored" data-anchor-id="architecture-overview"><span class="header-section-number">4.1</span> 2.1 Architecture Overview</h3>
+<pre><code>L1: ARC&lt;string, KeyMeta&gt;     -- Key-level cache, tracks hot keys
+L2: ARC&lt;PageIndex, Page*&gt;  -- Page-level cache, tracks hot pages (Phase 2)
+L3: RocksDB                 -- Persistent storage, written on eviction/shutdown</code></pre>
+<p>Phase 1 (current): L1 ARC + pre-allocated pages + RocksDB write-on-shutdown. Pages are never evicted from memory.</p>
+</section>
+<section id="memory-allocation" class="level3" data-number="4.2">
+<h3 data-number="4.2" class="anchored" data-anchor-id="memory-allocation"><span class="header-section-number">4.2</span> 2.2 Memory Allocation</h3>
+<p>At initialization (<code>CreateBall</code>), one physical allocation is made per NUMA node via <code>Numatic::AllocateOnNode()</code>. This block is subdivided into logical pages (each <code>PageSize</code> bytes). All logical pages are pre-populated in cache.</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb2"><pre class="sourceCode cpp code-with-copy"><code class="sourceCode cpp"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="co">// Per node:</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>physicalBlock <span class="op">=</span> Numatic<span class="op">::</span>AllocateOnNode<span class="op">(</span>physicalPageSize<span class="op">,</span> nodeId<span class="op">)</span></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="cf">for</span> i in <span class="fl">0.</span><span class="er">.numPages</span><span class="op">:</span></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>    page<span class="op">[</span>i<span class="op">].</span>Data <span class="op">=</span> <span class="op">(</span><span class="dt">char</span><span class="op">*)</span>physicalBlock <span class="op">+</span> i <span class="op">*</span> config<span class="op">.</span>PageSize</span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a>    page<span class="op">[</span>i<span class="op">].</span>NodeId <span class="op">=</span> nodeId</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Container allocations within nodes use <code>std::pmr::memory_resource</code> backed by <code>NumaLocalMemoryResource</code>, ensuring vector backing arrays land on the correct node.</p>
+</section>
+<section id="key-based-api" class="level3" data-number="4.3">
+<h3 data-number="4.3" class="anchored" data-anchor-id="key-based-api"><span class="header-section-number">4.3</span> 2.3 Key-Based API</h3>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb3"><pre class="sourceCode cpp code-with-copy"><code class="sourceCode cpp"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a>Error Set<span class="op">(</span><span class="at">const</span> <span class="bu">std::</span>string<span class="op">&amp;</span> key<span class="op">,</span> <span class="dt">void</span><span class="op">*</span> data<span class="op">,</span> <span class="dt">size_t</span> size<span class="op">);</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>Error Get<span class="op">(</span><span class="at">const</span> <span class="bu">std::</span>string<span class="op">&amp;</span> key<span class="op">,</span> <span class="dt">void</span><span class="op">*</span> outBuf<span class="op">,</span> <span class="dt">size_t</span> bufSize<span class="op">,</span> <span class="dt">size_t</span><span class="op">&amp;</span> outSize<span class="op">);</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Key routing supports two strategies, selectable at runtime via <code>NumaConfig::UseThreadLocalRouting</code>: - <strong>Round-robin</strong> (default): <code>AtomicRoundRobin</code> distributes keys evenly across nodes. - <strong>Thread-local</strong>: <code>Numatic::GetCurrentNode()</code> places keys on the calling thread’s node.</p>
+<p>The routing decision in <code>Set()</code> uses a ternary operator on the stored flag, incurring a single branch prediction miss per call. <code>KeyMeta</code> stores <code>{PageIndex, DataSize, DataOffset, NodeID}</code>. Keys are stored in per-node shards (<code>PerNodeDetails::KeyShard</code>), eliminating the global map contention point. Each shard entry wraps <code>KeyMeta</code> in a <code>SeqLock&lt;KeyMeta&gt;</code> for lock-free reads.</p>
+</section>
+<section id="bump-allocator" class="level3" data-number="4.4">
+<h3 data-number="4.4" class="anchored" data-anchor-id="bump-allocator"><span class="header-section-number">4.4</span> 2.4 Bump Allocator</h3>
+<p>Multi-value pages use an append-only bump allocator with 8-byte alignment. Each page tracks <code>UsedBytes</code> (atomic, CAS-based concurrent bump) and <code>DataWastedByPadding</code> for fragmentation metrics. No per-value deallocation – pages are evicted wholesale by ARC (Phase 2).</p>
+</section>
+<section id="concurrency" class="level3" data-number="4.5">
+<h3 data-number="4.5" class="anchored" data-anchor-id="concurrency"><span class="header-section-number">4.5</span> 2.5 Concurrency</h3>
+<p>Per-node <code>shared_mutex</code> serializes writes (map insert/update + page bump). Reads are lock-free via <code>SeqLock&lt;KeyMeta&gt;</code>: <code>Get()</code> iterates per-node shards, calls <code>SeqLock::Read()</code> on matching entries, and copies data without taking any lock. The SeqLock sequence counter provides deterministic consistency—if a writer is active (odd sequence), the reader retries. Statistics use <code>alignas(64)</code> on all atomic fields to prevent false sharing.</p>
+</section>
+<section id="platform-abstraction-numatic" class="level3" data-number="4.6">
+<h3 data-number="4.6" class="anchored" data-anchor-id="platform-abstraction-numatic"><span class="header-section-number">4.6</span> 2.6 Platform Abstraction (Numatic)</h3>
+<p>All NUMA operations are isolated behind stateless free functions:</p>
+<table class="caption-top table">
+<colgroup>
+<col style="width: 50%">
+<col style="width: 50%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>Category</th>
+<th>Functions</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Topology</td>
+<td><code>IsNUMAAvailable</code>, <code>GetNodeCount</code>, <code>GetDistance</code></td>
+</tr>
+<tr class="even">
+<td>Threading</td>
+<td><code>PinCurrentThreadToNode</code>, <code>GetCurrentNode</code></td>
+</tr>
+<tr class="odd">
+<td>Allocation</td>
+<td><code>AllocateOnNode</code>, <code>AllocateLocal</code>, <code>FreeNUMA</code></td>
+</tr>
+<tr class="even">
+<td>Huge Pages</td>
+<td><code>AllocateOnNodeHuge</code>, <code>AllocateLocalHuge</code>, <code>IsHugePagesAvailable</code>, <code>GetHugePageSize</code></td>
+</tr>
+<tr class="odd">
+<td>Migration</td>
+<td><code>MovePages</code>, <code>MigratePages</code>, <code>GetPageNode</code></td>
+</tr>
+<tr class="even">
+<td>PMR</td>
+<td><code>NumaLocalMemoryResource</code>, <code>NumaNodeMemoryResource</code> (CRTP base)</td>
+</tr>
+</tbody>
+</table>
+<p>Linux implementation uses libnuma. Windows has stubs/heuristics for functions without direct equivalents.</p>
+</section>
+</section>
+<section id="design-decisions-log" class="level2" data-number="5">
+<h2 data-number="5" class="anchored" data-anchor-id="design-decisions-log"><span class="header-section-number">5</span> 3. Design Decisions Log</h2>
+<section id="per-node-physical-block-with-subdivision" class="level3" data-number="5.1">
+<h3 data-number="5.1" class="anchored" data-anchor-id="per-node-physical-block-with-subdivision"><span class="header-section-number">5.1</span> 3.1 Per-Node Physical Block with Subdivision</h3>
+<p><strong>Decision:</strong> One <code>Numatic::AllocateOnNode()</code> call per NUMA node at init, manually partitioned into logical pages.</p>
+<p><strong>Rationale:</strong> Avoids syscall overhead per page. Single allocation + pointer arithmetic is faster than N <code>numa_alloc_onnode</code> calls. AMP (Phase 3) will handle expansion to multiple physical blocks.</p>
+</section>
+<section id="pmr-backed-per-node-containers" class="level3" data-number="5.2">
+<h3 data-number="5.2" class="anchored" data-anchor-id="pmr-backed-per-node-containers"><span class="header-section-number">5.2</span> 3.2 PMR-Backed Per-Node Containers</h3>
+<p><strong>Decision:</strong> <code>PerNodeDetails::NodePages</code> uses <code>std::pmr::vector&lt;Page&gt;</code> backed by <code>NumaLocalMemoryResource</code>.</p>
+<p><strong>Rationale:</strong> Standard <code>std::vector</code> allocates on the OS’s preferred node. PMR with a NUMA-local resource ensures the backing array memory lands on the correct node, since <code>PerNodeDetails</code> is constructed on a pinned worker thread.</p>
+</section>
+<section id="key-routing-strategy" class="level3" data-number="5.3">
+<h3 data-number="5.3" class="anchored" data-anchor-id="key-routing-strategy"><span class="header-section-number">5.3</span> 3.3 Key Routing Strategy</h3>
+<p><strong>Decision:</strong> Keys are routed via either <code>AtomicRoundRobin</code> (default) or <code>Numatic::GetCurrentNode()</code> (thread-local), selected at runtime by a <code>NumaConfig::UseThreadLocalRouting</code> flag. The dispatch uses a ternary operator: <code>ThreadLocalRoute ? Numatic::GetCurrentNode() : rr.Get()</code>.</p>
+<p><strong>Rationale:</strong> Round-robin provides uniform distribution. Thread-local routing eliminates cross-node lock contention during writes when the writer is pinned to a specific node. Both strategies have valid use cases: round-robin for load-balanced workloads, thread-local for read-after-write locality. The ternary dispatch avoids virtual dispatch overhead; branch prediction makes the cost negligible since the flag never changes after construction.</p>
+</section>
+<section id="all-or-nothing-numa-init" class="level3" data-number="5.4">
+<h3 data-number="5.4" class="anchored" data-anchor-id="all-or-nothing-numa-init"><span class="header-section-number">5.4</span> 3.4 All-or-Nothing NUMA Init</h3>
+<p><strong>Decision:</strong> If any node fails to allocate during <code>CreateBall()</code>, all successful allocations are freed and <code>nullptr</code> is returned.</p>
+<p><strong>Rationale:</strong> Partial NUMA topology (e.g., one node fails, fallback to single-node) eliminates the NUMA variable from benchmarks. One node = uniform memory access = no NUMA effect to measure.</p>
+</section>
+<section id="waitgroup-for-parallel-init" class="level3" data-number="5.5">
+<h3 data-number="5.5" class="anchored" data-anchor-id="waitgroup-for-parallel-init"><span class="header-section-number">5.5</span> 3.5 WaitGroup for Parallel Init</h3>
+<p><strong>Decision:</strong> NodeJob workers allocate their node’s physical block in parallel, synchronized by StreamLine’s <code>WaitGroup</code>.</p>
+<p><strong>Rationale:</strong> Init is blocking by design (the FurrBall must be fully constructed or not at all). WaitGroup provides zero-overhead thread synchronization without busy-waiting.</p>
+</section>
+<section id="error-codes-not-exceptions" class="level3" data-number="5.6">
+<h3 data-number="5.6" class="anchored" data-anchor-id="error-codes-not-exceptions"><span class="header-section-number">5.6</span> 3.6 Error Codes, Not Exceptions</h3>
+<p><strong>Decision:</strong> Public API returns <code>Error</code> enum. Exceptions only for unrecoverable programmer errors (WaitGroup misuse).</p>
+<p><strong>Rationale:</strong> Consistent with systems programming conventions. The <code>Error</code> enum is categorized (general, initialization, memory, cache, storage, compression, threading, I/O) for easy filtering.</p>
+</section>
+<section id="alignas64-on-statistics-atomics" class="level3" data-number="5.7">
+<h3 data-number="5.7" class="anchored" data-anchor-id="alignas64-on-statistics-atomics"><span class="header-section-number">5.7</span> 3.7 <code>alignas(64)</code> on Statistics Atomics</h3>
+<p><strong>Decision:</strong> Each atomic in <code>Statistics</code> sits on its own 64-byte cache line.</p>
+<p><strong>Rationale:</strong> Prevents false sharing between concurrent <code>HitCount</code>, <code>MissCount</code>, <code>BytesWritten</code>, and <code>BytesRead</code> updates in multi-threaded benchmarks.</p>
+</section>
+</section>
+<section id="related-work" class="level2" data-number="6">
+<h2 data-number="6" class="anchored" data-anchor-id="related-work"><span class="header-section-number">6</span> 4. Related Work</h2>
+<table class="caption-top table">
+<colgroup>
+<col style="width: 33%">
+<col style="width: 33%">
+<col style="width: 33%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>System</th>
+<th>NUMA Approach</th>
+<th>Difference from Furrballs</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>TCMalloc</td>
+<td>NUMA-aware allocation</td>
+<td>Allocator only; no cache eviction or page management</td>
+</tr>
+<tr class="even">
+<td>jemalloc</td>
+<td>NUMA-aware arenas</td>
+<td>Allocator only; no cache policy</td>
+</tr>
+<tr class="odd">
+<td>CacheLib (Meta)</td>
+<td>Static sharding per node</td>
+<td>Coarse-grained; entire cache instance per node</td>
+</tr>
+<tr class="even">
+<td>PostgreSQL</td>
+<td>Shared buffers with partition locks</td>
+<td>Database buffer pool; not a standalone cache</td>
+</tr>
+<tr class="odd">
+<td>InnoDB</td>
+<td>Buffer pool instances</td>
+<td>Database storage; not a cache library</td>
+</tr>
+<tr class="even">
+<td>Redis</td>
+<td>No NUMA awareness</td>
+<td>Baseline comparison point</td>
+</tr>
+<tr class="odd">
+<td>Furrballs</td>
+<td>Per-page placement + two-level ARC</td>
+<td>Fine-grained, adaptive, page-level NUMA locality as policy input</td>
+</tr>
+</tbody>
+</table>
+<p>No published work addresses the specific intersection of NUMA topology and adaptive cache eviction policy.</p>
+</section>
+<section id="evaluation" class="level2" data-number="7">
+<h2 data-number="7" class="anchored" data-anchor-id="evaluation"><span class="header-section-number">7</span> 5. Evaluation</h2>
+<section id="methodology" class="level3" data-number="7.1">
+<h3 data-number="7.1" class="anchored" data-anchor-id="methodology"><span class="header-section-number">7.1</span> 5.1 Methodology</h3>
+<p>Benchmarks run on two platforms: - <strong>Host (baseline):</strong> Single NUMA node, VPS, Ubuntu 24.04, x86_64, GCC 14, CMake Release - <strong>QEMU VM (NUMA simulation):</strong> 2 NUMA nodes, 6 vCPUs (3 per node), 4GB RAM, Ubuntu 24.04</p>
+<p>Each scenario is repeated 5 times. Reported values are averages across iterations. The QEMU VM adds approximately 600ns of emulation overhead per operation. To isolate the NUMA effect, we compare local vs cross-node reads under identical conditions within the VM.</p>
+</section>
+<section id="single-threaded-baseline-host-1-numa-node-5-iterations-averaged" class="level3" data-number="7.2">
+<h3 data-number="7.2" class="anchored" data-anchor-id="single-threaded-baseline-host-1-numa-node-5-iterations-averaged"><span class="header-section-number">7.2</span> 5.2 Single-Threaded Baseline (Host, 1 NUMA Node, 5 iterations averaged)</h3>
+<table class="caption-top table">
+<colgroup>
+<col style="width: 15%">
+<col style="width: 15%">
+<col style="width: 27%">
+<col style="width: 12%">
+<col style="width: 12%">
+<col style="width: 16%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>Value Size</th>
+<th>Operation</th>
+<th style="text-align: right;">Throughput (ops/s)</th>
+<th style="text-align: right;">p50 (ns)</th>
+<th style="text-align: right;">p99 (ns)</th>
+<th style="text-align: right;">Stddev (ns)</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>64B</td>
+<td>Set</td>
+<td style="text-align: right;">4,333,091</td>
+<td style="text-align: right;">146</td>
+<td style="text-align: right;">830</td>
+<td style="text-align: right;">1,060</td>
+</tr>
+<tr class="even">
+<td>64B</td>
+<td>Get</td>
+<td style="text-align: right;">4,473,004</td>
+<td style="text-align: right;">134</td>
+<td style="text-align: right;">255</td>
+<td style="text-align: right;">1,394</td>
+</tr>
+<tr class="odd">
+<td>512B</td>
+<td>Set</td>
+<td style="text-align: right;">3,753,818</td>
+<td style="text-align: right;">171</td>
+<td style="text-align: right;">1,433</td>
+<td style="text-align: right;">1,332</td>
+</tr>
+<tr class="even">
+<td>512B</td>
+<td>Get</td>
+<td style="text-align: right;">4,735,494</td>
+<td style="text-align: right;">147</td>
+<td style="text-align: right;">245</td>
+<td style="text-align: right;">193</td>
+</tr>
+<tr class="odd">
+<td>4KB</td>
+<td>Set</td>
+<td style="text-align: right;">1,660,059</td>
+<td style="text-align: right;">926</td>
+<td style="text-align: right;">2,686</td>
+<td style="text-align: right;">1,167</td>
+</tr>
+<tr class="even">
+<td>4KB</td>
+<td>Get</td>
+<td style="text-align: right;">2,888,215</td>
+<td style="text-align: right;">270</td>
+<td style="text-align: right;">442</td>
+<td style="text-align: right;">241</td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="single-threaded-qemu-vm-2-numa-nodes-5-iterations-averaged" class="level3" data-number="7.3">
+<h3 data-number="7.3" class="anchored" data-anchor-id="single-threaded-qemu-vm-2-numa-nodes-5-iterations-averaged"><span class="header-section-number">7.3</span> 5.3 Single-Threaded (QEMU VM, 2 NUMA Nodes, 5 iterations averaged)</h3>
+<table class="caption-top table">
+<colgroup>
+<col style="width: 15%">
+<col style="width: 15%">
+<col style="width: 27%">
+<col style="width: 12%">
+<col style="width: 12%">
+<col style="width: 16%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>Value Size</th>
+<th>Operation</th>
+<th style="text-align: right;">Throughput (ops/s)</th>
+<th style="text-align: right;">p50 (ns)</th>
+<th style="text-align: right;">p99 (ns)</th>
+<th style="text-align: right;">Stddev (ns)</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>64B</td>
+<td>Set</td>
+<td style="text-align: right;">679,054</td>
+<td style="text-align: right;">695</td>
+<td style="text-align: right;">2,674</td>
+<td style="text-align: right;">3,416</td>
+</tr>
+<tr class="even">
+<td>64B</td>
+<td>Get</td>
+<td style="text-align: right;">766,818</td>
+<td style="text-align: right;">655</td>
+<td style="text-align: right;">915</td>
+<td style="text-align: right;">820</td>
+</tr>
+<tr class="odd">
+<td>512B</td>
+<td>Set</td>
+<td style="text-align: right;">581,262</td>
+<td style="text-align: right;">760</td>
+<td style="text-align: right;">3,249</td>
+<td style="text-align: right;">7,293</td>
+</tr>
+<tr class="even">
+<td>512B</td>
+<td>Get</td>
+<td style="text-align: right;">757,711</td>
+<td style="text-align: right;">672</td>
+<td style="text-align: right;">985</td>
+<td style="text-align: right;">918</td>
+</tr>
+<tr class="odd">
+<td>4KB</td>
+<td>Set</td>
+<td style="text-align: right;">499,495</td>
+<td style="text-align: right;">1,561</td>
+<td style="text-align: right;">6,170</td>
+<td style="text-align: right;">2,170</td>
+</tr>
+<tr class="even">
+<td>4KB</td>
+<td>Get</td>
+<td style="text-align: right;">677,780</td>
+<td style="text-align: right;">799</td>
+<td style="text-align: right;">1,048</td>
+<td style="text-align: right;">1,256</td>
+</tr>
+</tbody>
+</table>
+<p>Host-to-VM ratio: approximately 5-6x slower in the VM due to QEMU emulation overhead.</p>
+</section>
+<section id="numa-effect-qemu-vm-2-threads-5-iterations-averaged" class="level3" data-number="7.4">
+<h3 data-number="7.4" class="anchored" data-anchor-id="numa-effect-qemu-vm-2-threads-5-iterations-averaged"><span class="header-section-number">7.4</span> 5.4 NUMA Effect (QEMU VM, 2 threads, 5 iterations averaged)</h3>
+<p>Two threads, each pinned to a different NUMA node. One thread writes keys to its local node, the other reads them from the remote node. Results compare shared_mutex reads (v0.5) vs SeqLock lock-free reads (v0.6).</p>
+<table class="caption-top table">
+<thead>
+<tr class="header">
+<th>Value Size</th>
+<th>Metric</th>
+<th style="text-align: right;">Local (ns)</th>
+<th style="text-align: right;">Cross-Node (ns)</th>
+<th style="text-align: right;">Overhead</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>64B (v0.5, shared_mutex)</td>
+<td>p50</td>
+<td style="text-align: right;">956</td>
+<td style="text-align: right;">1,005</td>
+<td style="text-align: right;">5.1%</td>
+</tr>
+<tr class="even">
+<td>64B (v0.5, shared_mutex)</td>
+<td>p99</td>
+<td style="text-align: right;">1,869</td>
+<td style="text-align: right;">2,075</td>
+<td style="text-align: right;">11.0%</td>
+</tr>
+<tr class="odd">
+<td>64B (v0.6, SeqLock)</td>
+<td>p50</td>
+<td style="text-align: right;">1,157</td>
+<td style="text-align: right;">1,292</td>
+<td style="text-align: right;"><strong>11.7%</strong></td>
+</tr>
+<tr class="even">
+<td>64B (v0.6, SeqLock)</td>
+<td>p99</td>
+<td style="text-align: right;">2,093</td>
+<td style="text-align: right;">2,372</td>
+<td style="text-align: right;"><strong>13.3%</strong></td>
+</tr>
+<tr class="odd">
+<td>512B (v0.6, SeqLock)</td>
+<td>p50</td>
+<td style="text-align: right;">1,252</td>
+<td style="text-align: right;">1,299</td>
+<td style="text-align: right;">3.8%</td>
+</tr>
+<tr class="even">
+<td>512B (v0.6, SeqLock)</td>
+<td>p99</td>
+<td style="text-align: right;">2,199</td>
+<td style="text-align: right;">2,243</td>
+<td style="text-align: right;">2.0%</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Key finding:</strong> Lock-free reads (SeqLock) expose a cross-node p50 overhead of 11.7%, more than double the 5.1% visible under <code>shared_mutex</code>. The lock was masking the true NUMA memory latency signal. The p99 overhead increased from 11.0% to 13.3%, confirming the effect is consistent across latency percentiles. The 512-byte results remain noisy due to QEMU scheduling artifacts—real hardware validation is expected to show a cleaner signal at all value sizes.</p>
+<p>This result validates the thesis methodology: synchronization overhead must be eliminated from the read path to measure the true NUMA effect.</p>
+</section>
+<section id="concurrent-throughput-qemu-vm-4-threads-5-iterations-averaged" class="level3" data-number="7.5">
+<h3 data-number="7.5" class="anchored" data-anchor-id="concurrent-throughput-qemu-vm-4-threads-5-iterations-averaged"><span class="header-section-number">7.5</span> 5.5 Concurrent Throughput (QEMU VM, 4 threads, 5 iterations averaged)</h3>
+<p>Four threads, each pinned to a NUMA node, operating on disjoint key ranges. With SeqLock lock-free reads, cross-node Get throughput exceeds local due to reduced per-node contention.</p>
+<table class="caption-top table">
+<thead>
+<tr class="header">
+<th>Value Size</th>
+<th>Mode</th>
+<th style="text-align: right;">Set (ops/s)</th>
+<th style="text-align: right;">Get (ops/s)</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>64B</td>
+<td>All local (2 threads/node)</td>
+<td style="text-align: right;">761,315</td>
+<td style="text-align: right;">1,197,488</td>
+</tr>
+<tr class="even">
+<td>64B</td>
+<td>All cross-node</td>
+<td style="text-align: right;">952,933</td>
+<td style="text-align: right;">1,592,695</td>
+</tr>
+</tbody>
+</table>
+<p>Cross-node Get throughput is 33% higher than local under lock-free reads, suggesting that the QEMU NUMA simulation’s memory access patterns interact favorably with the SeqLock retry loop when data resides on remote nodes. Real hardware validation is needed to confirm this behavior.</p>
+</section>
+<section id="routing-strategy-comparison-qemu-vm-2-threads-5-iterations-averaged" class="level3" data-number="7.6">
+<h3 data-number="7.6" class="anchored" data-anchor-id="routing-strategy-comparison-qemu-vm-2-threads-5-iterations-averaged"><span class="header-section-number">7.6</span> 5.6 Routing Strategy Comparison (QEMU VM, 2 threads, 5 iterations averaged)</h3>
+<p>Two threads, each pinned to a different NUMA node (node 0 and node 1). Each thread writes 5000 keys (64 bytes), then reads its own keys (self-read) and the other thread’s keys (cross-read). Results compare shared_mutex (v0.5) vs SeqLock lock-free reads (v0.6).</p>
+<p><strong>v0.5 (shared_mutex reads):</strong></p>
+<table class="caption-top table">
+<thead>
+<tr class="header">
+<th>Metric</th>
+<th style="text-align: right;">Round-robin (ns)</th>
+<th style="text-align: right;">Thread-local (ns)</th>
+<th style="text-align: right;">Improvement</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Set p50</td>
+<td style="text-align: right;">1,033</td>
+<td style="text-align: right;">913</td>
+<td style="text-align: right;"><strong>11.6%</strong></td>
+</tr>
+<tr class="even">
+<td>Set p99</td>
+<td style="text-align: right;">11,288</td>
+<td style="text-align: right;">5,503</td>
+<td style="text-align: right;"><strong>51.2%</strong></td>
+</tr>
+<tr class="odd">
+<td>Self-Get p50</td>
+<td style="text-align: right;">907</td>
+<td style="text-align: right;">835</td>
+<td style="text-align: right;"><strong>8.0%</strong></td>
+</tr>
+<tr class="even">
+<td>Self-Get p99</td>
+<td style="text-align: right;">2,096</td>
+<td style="text-align: right;">1,357</td>
+<td style="text-align: right;"><strong>35.3%</strong></td>
+</tr>
+<tr class="odd">
+<td>Cross-Get p50</td>
+<td style="text-align: right;">879</td>
+<td style="text-align: right;">792</td>
+<td style="text-align: right;"><strong>9.9%</strong></td>
+</tr>
+<tr class="even">
+<td>Cross-Get p99</td>
+<td style="text-align: right;">1,953</td>
+<td style="text-align: right;">1,358</td>
+<td style="text-align: right;"><strong>30.5%</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>v0.6 (SeqLock lock-free reads):</strong></p>
+<table class="caption-top table">
+<thead>
+<tr class="header">
+<th>Metric</th>
+<th style="text-align: right;">Round-robin (ns)</th>
+<th style="text-align: right;">Thread-local (ns)</th>
+<th style="text-align: right;">Improvement</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Set p50</td>
+<td style="text-align: right;">1,621</td>
+<td style="text-align: right;">1,355</td>
+<td style="text-align: right;"><strong>16.4%</strong></td>
+</tr>
+<tr class="even">
+<td>Set p99</td>
+<td style="text-align: right;">41,095</td>
+<td style="text-align: right;">4,665</td>
+<td style="text-align: right;"><strong>88.6%</strong></td>
+</tr>
+<tr class="odd">
+<td>Self-Get p50</td>
+<td style="text-align: right;">1,296</td>
+<td style="text-align: right;">955</td>
+<td style="text-align: right;"><strong>26.3%</strong></td>
+</tr>
+<tr class="even">
+<td>Self-Get p99</td>
+<td style="text-align: right;">2,600</td>
+<td style="text-align: right;">1,790</td>
+<td style="text-align: right;"><strong>31.2%</strong></td>
+</tr>
+<tr class="odd">
+<td>Cross-Get p50</td>
+<td style="text-align: right;">1,292</td>
+<td style="text-align: right;">901</td>
+<td style="text-align: right;"><strong>30.3%</strong></td>
+</tr>
+<tr class="even">
+<td>Cross-Get p99</td>
+<td style="text-align: right;">2,677</td>
+<td style="text-align: right;">1,582</td>
+<td style="text-align: right;"><strong>40.9%</strong></td>
+</tr>
+</tbody>
+</table>
+<p>Lock-free reads amplify the thread-local routing improvement from 8-10% p50 to <strong>26-30% p50</strong>. The lock was masking not only the NUMA effect but also the routing strategy benefit. Thread-local routing with SeqLock achieves 26-41% improvement across all Get metrics, confirming that the compound benefit of NUMA-aware placement (memory locality + reduced synchronization) is genuine and measurable.</p>
+</section>
+<section id="limitations" class="level3" data-number="7.7">
+<h3 data-number="7.7" class="anchored" data-anchor-id="limitations"><span class="header-section-number">7.7</span> 5.7 Limitations</h3>
+<ul>
+<li>QEMU emulation adds noise to p50 latency measurements. The p99 tail metric is more reliable for NUMA effect detection.</li>
+<li>512-byte cross-node overhead remains noisy under QEMU. Requires real hardware validation.</li>
+<li>Lock-free reads are correct when no concurrent writes target the same shard (map <code>find()</code> is not thread-safe during concurrent <code>insert()</code>). The benchmark warmup-then-read pattern avoids this; production use requires a concurrent hash map.</li>
+<li>Cross-node reads in Phase 1 execute on the calling thread (synchronous). Phase 2 NodeJob dispatch will enable remote-node reads via pinned workers, potentially reducing cross-node overhead.</li>
+<li>Memory fragmentation from the bump allocator is not yet measured.</li>
+<li>The per-key <code>unique_ptr&lt;SeqLock&lt;KeyMeta&gt;&gt;</code> adds one heap allocation per key and one pointer indirection per read. A slab allocator for SeqLock entries would reduce this overhead.</li>
+</ul>
+</section>
+</section>
+<section id="current-status" class="level2" data-number="8">
+<h2 data-number="8" class="anchored" data-anchor-id="current-status"><span class="header-section-number">8</span> 6. Current Status</h2>
+<p>Phase 1 core is implemented and tested: - L1 ARC with key-based Set/Get API (CAS bump allocator, round-robin + thread-local routing, per-node shards) - Per-node physical block allocation with PMR-backed containers - Lock-free reads via SeqLock on per-node sharded KeyMeta - NodeJob worker pinning (one worker per NUMA node) - WaitGroup-synchronized parallel init - Full Numatic platform abstraction (13 functions, CRTP PMR allocators, Linux + Windows stubs) - Benchmark harness (single-threaded, multi-threaded NUMA effect, concurrent throughput, routing comparison, 5 iterations with stddev) - 7/7 unit tests passing</p>
+<p>The project is on the <code>numa-focus</code> branch. Licensed under MIT. Build and test artifacts are excluded from version control.</p>
+</section>
+<section id="risks-and-open-questions" class="level2" data-number="9">
+<h2 data-number="9" class="anchored" data-anchor-id="risks-and-open-questions"><span class="header-section-number">9</span> 7. Risks and Open Questions</h2>
+<ul>
+<li><del>Can lock-free reads (seqlock) reduce contention enough to expose NUMA effects at 4+ threads?</del> <strong>Answered: yes.</strong> SeqLock increased the measurable cross-node p50 overhead from 5.1% to 11.7%.</li>
+<li>Can the 11.7% p50 NUMA overhead measured on QEMU be replicated on real hardware with larger NUMA distances?</li>
+<li>Will Phase 2’s L2 page eviction (ARC eviction) introduce latency spikes during page flush?</li>
+<li>How does the bump allocator’s fragmentation ratio evolve under real workloads?</li>
+<li>Will the per-key <code>unique_ptr&lt;SeqLock&gt;</code> allocation overhead become a bottleneck at scale?</li>
+</ul>
+</section>
+<section id="roadmap" class="level2" data-number="10">
+<h2 data-number="10" class="anchored" data-anchor-id="roadmap"><span class="header-section-number">10</span> 8. Roadmap</h2>
+<section id="phase-1-numa-aware-core-current" class="level3" data-number="10.1">
+<h3 data-number="10.1" class="anchored" data-anchor-id="phase-1-numa-aware-core-current"><span class="header-section-number">10.1</span> Phase 1: NUMA-Aware Core (Current)</h3>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="">Per-node physical block allocation with manual subdivision</label></li>
+<li><label><input type="checkbox" checked="">Bump allocator with padding waste tracking</label></li>
+<li><label><input type="checkbox" checked="">Key-based Set/Get with round-robin + thread-local routing</label></li>
+<li><label><input type="checkbox" checked="">Per-node sharded KeyStore (eliminates global map contention)</label></li>
+<li><label><input type="checkbox" checked="">Lock-free reads via SeqLock on KeyMeta</label></li>
+<li><label><input type="checkbox" checked="">CAS-based concurrent bump allocator</label></li>
+<li><label><input type="checkbox" checked="">Statistics with cache-line-aligned atomics</label></li>
+<li><label><input type="checkbox" checked="">Benchmark harness</label></li>
+<li><label><input type="checkbox" checked="">Thread-local routing comparison (round-robin vs <code>Numatic::GetCurrentNode()</code>)</label></li>
+<li><label><input type="checkbox" checked="">SeqLock isolation of NUMA memory latency signal</label></li>
+<li><label><input type="checkbox">Full write-on-shutdown persistence verification</label></li>
+<li><label><input type="checkbox">Real hardware benchmark validation</label></li>
+</ul>
+</section>
+<section id="phase-2-two-level-arc" class="level3" data-number="10.2">
+<h3 data-number="10.2" class="anchored" data-anchor-id="phase-2-two-level-arc"><span class="header-section-number">10.2</span> Phase 2: Two-Level ARC</h3>
+<ul class="task-list">
+<li><label><input type="checkbox">L2 ARC for page-level eviction</label></li>
+<li><label><input type="checkbox">Per-page key list for L2 eviction cleanup</label></li>
+<li><label><input type="checkbox">RocksDB page reload on L2 miss</label></li>
+<li><label><input type="checkbox">L1 ghost hit handling (key promoted, page still resident)</label></li>
+</ul>
+</section>
+<section id="phase-3-adaptive-memory-pooling-amp" class="level3" data-number="10.3">
+<h3 data-number="10.3" class="anchored" data-anchor-id="phase-3-adaptive-memory-pooling-amp"><span class="header-section-number">10.3</span> Phase 3: Adaptive Memory Pooling (AMP)</h3>
+<ul class="task-list">
+<li><label><input type="checkbox">Dynamic page pool expansion under eviction pressure</label></li>
+<li><label><input type="checkbox">Page pool contraction when idle</label></li>
+<li><label><input type="checkbox">Multi-physical-block support per node</label></li>
+</ul>
+</section>
+<section id="phase-4-optimization" class="level3" data-number="10.4">
+<h3 data-number="10.4" class="anchored" data-anchor-id="phase-4-optimization"><span class="header-section-number">10.4</span> Phase 4: Optimization</h3>
+<ul class="task-list">
+<li><label><input type="checkbox">O(1) ARC lookup (hash map + list iterator, replacing linear search)</label></li>
+<li><label><input type="checkbox">Concurrent hash map for per-node shards (safe lock-free reads during writes)</label></li>
+<li><label><input type="checkbox">SeqLock slab allocator (replace per-key unique_ptr)</label></li>
+<li><label><input type="checkbox">NodeJob async dispatch for Set/Get (remote-node reads)</label></li>
+<li><label><input type="checkbox">Reference counting on pages (dangling pointer safety for Phase 2 eviction)</label></li>
+</ul>
+</section>
+<section id="phase-5-publication" class="level3" data-number="10.5">
+<h3 data-number="10.5" class="anchored" data-anchor-id="phase-5-publication"><span class="header-section-number">10.5</span> Phase 5: Publication</h3>
+<ul class="task-list">
+<li><label><input type="checkbox">Formal paper with reproducible benchmarks</label></li>
+<li><label><input type="checkbox">arXiv submission under <code>cs.DC</code></label></li>
+<li><label><input type="checkbox">PhD application material</label></li>
+</ul>
+</section>
+</section>
+<section id="conclusion" class="level2" data-number="11">
+<h2 data-number="11" class="anchored" data-anchor-id="conclusion"><span class="header-section-number">11</span> 9. Conclusion</h2>
+<p>Furrballs demonstrates that NUMA topology can serve as a meaningful input to cache placement decisions. The architecture—per-node physical allocation, bump-packed multi-value pages, and two-level ARC hierarchy—provides a structured foundation for measuring and optimizing NUMA-aware caching. The critical finding is that synchronization overhead masks the true NUMA memory latency signal: under <code>shared_mutex</code>, cross-node overhead was 5.1% at p50; under SeqLock lock-free reads, it is 11.7%—more than double. Thread-local routing with lock-free reads achieves 26-41% improvement over round-robin across all Get metrics, confirming that NUMA-aware placement provides compound benefits in both memory locality and synchronization reduction. These results, obtained on QEMU NUMA simulation, establish the methodology and architecture. Real hardware validation is the remaining step before publication.</p>
+</section>
+<section id="appendix-a-repository-structure" class="level2" data-number="12">
+<h2 data-number="12" class="anchored" data-anchor-id="appendix-a-repository-structure"><span class="header-section-number">12</span> Appendix A: Repository Structure</h2>
+<pre><code>Furrballs/
+  Furrballs/          # Core library (C++20, MIT license)
+    include/
+      Furrballs.h     # Public API, ARC, configs, KeyMeta
+      Page.h          # Page struct with bump allocator
+      Logger.h        # Thread-safe logging
+      Error.h         # Categorized error enum
+      NodeJob.h       # Per-node worker threading
+      WaitGroup.h     # StreamLine synchronization (copied)
+      Concept.h       # StreamLine Lockable concept (copied)
+      SeqLock.h       # StreamLine SeqLock for lock-free reads (copied)
+      MemoryManager.h # General allocation, padded_size utilities
+    src/
+      Furrballs.cpp   # Core: Bootstrap, CreateBall, Set, Get, Flush, Evict
+      Logger.cpp      # Platform-safe time formatting
+      NodeJob.cpp     # Worker loop and condition-variable dispatch
+      Page.cpp        # (Empty; Page is header-only)
+  numatic/            # NUMA platform abstraction
+    include/Numatic.h  # Free function declarations + CRTP PMR allocators
+    src/
+      NumaticUnix.cpp  # Linux implementation (libnuma)
+      NumaticWin.cpp   # Windows stubs/heuristics
+  Benchmark/          # Benchmark harness
+  Sandbox/            # Unit tests
+  docs/               # This whitepaper</code></pre>
+</section>
+<section id="appendix-b-build-and-run" class="level2" data-number="13">
+<h2 data-number="13" class="anchored" data-anchor-id="appendix-b-build-and-run"><span class="header-section-number">13</span> Appendix B: Build and Run</h2>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb5"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="fu">mkdir</span> build <span class="kw">&amp;&amp;</span> <span class="bu">cd</span> build</span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a><span class="fu">cmake</span> .. <span class="at">-DCMAKE_BUILD_TYPE</span><span class="op">=</span>Release</span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a><span class="fu">cmake</span> <span class="at">--build</span> . <span class="at">--target</span> Benchmark</span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a><span class="ex">./Benchmark/Benchmark</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>QEMU VM:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb6"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="ex">~/vm/furrballs/furr.sh</span> benchmark  <span class="co"># Build on host, run in VM</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+
+
+</section>
+
+</main> <!-- /main -->
+<script id="quarto-html-after-body" type="application/javascript">
+  window.document.addEventListener("DOMContentLoaded", function (event) {
+    const icon = "";
+    const anchorJS = new window.AnchorJS();
+    anchorJS.options = {
+      placement: 'right',
+      icon: icon
+    };
+    anchorJS.add('.anchored');
+    const isCodeAnnotation = (el) => {
+      for (const clz of el.classList) {
+        if (clz.startsWith('code-annotation-')) {                     
+          return true;
+        }
+      }
+      return false;
+    }
+    const onCopySuccess = function(e) {
+      // button target
+      const button = e.trigger;
+      // don't keep focus
+      button.blur();
+      // flash "checked"
+      button.classList.add('code-copy-button-checked');
+      var currentTitle = button.getAttribute("title");
+      button.setAttribute("title", "Copied!");
+      let tooltip;
+      if (window.bootstrap) {
+        button.setAttribute("data-bs-toggle", "tooltip");
+        button.setAttribute("data-bs-placement", "left");
+        button.setAttribute("data-bs-title", "Copied!");
+        tooltip = new bootstrap.Tooltip(button, 
+          { trigger: "manual", 
+            customClass: "code-copy-button-tooltip",
+            offset: [0, -8]});
+        tooltip.show();    
+      }
+      setTimeout(function() {
+        if (tooltip) {
+          tooltip.hide();
+          button.removeAttribute("data-bs-title");
+          button.removeAttribute("data-bs-toggle");
+          button.removeAttribute("data-bs-placement");
+        }
+        button.setAttribute("title", currentTitle);
+        button.classList.remove('code-copy-button-checked');
+      }, 1000);
+      // clear code selection
+      e.clearSelection();
+    }
+    const getTextToCopy = function(trigger) {
+      const outerScaffold = trigger.parentElement.cloneNode(true);
+      const codeEl = outerScaffold.querySelector('code');
+      for (const childEl of codeEl.children) {
+        if (isCodeAnnotation(childEl)) {
+          childEl.remove();
+        }
+      }
+      return codeEl.innerText;
+    }
+    const clipboard = new window.ClipboardJS('.code-copy-button:not([data-in-quarto-modal])', {
+      text: getTextToCopy
+    });
+    clipboard.on('success', onCopySuccess);
+    if (window.document.getElementById('quarto-embedded-source-code-modal')) {
+      const clipboardModal = new window.ClipboardJS('.code-copy-button[data-in-quarto-modal]', {
+        text: getTextToCopy,
+        container: window.document.getElementById('quarto-embedded-source-code-modal')
+      });
+      clipboardModal.on('success', onCopySuccess);
+    }
+      var localhostRegex = new RegExp(/^(?:http|https):\/\/localhost\:?[0-9]*\//);
+      var mailtoRegex = new RegExp(/^mailto:/);
+        var filterRegex = new RegExp('/' + window.location.host + '/');
+      var isInternal = (href) => {
+          return filterRegex.test(href) || localhostRegex.test(href) || mailtoRegex.test(href);
+      }
+      // Inspect non-navigation links and adorn them if external
+     var links = window.document.querySelectorAll('a[href]:not(.nav-link):not(.navbar-brand):not(.toc-action):not(.sidebar-link):not(.sidebar-item-toggle):not(.pagination-link):not(.no-external):not([aria-hidden]):not(.dropdown-item):not(.quarto-navigation-tool):not(.about-link)');
+      for (var i=0; i<links.length; i++) {
+        const link = links[i];
+        if (!isInternal(link.href)) {
+          // undo the damage that might have been done by quarto-nav.js in the case of
+          // links that we want to consider external
+          if (link.dataset.originalHref !== undefined) {
+            link.href = link.dataset.originalHref;
+          }
+        }
+      }
+    function tippyHover(el, contentFn, onTriggerFn, onUntriggerFn) {
+      const config = {
+        allowHTML: true,
+        maxWidth: 500,
+        delay: 100,
+        arrow: false,
+        appendTo: function(el) {
+            return el.parentElement;
+        },
+        interactive: true,
+        interactiveBorder: 10,
+        theme: 'quarto',
+        placement: 'bottom-start',
+      };
+      if (contentFn) {
+        config.content = contentFn;
+      }
+      if (onTriggerFn) {
+        config.onTrigger = onTriggerFn;
+      }
+      if (onUntriggerFn) {
+        config.onUntrigger = onUntriggerFn;
+      }
+      window.tippy(el, config); 
+    }
+    const noterefs = window.document.querySelectorAll('a[role="doc-noteref"]');
+    for (var i=0; i<noterefs.length; i++) {
+      const ref = noterefs[i];
+      tippyHover(ref, function() {
+        // use id or data attribute instead here
+        let href = ref.getAttribute('data-footnote-href') || ref.getAttribute('href');
+        try { href = new URL(href).hash; } catch {}
+        const id = href.replace(/^#\/?/, "");
+        const note = window.document.getElementById(id);
+        if (note) {
+          return note.innerHTML;
+        } else {
+          return "";
+        }
+      });
+    }
+    const xrefs = window.document.querySelectorAll('a.quarto-xref');
+    const processXRef = (id, note) => {
+      // Strip column container classes
+      const stripColumnClz = (el) => {
+        el.classList.remove("page-full", "page-columns");
+        if (el.children) {
+          for (const child of el.children) {
+            stripColumnClz(child);
+          }
+        }
+      }
+      stripColumnClz(note)
+      if (id === null || id.startsWith('sec-')) {
+        // Special case sections, only their first couple elements
+        const container = document.createElement("div");
+        if (note.children && note.children.length > 2) {
+          container.appendChild(note.children[0].cloneNode(true));
+          for (let i = 1; i < note.children.length; i++) {
+            const child = note.children[i];
+            if (child.tagName === "P" && child.innerText === "") {
+              continue;
+            } else {
+              container.appendChild(child.cloneNode(true));
+              break;
+            }
+          }
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(container);
+          }
+          return container.innerHTML
+        } else {
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(note);
+          }
+          return note.innerHTML;
+        }
+      } else {
+        // Remove any anchor links if they are present
+        const anchorLink = note.querySelector('a.anchorjs-link');
+        if (anchorLink) {
+          anchorLink.remove();
+        }
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(note);
+        }
+        if (note.classList.contains("callout")) {
+          return note.outerHTML;
+        } else {
+          return note.innerHTML;
+        }
+      }
+    }
+    for (var i=0; i<xrefs.length; i++) {
+      const xref = xrefs[i];
+      tippyHover(xref, undefined, function(instance) {
+        instance.disable();
+        let url = xref.getAttribute('href');
+        let hash = undefined; 
+        if (url.startsWith('#')) {
+          hash = url;
+        } else {
+          try { hash = new URL(url).hash; } catch {}
+        }
+        if (hash) {
+          const id = hash.replace(/^#\/?/, "");
+          const note = window.document.getElementById(id);
+          if (note !== null) {
+            try {
+              const html = processXRef(id, note.cloneNode(true));
+              instance.setContent(html);
+            } finally {
+              instance.enable();
+              instance.show();
+            }
+          } else {
+            // See if we can fetch this
+            fetch(url.split('#')[0])
+            .then(res => res.text())
+            .then(html => {
+              const parser = new DOMParser();
+              const htmlDoc = parser.parseFromString(html, "text/html");
+              const note = htmlDoc.getElementById(id);
+              if (note !== null) {
+                const html = processXRef(id, note);
+                instance.setContent(html);
+              } 
+            }).finally(() => {
+              instance.enable();
+              instance.show();
+            });
+          }
+        } else {
+          // See if we can fetch a full url (with no hash to target)
+          // This is a special case and we should probably do some content thinning / targeting
+          fetch(url)
+          .then(res => res.text())
+          .then(html => {
+            const parser = new DOMParser();
+            const htmlDoc = parser.parseFromString(html, "text/html");
+            const note = htmlDoc.querySelector('main.content');
+            if (note !== null) {
+              // This should only happen for chapter cross references
+              // (since there is no id in the URL)
+              // remove the first header
+              if (note.children.length > 0 && note.children[0].tagName === "HEADER") {
+                note.children[0].remove();
+              }
+              const html = processXRef(null, note);
+              instance.setContent(html);
+            } 
+          }).finally(() => {
+            instance.enable();
+            instance.show();
+          });
+        }
+      }, function(instance) {
+      });
+    }
+        let selectedAnnoteEl;
+        const selectorForAnnotation = ( cell, annotation) => {
+          let cellAttr = 'data-code-cell="' + cell + '"';
+          let lineAttr = 'data-code-annotation="' +  annotation + '"';
+          const selector = 'span[' + cellAttr + '][' + lineAttr + ']';
+          return selector;
+        }
+        const selectCodeLines = (annoteEl) => {
+          const doc = window.document;
+          const targetCell = annoteEl.getAttribute("data-target-cell");
+          const targetAnnotation = annoteEl.getAttribute("data-target-annotation");
+          const annoteSpan = window.document.querySelector(selectorForAnnotation(targetCell, targetAnnotation));
+          const lines = annoteSpan.getAttribute("data-code-lines").split(",");
+          const lineIds = lines.map((line) => {
+            return targetCell + "-" + line;
+          })
+          let top = null;
+          let height = null;
+          let parent = null;
+          if (lineIds.length > 0) {
+              //compute the position of the single el (top and bottom and make a div)
+              const el = window.document.getElementById(lineIds[0]);
+              top = el.offsetTop;
+              height = el.offsetHeight;
+              parent = el.parentElement.parentElement;
+            if (lineIds.length > 1) {
+              const lastEl = window.document.getElementById(lineIds[lineIds.length - 1]);
+              const bottom = lastEl.offsetTop + lastEl.offsetHeight;
+              height = bottom - top;
+            }
+            if (top !== null && height !== null && parent !== null) {
+              // cook up a div (if necessary) and position it 
+              let div = window.document.getElementById("code-annotation-line-highlight");
+              if (div === null) {
+                div = window.document.createElement("div");
+                div.setAttribute("id", "code-annotation-line-highlight");
+                div.style.position = 'absolute';
+                parent.appendChild(div);
+              }
+              div.style.top = top - 2 + "px";
+              div.style.height = height + 4 + "px";
+              div.style.left = 0;
+              let gutterDiv = window.document.getElementById("code-annotation-line-highlight-gutter");
+              if (gutterDiv === null) {
+                gutterDiv = window.document.createElement("div");
+                gutterDiv.setAttribute("id", "code-annotation-line-highlight-gutter");
+                gutterDiv.style.position = 'absolute';
+                const codeCell = window.document.getElementById(targetCell);
+                const gutter = codeCell.querySelector('.code-annotation-gutter');
+                gutter.appendChild(gutterDiv);
+              }
+              gutterDiv.style.top = top - 2 + "px";
+              gutterDiv.style.height = height + 4 + "px";
+            }
+            selectedAnnoteEl = annoteEl;
+          }
+        };
+        const unselectCodeLines = () => {
+          const elementsIds = ["code-annotation-line-highlight", "code-annotation-line-highlight-gutter"];
+          elementsIds.forEach((elId) => {
+            const div = window.document.getElementById(elId);
+            if (div) {
+              div.remove();
+            }
+          });
+          selectedAnnoteEl = undefined;
+        };
+          // Handle positioning of the toggle
+      window.addEventListener(
+        "resize",
+        throttle(() => {
+          elRect = undefined;
+          if (selectedAnnoteEl) {
+            selectCodeLines(selectedAnnoteEl);
+          }
+        }, 10)
+      );
+      function throttle(fn, ms) {
+      let throttle = false;
+      let timer;
+        return (...args) => {
+          if(!throttle) { // first call gets through
+              fn.apply(this, args);
+              throttle = true;
+          } else { // all the others get throttled
+              if(timer) clearTimeout(timer); // cancel #2
+              timer = setTimeout(() => {
+                fn.apply(this, args);
+                timer = throttle = false;
+              }, ms);
+          }
+        };
+      }
+        // Attach click handler to the DT
+        const annoteDls = window.document.querySelectorAll('dt[data-target-cell]');
+        for (const annoteDlNode of annoteDls) {
+          annoteDlNode.addEventListener('click', (event) => {
+            const clickedEl = event.target;
+            if (clickedEl !== selectedAnnoteEl) {
+              unselectCodeLines();
+              const activeEl = window.document.querySelector('dt[data-target-cell].code-annotation-active');
+              if (activeEl) {
+                activeEl.classList.remove('code-annotation-active');
+              }
+              selectCodeLines(clickedEl);
+              clickedEl.classList.add('code-annotation-active');
+            } else {
+              // Unselect the line
+              unselectCodeLines();
+              clickedEl.classList.remove('code-annotation-active');
+            }
+          });
+        }
+    const findCites = (el) => {
+      const parentEl = el.parentElement;
+      if (parentEl) {
+        const cites = parentEl.dataset.cites;
+        if (cites) {
+          return {
+            el,
+            cites: cites.split(' ')
+          };
+        } else {
+          return findCites(el.parentElement)
+        }
+      } else {
+        return undefined;
+      }
+    };
+    var bibliorefs = window.document.querySelectorAll('a[role="doc-biblioref"]');
+    for (var i=0; i<bibliorefs.length; i++) {
+      const ref = bibliorefs[i];
+      const citeInfo = findCites(ref);
+      if (citeInfo) {
+        tippyHover(citeInfo.el, function() {
+          var popup = window.document.createElement('div');
+          citeInfo.cites.forEach(function(cite) {
+            var citeDiv = window.document.createElement('div');
+            citeDiv.classList.add('hanging-indent');
+            citeDiv.classList.add('csl-entry');
+            var biblioDiv = window.document.getElementById('ref-' + cite);
+            if (biblioDiv) {
+              citeDiv.innerHTML = biblioDiv.innerHTML;
+            }
+            popup.appendChild(citeDiv);
+          });
+          return popup.innerHTML;
+        });
+      }
+    }
+  });
+  </script>
+</div> <!-- /content -->
+
+
+
+
+</body></html>
