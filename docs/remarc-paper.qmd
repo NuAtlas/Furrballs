@@ -507,6 +507,76 @@ The K=2 NUMA instantiation demonstrates the approach on real hardware, showing t
 
 ---
 
+## 9. Open Questions and Research Roadmap
+
+The preceding sections establish REMARC as a projection function operating on competitively-coupled state spaces. This section identifies three independent design axes that emerge from the framework, each with open questions.
+
+### 9.1 Factorization: Composing REMARC Instances
+
+A unified K-dimensional REMARC requires lookup tables of size $MAX^K$ per action. For K > 4 this exceeds practical cache sizes. An alternative is to factor the K-dimensional state into multiple smaller REMARC instances connected by shared axes.
+
+**Example:** K=3 state `(local_DRAM, remote_DRAM, local_NVM)` can be factored into:
+
+- Instance A: `{local_DRAM, remote_DRAM}` — NUMA decisions
+- Instance B: `{local_DRAM, local_NVM}` — tiering decisions
+
+Shared axis: `local_DRAM`. An access from local_DRAM updates both instances, creating implicit coupling.
+
+**Approximation quality:** erosion through shared axes is exact. Erosion between non-shared axes is lost. In the example above, a `remote_DRAM` access erodes `local_DRAM` in instance A but does not erode `local_NVM` in instance B. The factorization is an approximation of the unified K=3 system whose quality depends on the coupling between non-shared dimensions.
+
+**Structural interpretation:** this is a graphical model. Each REMARC instance is a clique; shared axes are separator sets. The factorization graph determines which cross-dimensional erosion is captured exactly. A fully connected graph recovers the unified system.
+
+**Open questions:**
+- For a given workload, what is the optimal factorization graph? (Minimizes approximation error subject to table size budget)
+- Can the factorization be learned online from access patterns?
+- What is the relationship between factorization topology and the symmetric properties described in §6.4 (competitive, independent, cooperative)?
+
+### 9.2 Bit Width: Quantization Granularity
+
+REMARC's current instantiation uses 4-bit quantization (MAX=15). This limits the state space to 16 levels per dimension — sufficient for eviction and migration thresholds but coarse for fine-grained tiering decisions where the difference between "warm" and "hot" matters.
+
+Increasing bit width is straightforward for K=2 ($256^2 = 65K$ entries, fits L2). For K > 2, bit width interacts with table size: K=3 at 8-bit produces $16M$ entries per action, which is impractical.
+
+**Factorization decouples bit width from dimensionality.** With factored K=2 instances (§9.1), each instance uses 8-bit tables ($65K$ entries) regardless of total K. The total number of dimensions is absorbed by running more instances, not by growing individual tables.
+
+**Open questions:**
+- What is the sensitivity of eviction/migration accuracy to quantization level? (4-bit vs 6-bit vs 8-bit on real workloads)
+- Does the competitive erosion structure (§3.1) amplify or dampen quantization error?
+- Can adaptive quantization (different bit widths per dimension) improve accuracy without increasing table size?
+
+### 9.3 Dynamic K: Topology Changes at Runtime
+
+REMARC assumes K is fixed at compile time. Real systems experience topology changes: hot-plugged memory tiers, VM migration across NUMA nodes, added or removed caching layers.
+
+**Approaches:**
+
+1. **Preallocate K_max, activate subsets.** Always allocate state for the maximum expected K. Unused dimensions stay at 0 and contribute nothing to scores. Simple but wastes memory.
+
+2. **Runtime table generation.** Regenerate lookup tables when K changes. For K=4, this is ~250K entries — computable in microseconds. Tables are static per-epoch (regenerate on topology change, not per-access). Loss of `constexpr` but practical for rare topology events.
+
+3. **Factorization with dynamic instance graph.** Add or remove K=2 instances when topology changes. Each new tier or node adds at most one new instance (connected to an existing shared axis). This avoids regenerating large tables and avoids migrating state for all keys — only keys in the new tier need initialization.
+
+**Open questions:**
+- State migration: when K increases, every existing key's state vector must grow. What is the cost model? Can migration be lazy (grow on next access)?
+- Does runtime table generation introduce latency spikes that affect cache performance during topology transitions?
+- Can the factorization graph be updated incrementally (add/remove cliques) without recomputing the entire structure?
+
+### 9.4 The Design Space
+
+These three axes are independent:
+
+| Axis | Controls | Tradeoff |
+|---|---|---|
+| **Total dimensions K** | Number of signals tracked | More = richer decisions, larger tables |
+| **Bit width** | Quantization granularity per signal | More = finer decisions, exponentially larger tables |
+| **Factorization** | How dimensions group into instances | More factorized = cheaper tables, approximate erosion |
+
+Increasing K does not require increasing bit width. Increasing bit width does not require increasing K. Refactoring the instance graph does not require changing either. A system builder selects a point in this three-dimensional design space based on their hardware constraints (cache sizes, SIMD support) and workload requirements (number of tiers, required precision).
+
+This design space is the natural generalization of REMARC beyond a single cache policy into a family of related policies, connected by the shared mathematical structure of competitive coupling and linear projection.
+
+---
+
 ## Appendix A: REMARC-Furrballs Coupling
 
 REMARC was designed within and validated through Furrballs, a NUMA-aware caching library. This appendix documents the integration:
