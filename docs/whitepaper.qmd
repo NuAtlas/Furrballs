@@ -1,6 +1,6 @@
 ---
 title: "Furrballs: A NUMA-Aware, High-Performance Caching Library"
-subtitle: "Technical Report v1.8.3"
+subtitle: "Technical Report v1.8.4"
 author: "Hamza Jamil Saied (The Sphynx)"
 date: last-modified
 doi: "10.5281/zenodo.19669844"
@@ -43,7 +43,7 @@ format:
 ---
 
 ## Status
-v1.8.3 --- Fix stale roadmap checklist: cross-node migration ordering updated to insert-before-erase
+v1.8.4 --- Phase 2b design session log: full decision record including discarded alternatives, concurrency corrections, merge to master
 
 ## Abstract
 Furrballs is a NUMA-aware caching library that uses NUMA topology as a first-class input to cache placement and eviction decisions. The core contribution is per-page allocation on specific NUMA nodes, with a two-level ARC hierarchy: key-level ARC (L1) for hot/cold key tracking with NUMA-aware eviction preference, and page-level ARC (L2) for page eviction backed by RocksDB persistence (L3). Pages are pre-allocated at initialization via one physical allocation per NUMA node, subdivided into logical pages filled by a bump allocator. Key routing supports round-robin distribution and thread-local placement (via a runtime config flag). The library is implemented in C++20, uses a platform abstraction layer (Numatic) for NUMA operations, and integrates a custom synchronization library (StreamLine) for thread coordination.
@@ -771,6 +771,73 @@ The `evictedKeyIndex_` (H2 → PageId) is in-memory only. If the process restart
 **Decision:** Evicted COLD pages are persisted as a single PageBlob (metadata + raw page data) rather than N individual RocksDB.Put() calls. Ghost hit recovery reloads the entire page speculatively.
 
 **Rationale:** Single write per eviction amortizes RocksDB's LSM tree overhead (memtable, WAL, compaction) over the full page size (~4KB). Whole-page reload leverages the temporal locality of COLD pages: since the compactor migrates keys in ARC recency order, keys on a COLD page "went cold around the same time." Accessing one key often means others will follow soon (same principle as OS page fault handling). The PageBlob format preserves all per-key metadata (DataOffset, DataSize, Dirty) so reloaded pages have identical layout without recomputation.
+
+### 3.27 Phase 2b Design Session: Decisions and Discarded Alternatives
+
+This section documents the full decision-making process from the Phase 2b design session, including alternatives that were considered and discarded.
+
+#### Eviction model
+
+| Decision | Chosen | Discarded |
+|----------|--------|-----------|
+| Eviction granularity | Migration-based: values move from HOT to COLD pages, COLD pages evicted wholesale | Per-key eviction from bump-allocated pages (leaves holes, requires compaction) |
+| Page lifecycle states | HOT, COLD, EMPTY, FREEZE (4 states) | HOT, WARM, COLD pipeline (3 active states + EMPTY; rejected because HasColdKeys flag provides the same information with fewer state transitions) |
+| FREEZE state | Included (prevents writes to page mid-eviction) | Not included initially; added as "free safety" with zero runtime cost |
+| Value recovery from evicted pages | Whole-page speculative reload from RocksDB | Per-key RocksDB.Get() (more I/O operations, loses temporal locality); speculative pre-fetch on ghost hit (wastes I/O on keys never re-accessed) |
+
+#### Cross-node migration
+
+| Decision | Chosen | Discarded |
+|----------|--------|-----------|
+| CMap entry relocation | Move CMap entry from source to dest node (preserves sole-owner invariant) | Keep CMap entry on source, update KeyMeta to point to dest page data (breaks sole-owner invariant, concurrent Gets hit source node first anyway) |
+| Migration ordering | Insert into dest CMap first, then erase from source (insert-before-erase) | Erase from source first, then insert into dest (creates transient miss window where key exists in no CMap, returning wrong KEY_NOT_FOUND) |
+| Transient miss mitigation | Insert-before-erase eliminates the window entirely | MIGRATING ctrl byte forwarding tombstone (correct but unnecessary complexity); `std::unordered_map<uint64_t, uint8_t>` inflight migration table (correct but extra data structure for a solved problem) |
+| Defer cross-node migration | Include in Phase 2b design | Defer to later phase (rejected because cross-node migration is the thesis's NUMA-aware placement contribution) |
+
+#### Compactor trigger
+
+| Decision | Chosen | Discarded |
+|----------|--------|-----------|
+| Trigger model | Hybrid: ARC sets HasColdKeys flag, background NodeJob worker scans, cooperative Set() migration every 16th call | Pure ARC-triggered (expensive: memcpy + CMap ops on every eviction); pure periodic (fragile: interval tuning, cold keys linger); pure pressure-based (bursty: latency spikes under memory pressure) |
+| Compactor execution | NodeJob worker(s) between dispatches | Dedicated thread per node (extra thread); global compactor thread (serializes across nodes) |
+| Re-promoted key handling | TempCtrl byte set back to HOT by promotion callback | IsHot check during compaction via ARC SpinLock try_lock (adds SpinLock contention); separate promotion callback removing from ColdKeys vector (O(n) erase, concurrent modification risk) |
+
+#### Per-page tracking structure
+
+| Decision | Chosen | Discarded |
+|----------|--------|-----------|
+| TempCtrl location | Integrated in Page struct alongside KeyIndex | Extract into separate PageCompactInfo class (rejected because cooperative Set() migration and future mechanisms benefit from direct access without indirection) |
+| TempCtrl lookup mechanism | To be determined (design parked for implementation phase) | KeySlotMap: `std::unordered_map<uint64_t, size_t>` per page (O(1) lookup, extra memory); Hash-to-position: Swiss-style hash of H2 to array index (zero extra memory, collision-tolerant); Linear scan of KeyIndex (simplest, acceptable for small pages) |
+| KeyIndex/TempCtrl synchronization | Per-page CompactLock (SpinLock) | No synchronization (UB: std::vector concurrent modification); lock-free structure (unnecessary complexity for background operation) |
+| Lock ordering | CompactLock always taken after ConcurrentARC's SpinLock (never before) | Not specified initially; added after identifying potential deadlock between eviction callback (ARC SpinLock → CompactLock) and compactor (CompactLock → no ARC SpinLock needed) |
+
+#### Persistence
+
+| Decision | Chosen | Discarded |
+|----------|--------|-----------|
+| Persistence layer | Keep RocksDB for Phase 2b, switch to mmap or custom format if measured as worse | Drop RocksDB entirely for mmap files (cleaner for whole-page blobs but loses crash safety and automatic compaction); file-per-evicted-page (cleanest I/O model but file system overhead at scale) |
+| RocksDB key format | H2 (64-bit hash) as RocksDB key, or full 128-bit hash for zero collision risk | Store original key string in RocksDB (requires external key→string map, memory overhead) |
+| Evicted page cleanup | TTL per page, shutdown compaction, or separate process/tool | None specified (unbounded RocksDB growth); in-memory only with process restart = cold cache (simplest but loses eviction state) |
+
+#### KeyMeta additions
+
+| Decision | Chosen | Discarded |
+|----------|--------|-----------|
+| CrossNodeAccesses storage | `std::atomic<uint32_t>` inside KeyMeta (Option A) | External `std::unordered_map<HashPair, atomic<uint32_t>>` (Option B: clean separation, extra lookup); plain `uint32_t` with benign races (Option C: heuristic counter, but atomic is zero-overhead on x86-64 and avoids UB) |
+| Dirty flag | `bool` in KeyMeta (non-atomic, seqlock-protected) | Atomic bool (unnecessary: only written under CMap's UpdateInPlace seqlock) |
+
+#### Concurrency corrections (identified by review)
+
+| Issue | Fix | Severity |
+|-------|-----|----------|
+| Compactor data-loss race: memcpy outside UpdateInPlace allows concurrent Set() to overwrite source data between memcpy and metadata update | Move memcpy inside the UpdateInPlace callback so read + metadata update are atomic under seqlock | Critical |
+| std::vector concurrent modification: compactor and cooperative Set() both modify KeyIndex/TempCtrl without synchronization (UB) | Per-page CompactLock (SpinLock) for all KeyIndex/TempCtrl mutations, consistent lock ordering with ARC SpinLock | Critical |
+| Eviction callback signature `void(const Value&)` lacks h2 needed for TempCtrl index lookup | Change to `void(uint64_t h2, const Value&)` | High |
+| SIMD overread: final batch reads past TempCtrl.size(), causing out-of-bounds KeyIndex access | Mask final batch with `(1 << remaining) - 1` | Medium |
+| Compactor processes FREEZE pages: concurrent compaction + page flush corrupts serialized data | Skip pages where `Tier == FREEZE` in compactor loop | Medium |
+| Cross-node migration "acceptable for a cache" dismissal of transient miss window | Insert-before-erase ordering eliminates the miss window entirely; "it's a cache" is not a valid argument for returning wrong KEY_NOT_FOUND for keys that exist in memory | Critical |
+
+## 4. Related Work
 
 | System | NUMA Approach | Difference from Furrballs |
 |---|---|---|
