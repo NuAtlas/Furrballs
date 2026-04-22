@@ -147,19 +147,38 @@ Where:
 
 #### Steady-State Encoding (Key Result)
 
-For a key accessed from source j with rate $p_j$ (fraction of total accesses originating from source j), the steady state satisfies:
+For a key where source j accounts for fraction $p_j$ of total accesses (empirical frequency, not a probabilistic assumption), the steady state satisfies:
 
 $$S_j^* = \text{MAX} \cdot \frac{p_j \alpha_j}{p_j \alpha_j + (1-p_j)(1-\lambda)}$$
 
-This is the paper's most concrete theoretical result. It gives a **closed-form relationship between access pattern and REMARC state**: the state vector encodes the access rate distribution across sources. Design implications:
+This is the paper's most concrete theoretical result. It gives a **deterministic relationship between observed access frequency and REMARC state**: the state vector encodes the empirical access rate distribution across sources. No stationarity or independence assumptions required — $p_j$ is an observable quantity. Design implications:
 
 - **Sensitivity:** increasing $\alpha_j$ makes the state respond faster to source j (larger $S_j^*$ for the same $p_j$). This is how migration disfavor is implemented ($\alpha_l > \alpha_r$ makes local signal dominate).
 - **Memory:** $\lambda$ controls how quickly stale patterns fade. Lower $\lambda$ = shorter memory = faster adaptation to workload shifts.
 - **Design procedure:** given a desired sensitivity profile (how much remote pressure triggers migration), solve for $\alpha_j$ and $\lambda$ from the steady-state formula. Parameters are no longer arbitrary — they are derived from the desired decision boundary.
 
-#### Convergence
+#### Convergence (Deterministic)
 
-The eigenvalues of each $M_j$ are $\{1-\alpha_0, \ldots, 1, \ldots, 1-\alpha_{K-1}\}$. Since $0 < \alpha_i < 1$, all eigenvalues satisfy $|\lambda| \leq 1$. The system is **contractive** everywhere except the boosted dimension, guaranteeing convergence to the steady state described above under stationary access patterns.
+The convergence guarantee is deterministic — it holds for **any** access pattern, not just stationary distributions.
+
+**Key structural property:** each $M_j$ is diagonal. Products of diagonal matrices are diagonal. Therefore the joint spectral radius (JSR) — the worst-case spectral radius over all products of the switching matrices — is computable in closed form:
+
+$$\rho = \max\bigl(\max_j(1 - \alpha_j),\ \lambda\bigr) < 1$$
+
+Since $0 < \alpha_j < 1$ and $0 < \lambda < 1$, the JSR is strictly less than 1. This means the homogeneous system $M_{\sigma(t)} \cdots M_{\sigma(1)} \cdot S_0 \to 0$ for any switching sequence $\sigma$ — adversarial, periodic, or stochastic.
+
+**Why diagonal matters:** for general (non-diagonal) matrices, the JSR can exceed individual spectral radii because off-diagonal coupling in products can amplify eigenvalues. Diagonal matrices have no off-diagonal coupling. Each entry of the product $M_{\sigma(t)} \cdots M_{\sigma(1)}$ is a product of scalars, each strictly less than 1, decaying independently. No amplification is possible.
+
+**Convergence behavior by access pattern:**
+
+| Switching sequence | Convergence |
+|---|---|
+| Each source has limiting frequency $p_j$ | Converges to steady-state formula $S_j^*$ |
+| Periodic (e.g., alternating sources) | Converges to periodic orbit |
+| Adversarial (worst case) | State stays bounded, homogeneous transient decays to 0 |
+| Non-stationary (changing frequencies) | State tracks the changing frequencies with lag determined by $\alpha_j$ and $\lambda$ |
+
+For the cache application, workloads have empirical access frequencies (limiting $p_j$ exists), so convergence to the steady-state formula is guaranteed. But the guarantee does not depend on this — the state remains well-behaved under any access pattern.
 
 #### Separability
 
