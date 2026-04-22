@@ -1,6 +1,6 @@
 ---
 title: "Furrballs: A NUMA-Aware, High-Performance Caching Library"
-subtitle: "Technical Report v1.9.0"
+subtitle: "Technical Report v1.9.1"
 author: "Hamza Jamil Saied (The Sphynx)"
 date: last-modified
 doi: "10.5281/zenodo.19669844"
@@ -43,7 +43,7 @@ format:
 ---
 
 ## Status
-v1.9.0 --- ReARC: Reduction-based Adaptive Replacement Cache --- unified 2D state space (S_local, S_remote) producing dual action scores (Evict, Migrate) via precomputed SIMD lookup tables
+v1.9.1 --- REMARC rename (Reduction-Modeled Adaptive Replacement Cache), page-level ARC collapse, one-scanner unification, ghost-less reload protection
 
 ## Abstract
 Furrballs is a NUMA-aware caching library that uses NUMA topology as a first-class input to cache placement and eviction decisions. The core contribution is per-page allocation on specific NUMA nodes, with a two-level ARC hierarchy: key-level ARC (L1) for hot/cold key tracking with NUMA-aware eviction preference, and page-level ARC (L2) for page eviction backed by RocksDB persistence (L3). Pages are pre-allocated at initialization via one physical allocation per NUMA node, subdivided into logical pages filled by a bump allocator. Key routing supports round-robin distribution and thread-local placement (via a runtime config flag). The library is implemented in C++20, uses a platform abstraction layer (Numatic) for NUMA operations, and integrates a custom synchronization library (StreamLine) for thread coordination.
@@ -943,11 +943,15 @@ Nearly everything survives. The mechanisms are correct; the framing is what chan
 
 The Phase 2b design from §2.9 and §3.27 is not wrong — it's incomplete in one respect: it doesn't explicitly separate the recency axis (ARC) from the locality axis (Furrballs). The redesign adds this separation as an architectural principle, making the design cleaner and the cross-node migration story coherent. The code changes are minimal (add page-level ARC, possibly simplify TempCtrl). The conceptual change is significant.
 
-### 3.29 ReARC: Reduction-based Adaptive Replacement Cache
+### 3.29 REMARC: Reduction-Modeled Adaptive Replacement Cache
 
-**Context:** The ARC dimensionality analysis (§3.28) established that recency and locality are orthogonal axes — ARC's single-axis model cannot express "this key is hot (keep it) but on the wrong node (move it)." The initial response was to bolt a separate locality policy (CrossNodeAccesses threshold) onto the existing ARC structure (§3.28's three-mechanism model). While architecturally correct, this approach stores recency, frequency, and locality as independent per-key metadata — three dimensions of tracking with no shared representation. This section documents the evolution from §3.28's three-mechanism model to ReARC, a unified policy that reduces all three dimensions into a single 2D state space, producing dual action scores via precomputed lookup tables.
+**Context:** The ARC dimensionality analysis (§3.28) established that recency and locality are orthogonal axes — ARC's single-axis model cannot express "this key is hot (keep it) but on the wrong node (move it)." The initial response was to bolt a separate locality policy (CrossNodeAccesses threshold) onto the existing ARC structure (§3.28's three-mechanism model). While architecturally correct, this approach stores recency, frequency, and locality as independent per-key metadata — three dimensions of tracking with no shared representation. This section documents the evolution from §3.28's three-mechanism model to REMARC, a unified policy that reduces all three dimensions into a single 2D state space, producing dual action scores via precomputed lookup tables.
 
-#### Design evolution (§3.28 → ReARC)
+**On the name:** REMARC stands at ARC's level as a peer policy, not an extension. It borrows ARC's adaptive principle (observe past decisions, adjust future behavior) but replaces ARC's deterministic list-based mechanism with a probabilistic smoothed state space. The acronym expands to **Reduction-Modeled Adaptive Replacement Cache**: Reduction (3D → 2D state space), Modeled (mathematical IIR smoothing, not heuristic), Adaptive (self-tuning thresholds via reversal feedback), Replacement (cache replacement policy), Cache (domain). The all-uppercase treatment signals it is a distinct policy, not a variant of ARC.
+
+**ARC territory:** REMARC shares ARC's intellectual DNA — the principle of self-tuning via observed outcomes and the balancing of recency and frequency — but does not share ARC's mechanism. No t1/t2/b1/b2 lists, no ghost lists, no p_ parameter. These are general cache principles (LRU has recency, LFU has frequency), not ARC-specific inventions. REMARC is ARC-inspired but architecturally independent.
+
+#### Design evolution (§3.28 → REMARC)
 
 **Step 1: Frequency as dual-purpose signal.** ARC's frequency dimension (t2) tracks "how much" — a key is important if accessed frequently. Cross-node migration needs "from where" — which node accesses this key. Rather than tracking these separately, frequency can serve double duty: as a scalar (total access count → eviction decisions) and as a per-node vector (which node accesses most → migration target). This insight preserved ARC's frequency tracking while extending it to carry locality information.
 
@@ -985,6 +989,7 @@ Furrballs applies the scores with mutual exclusion: `if E > θ_e: evict` then `e
 | Fixed migration bias parameter | Doesn't adapt to workload changes. A key that was migration-worthy at t=0 might not be at t=1000. |
 | Hard EMA smoothing factor (fixed α) | Doesn't capture the insight that recency should actively oppose migration. Replaced by separate local/remote smoothing with asymmetric decay. |
 | Full 2D ARC with 8 lists (t1, t2, t1r, t2r, b1, b2, b1r, b2r) | Two independent ARC structures (one for recency, one for locality) with a combined 8-list management. Complex, and the probabilistic smoothed approach produces equivalent decisions with less code and memory. |
+| Fixed-p adaptation (standard ARC) | Requires ghost lists to observe eviction history. REMARC's outcome-based reversal feedback achieves the same self-tuning without maintaining ghost state. |
 
 #### Formal definition
 
@@ -1073,12 +1078,12 @@ This is ARC's ghost feedback principle (observe wrong decisions, adjust) applied
 
 #### Implications for Phase 2b design
 
-ReARC is a new design direction (Direction A from §3.28). Direction B (ConcurrentARC for eviction + separate migration policy) remains documented as an alternative. The two directions are not mutually exclusive — ReARC could replace ConcurrentARC's key-level policy while ConcurrentARC's CMap backing remains unchanged (CMap provides concurrent storage, ReARC provides the policy).
+REMARC is a new design direction (Direction A from §3.28). Direction B (ConcurrentARC for eviction + separate migration policy) remains documented as an alternative. The two directions are not mutually exclusive — REMARC could replace ConcurrentARC's key-level policy while ConcurrentARC's CMap backing remains unchanged (CMap provides concurrent storage, REMARC provides the policy).
 
-| Component | Direction A (ReARC) | Direction B (complement ARC) |
+| Component | Direction A (REMARC) | Direction B (complement ARC) |
 |---|---|---|
 | CMap | Unchanged | Unchanged |
-| ConcurrentARC lists (t1/t2/b1/b2) | Replaced by ReARC's (S_local, S_remote) | Retained for eviction |
+| ConcurrentARC lists (t1/t2/b1/b2) | Replaced by REMARC's (S_local, S_remote) | Retained for eviction |
 | ArcList | Not needed (no list membership) | Retained |
 | PromoteBuf | Not needed (no deferred promotions) | Retained |
 | TempCtrl | Reencoded: (S_local[4bit], S_remote[4bit]) | Retained as flags (HOT/COLD/REMOTE_CANDIDATE) |
@@ -1087,14 +1092,55 @@ ReARC is a new design direction (Direction A from §3.28). Direction B (Concurre
 | Adaptation | Outcome-based reversal feedback | ARC ghost list p_ adjustment |
 | Memory per key | 3 bytes (TempCtrl 1 + HotNode 1 + eviction/migration derived) | 4+ bytes (TempCtrl 1 + ArcList 16 + CrossNodeAccesses 4) |
 
+#### Page-level ARC collapse and one-scanner unification
+
+**The aggregation insight:** REMARC's per-key Evict scores can be aggregated per page to drive wholesale page eviction, eliminating the need for a separate page-level ARC entirely. The page's eviction score is the average of its keys' Evict scores:
+
+```
+E_page = (1/N) × Σ E_key = (1/N) × Σ (1 - R_i) × (1 - F_i)
+```
+
+- Page with all hot keys: E_page ≈ 0 → keep
+- Page with all cold keys: E_page ≈ 1 → evict to RocksDB
+- Page with mixed keys: E_page ≈ 0.5 → borderline
+
+No separate page-level ARC lists (t1_page/t2_page/b1_page/b2_page), no per-page SpinLock, no TempCtrl-to-page-ARC bridge mechanism. The "wholesale page eviction" that was the original ARC intent (§3.28) becomes an emergent property of REMARC's key-level scoring.
+
+**The SIMD scanner computes E_page for free:**
+
+```
+// Same scanner, same infrastructure, now with per-page aggregation:
+__m128i tc = _mm_loadu_si128(page.TempCtrl + batch);
+__m128i e  = _mm_shuffle_epi8(E_table_vec, tc);    // 16 Evict scores
+__m128i m  = _mm_shuffle_epi8(M_table_vec, tc);    // 16 Migrate scores
+// Horizontal sum of e → accumulate into page's E_page
+```
+
+**One scanner, two thresholds:** The compactor (intra-node), evictor (page-level), and migration scanner (cross-node) become the SAME scanner operating on the same scores:
+
+| Scanner role | Score | Threshold | Action |
+|---|---|---|---|
+| Migration | Migrate(S) | θ_m | High M key → migrate to HotNode |
+| Compaction | Evict(S) per key | θ_compact | High E key → move to cold page |
+| Page eviction | E_page (aggregated) | θ_e_page | High E_page → evict page to RocksDB |
+
+The three-mechanism model from §3.28 (TempCtrl + page-level ARC + cross-node migration policy) collapses to ONE mechanism: REMARC. One TempCtrl encoding, one SIMD scanner, two action scores.
+
+**Ghost-less reload protection:** When a page is evicted to RocksDB and reloaded on access, the keys' REMARC scores are lost. If keys start at (S_local=0, S_remote=0), then E = (1-0)×(1-0) = 1 → immediately re-evictable. This is the classic ghost-hit problem that ARC solves with ghost lists.
+
+REMARC solves it without ghost lists: on page reload, set S_local = MAX for all keys. This means E = (1-1)×(1-F) = 0 → protected from immediate re-eviction. The key appears as "recently accessed locally" — which is TRUE, since the reload was triggered by an access. Natural decay via λ gradually makes the key evictable again, but only after sustained coldness. This IS ARC's ghost hit promotion (back to t1/t2) without ghost lists: the "promotion" is just setting the initial score on reload.
+
+This eliminates the last piece of ARC's machinery that might have been needed. REMARC is fully self-contained: no ghost lists, no per-page ARC, no separate migration policy. One policy, one TempCtrl encoding, one scanner.
+
 #### Open questions
 
 1. **4-bit vs 8-bit encoding:** 4 bits per score (16 levels) is SIMD-optimal (1 byte per key, pshufb) but coarse. 8 bits (256 levels) requires 2 bytes per key and SSE/AVX for arithmetic, but provides better precision for EMA smoothing. Empirical comparison needed.
 2. **α_l, α_r, λ calibration:** These control EMA responsiveness. Should be empirically determined or derived from workload characteristics (e.g., total key count, access rate).
 3. **θ_e, θ_m initial values and δ step sizes:** The adaptation loop needs starting points and step sizes. Too aggressive adaptation causes oscillation; too conservative causes slow convergence.
 4. **HotNode probability function p(S_remote):** Should p increase linearly with S_remote (more confident with more remote signal), or is a fixed p sufficient? Linear p provides faster convergence for high-traffic keys.
-5. **Interaction with page-level ARC:** If ReARC replaces key-level ARC entirely, does page-level ARC still exist? ReARC's Evict score per key could be aggregated per page to drive page-level eviction, eliminating the need for a separate page-level ARC.
+5. **E_page aggregation strategy:** Compute per-scan via SIMD horizontal sum (O(1) amortized), or maintain a running aggregate updated on each access (O(1) per access but shared mutable state under contention)?
 6. **Migration execution:** Insert-before-erase (§3.27) remains the mechanism. Does the migration trigger happen synchronously (on Get() when M > θ_m) or asynchronously (scanner detects, background worker executes)?
+7. **Reload S_local initialization:** Set to MAX (full protection, slowest convergence to evictable) or a fraction (faster convergence but less ghost protection)? Related to the ghost-less reload design (§3.29).
 
 ## 4. Related Work
 
