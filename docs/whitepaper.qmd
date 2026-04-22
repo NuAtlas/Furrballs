@@ -1,6 +1,6 @@
 ---
 title: "Furrballs: A NUMA-Aware, High-Performance Caching Library"
-subtitle: "Technical Report v1.8.5"
+subtitle: "Technical Report v1.9.0"
 author: "Hamza Jamil Saied (The Sphynx)"
 date: last-modified
 doi: "10.5281/zenodo.19669844"
@@ -43,7 +43,7 @@ format:
 ---
 
 ## Status
-v1.8.5 --- ARC dimensionality insight: recency (ARC) and locality (Furrballs) are orthogonal axes, page-level ARC as the wholesale eviction mechanism
+v1.9.0 --- ReARC: Reduction-based Adaptive Replacement Cache --- unified 2D state space (S_local, S_remote) producing dual action scores (Evict, Migrate) via precomputed SIMD lookup tables
 
 ## Abstract
 Furrballs is a NUMA-aware caching library that uses NUMA topology as a first-class input to cache placement and eviction decisions. The core contribution is per-page allocation on specific NUMA nodes, with a two-level ARC hierarchy: key-level ARC (L1) for hot/cold key tracking with NUMA-aware eviction preference, and page-level ARC (L2) for page eviction backed by RocksDB persistence (L3). Pages are pre-allocated at initialization via one physical allocation per NUMA node, subdivided into logical pages filled by a bump allocator. Key routing supports round-robin distribution and thread-local placement (via a runtime config flag). The library is implemented in C++20, uses a platform abstraction layer (Numatic) for NUMA operations, and integrates a custom synchronization library (StreamLine) for thread coordination.
@@ -942,6 +942,159 @@ Nearly everything survives. The mechanisms are correct; the framing is what chan
 | **Cross-node migration policy (new framing)** | **Reframed** | Same mechanism (CrossNodeAccesses + insert-before-erase), but explicitly a separate policy from ARC, not a bolt-on. |
 
 The Phase 2b design from §2.9 and §3.27 is not wrong — it's incomplete in one respect: it doesn't explicitly separate the recency axis (ARC) from the locality axis (Furrballs). The redesign adds this separation as an architectural principle, making the design cleaner and the cross-node migration story coherent. The code changes are minimal (add page-level ARC, possibly simplify TempCtrl). The conceptual change is significant.
+
+### 3.29 ReARC: Reduction-based Adaptive Replacement Cache
+
+**Context:** The ARC dimensionality analysis (§3.28) established that recency and locality are orthogonal axes — ARC's single-axis model cannot express "this key is hot (keep it) but on the wrong node (move it)." The initial response was to bolt a separate locality policy (CrossNodeAccesses threshold) onto the existing ARC structure (§3.28's three-mechanism model). While architecturally correct, this approach stores recency, frequency, and locality as independent per-key metadata — three dimensions of tracking with no shared representation. This section documents the evolution from §3.28's three-mechanism model to ReARC, a unified policy that reduces all three dimensions into a single 2D state space, producing dual action scores via precomputed lookup tables.
+
+#### Design evolution (§3.28 → ReARC)
+
+**Step 1: Frequency as dual-purpose signal.** ARC's frequency dimension (t2) tracks "how much" — a key is important if accessed frequently. Cross-node migration needs "from where" — which node accesses this key. Rather than tracking these separately, frequency can serve double duty: as a scalar (total access count → eviction decisions) and as a per-node vector (which node accesses most → migration target). This insight preserved ARC's frequency tracking while extending it to carry locality information.
+
+**Step 2: Probabilistic HotNode with migration disfavor.** Per-node frequency counters for every key are expensive (N-1 counters per key). A probabilistic approach reduces this to a single `uint8_t HotNode` per key, updated with probability p on each cross-node access. By setting p low (biased against updating HotNode), migration is naturally disfavored — only sustained, repeated access from the same remote node overcomes the bias. The bias IS the anti-ping-pong mechanism; no separate ghost list or cooldown needed.
+
+**Step 3: Recency as soft anti-migration bias.** Rather than a hard-coded bias parameter, the anti-migration force should be emergent from the local access pattern. If a key is accessed locally frequently, it resists migration strongly. If local access fades (stale), resistance softens naturally. This "leans with recency" — the same recency signal that ARC tracks for eviction also opposes migration. Recency and locality are not just orthogonal; they actively compete through a shared smoothing function.
+
+**Step 4: Unified state space (the reduction).** The three input dimensions (recency, frequency, locality) can be reduced to two stored values per key: `S_local` (smoothed local access signal) and `S_remote` (smoothed remote access signal). From these two values, all three dimensions and both decision scores are derived:
+
+```
+R = S_local / MAX                                    // recency
+F = (S_local + S_remote) / (2 × MAX)                 // frequency
+L = S_remote / max(S_local + S_remote, 1)             // locality (remote fraction)
+```
+
+This is the dimensional reduction: 3 inputs → 2 stored values → 2 outputs. The intermediate representation (R, F, L) exists only as derived quantities, never stored.
+
+**Step 5: Decision surfaces.** The two action scores are simple products of the derived dimensions:
+
+```
+Evict(S)   = (1 - R) × (1 - F)       // evict when cold AND infrequent
+Migrate(S) = F × L × (1 - R)          // migrate when frequent AND remote AND locally stale
+```
+
+Furrballs applies the scores with mutual exclusion: `if E > θ_e: evict` then `elif M > θ_m: migrate to HotNode`. A cold key (high E) is evicted, not migrated. A misplaced hot key (high M, low E) is migrated, not evicted.
+
+**Step 6: SIMD lookup tables.** Storing `S_local[4bit]` and `S_remote[4bit]` in one TempCtrl byte per key, the byte value `(S_remote << 4 | S_local)` is a direct index into a 256-entry precomputed lookup table. SIMD `pshufb` looks up 16 Evict/Migrate scores in a single instruction. Scanning a page of ~64 keys becomes 4 batches × ~6 SIMD instructions — effectively O(1) per page. The lookup tables are static (computed from the decision surface formula); only the thresholds (θ_e, θ_m) change at runtime.
+
+**Discarded approaches during evolution:**
+
+| Approach | Why discarded |
+|---|---|
+| Three separate trackers (TempCtrl + ConcurrentARC + CrossNodeAccesses) | Three independent data structures for three dimensions. No dimensional reduction. |
+| Per-node frequency counters per key | Expensive: N-1 × 4 bytes per key. For 8 nodes: 28 bytes. Replaced by probabilistic HotNode (1 byte). |
+| Fixed migration bias parameter | Doesn't adapt to workload changes. A key that was migration-worthy at t=0 might not be at t=1000. |
+| Hard EMA smoothing factor (fixed α) | Doesn't capture the insight that recency should actively oppose migration. Replaced by separate local/remote smoothing with asymmetric decay. |
+| Full 2D ARC with 8 lists (t1, t2, t1r, t2r, b1, b2, b1r, b2r) | Two independent ARC structures (one for recency, one for locality) with a combined 8-list management. Complex, and the probabilistic smoothed approach produces equivalent decisions with less code and memory. |
+
+#### Formal definition
+
+**State vector per key:**
+
+```
+S = (S_local, S_remote) ∈ [0, 15]²     (4-bit encoding in TempCtrl byte)
+Plus: uint8_t HotNode                     (probabilistically updated, stored in KeyMeta)
+```
+
+**Update rules (first-order IIR smoothing):**
+
+```
+On local Get():
+  S_local  += α_l × (15 - S_local)        // boost local signal toward max
+  S_remote *= (1 - α_r)                     // erode remote signal (recency anti-migration)
+
+On remote Get() from node N:
+  S_remote += α_r × (15 - S_remote)        // boost remote signal toward max
+  S_local  *= (1 - α_l)                     // erode local signal (migration pressure builds)
+  with probability p(S_remote): HotNode = N  // probabilistic migration target
+
+Time decay (per scan cycle):
+  S_local  *= λ                             // both drift toward 0 (stale signals decay)
+  S_remote *= λ
+```
+
+Parameters α_l, α_r, λ are fixed (control EMA responsiveness). The asymmetry (1-α_l) vs (1-α_r) determines migration bias: α_l > α_r means local signal recovers faster than remote signal, disfavoring migration.
+
+**Derived dimensions:**
+
+```
+R = S_local / 15                            // recency (normalized local signal)
+F = (S_local + S_remote) / 30              // frequency (normalized total signal)
+L = S_remote / max(S_local + S_remote, 1)  // locality (remote fraction)
+```
+
+**Decision surfaces:**
+
+```
+Evict(S)   = (1 - R) × (1 - F)            // high when key is cold and infrequent
+Migrate(S) = F × L × (1 - R)               // high when key is frequent, remote, and locally stale
+```
+
+**Quadrant partition of the (S_local, S_remote) state space:**
+
+```
+              S_remote →
+              low              high
+S_local  ┌─────────────────────────────┐
+high     │ KEEP                      │ CONTESTED              │
+         │ E ≈ 0, M ≈ 0              │ E ≈ 0, M moderate      │
+         │ hot local key             │ both active,            │
+         │                           │ R resists migration     │
+         ├─────────────────────────────┤
+low      │ EVICT                     │ MIGRATE                │
+         │ E ≈ high, M ≈ 0           │ E ≈ low, M ≈ high     │
+         │ cold, not remote          │ cold locally,           │
+         │                           │ hot remotely = misplaced │
+         └─────────────────────────────┘
+```
+
+**SIMD-optimized scan:**
+
+```
+// Precomputed once (static):
+uint8_t E_lookup[256];   // byte = (S_remote << 4 | S_local) → Evict score
+uint8_t M_lookup[256];   // byte = (S_remote << 4 | S_local) → Migrate score
+
+// Per batch of 16 keys:
+__m128i tc = _mm_loadu_si128(page.TempCtrl + batch);
+__m128i e  = _mm_shuffle_epi8(E_table_vec, tc);    // pshufb: 16 lookups in 1 instruction
+__m128i m  = _mm_shuffle_epi8(M_table_vec, tc);
+__m128i e_mask = _mm_cmpgt_epi8(e, θ_e_vec);       // evict candidates
+__m128i m_mask = _mm_cmpgt_epi8(m, θ_m_vec);       // migrate candidates
+```
+
+**Adaptation (outcome-based, ghost-less):**
+
+| Parameter | Adaptation signal | Mechanism |
+|---|---|---|
+| θ_e (eviction threshold) | evict_reload_rate | If keys evicted then reloaded from RocksDB within K cycles > target → θ_e was too low → increase. If miss rate high AND reload rate low → decrease. |
+| θ_m (migration threshold) | migrate_reversal_rate | If keys migrated then accessed from source node within K cycles > target → θ_m was too low → increase. If cross-node latency high AND reversal low → decrease. |
+
+This is ARC's ghost feedback principle (observe wrong decisions, adjust) applied without maintaining ghost lists. The feedback signal is the same; the observation mechanism is outcome-based rather than state-based.
+
+#### Implications for Phase 2b design
+
+ReARC is a new design direction (Direction A from §3.28). Direction B (ConcurrentARC for eviction + separate migration policy) remains documented as an alternative. The two directions are not mutually exclusive — ReARC could replace ConcurrentARC's key-level policy while ConcurrentARC's CMap backing remains unchanged (CMap provides concurrent storage, ReARC provides the policy).
+
+| Component | Direction A (ReARC) | Direction B (complement ARC) |
+|---|---|---|
+| CMap | Unchanged | Unchanged |
+| ConcurrentARC lists (t1/t2/b1/b2) | Replaced by ReARC's (S_local, S_remote) | Retained for eviction |
+| ArcList | Not needed (no list membership) | Retained |
+| PromoteBuf | Not needed (no deferred promotions) | Retained |
+| TempCtrl | Reencoded: (S_local[4bit], S_remote[4bit]) | Retained as flags (HOT/COLD/REMOTE_CANDIDATE) |
+| HotNode (KeyMeta) | New: 1 byte, probabilistic | New: equivalent concept |
+| SIMD scan | Precomputed lookup tables (pshufb) | Flag scanning (cmpeq) |
+| Adaptation | Outcome-based reversal feedback | ARC ghost list p_ adjustment |
+| Memory per key | 3 bytes (TempCtrl 1 + HotNode 1 + eviction/migration derived) | 4+ bytes (TempCtrl 1 + ArcList 16 + CrossNodeAccesses 4) |
+
+#### Open questions
+
+1. **4-bit vs 8-bit encoding:** 4 bits per score (16 levels) is SIMD-optimal (1 byte per key, pshufb) but coarse. 8 bits (256 levels) requires 2 bytes per key and SSE/AVX for arithmetic, but provides better precision for EMA smoothing. Empirical comparison needed.
+2. **α_l, α_r, λ calibration:** These control EMA responsiveness. Should be empirically determined or derived from workload characteristics (e.g., total key count, access rate).
+3. **θ_e, θ_m initial values and δ step sizes:** The adaptation loop needs starting points and step sizes. Too aggressive adaptation causes oscillation; too conservative causes slow convergence.
+4. **HotNode probability function p(S_remote):** Should p increase linearly with S_remote (more confident with more remote signal), or is a fixed p sufficient? Linear p provides faster convergence for high-traffic keys.
+5. **Interaction with page-level ARC:** If ReARC replaces key-level ARC entirely, does page-level ARC still exist? ReARC's Evict score per key could be aggregated per page to drive page-level eviction, eliminating the need for a separate page-level ARC.
+6. **Migration execution:** Insert-before-erase (§3.27) remains the mechanism. Does the migration trigger happen synchronously (on Get() when M > θ_m) or asynchronously (scanner detects, background worker executes)?
 
 ## 4. Related Work
 
