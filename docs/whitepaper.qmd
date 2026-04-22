@@ -1,6 +1,6 @@
 ---
 title: "Furrballs: A NUMA-Aware, High-Performance Caching Library"
-subtitle: "Technical Report v1.8.4"
+subtitle: "Technical Report v1.8.5"
 author: "Hamza Jamil Saied (The Sphynx)"
 date: last-modified
 doi: "10.5281/zenodo.19669844"
@@ -43,7 +43,7 @@ format:
 ---
 
 ## Status
-v1.8.4 --- Phase 2b design session log: full decision record including discarded alternatives, concurrency corrections, merge to master
+v1.8.5 --- ARC dimensionality insight: recency (ARC) and locality (Furrballs) are orthogonal axes, page-level ARC as the wholesale eviction mechanism
 
 ## Abstract
 Furrballs is a NUMA-aware caching library that uses NUMA topology as a first-class input to cache placement and eviction decisions. The core contribution is per-page allocation on specific NUMA nodes, with a two-level ARC hierarchy: key-level ARC (L1) for hot/cold key tracking with NUMA-aware eviction preference, and page-level ARC (L2) for page eviction backed by RocksDB persistence (L3). Pages are pre-allocated at initialization via one physical allocation per NUMA node, subdivided into logical pages filled by a bump allocator. Key routing supports round-robin distribution and thread-local placement (via a runtime config flag). The library is implemented in C++20, uses a platform abstraction layer (Numatic) for NUMA operations, and integrates a custom synchronization library (StreamLine) for thread coordination.
@@ -836,6 +836,112 @@ This section documents the full decision-making process from the Phase 2b design
 | SIMD overread: final batch reads past TempCtrl.size(), causing out-of-bounds KeyIndex access | Mask final batch with `(1 << remaining) - 1` | Medium |
 | Compactor processes FREEZE pages: concurrent compaction + page flush corrupts serialized data | Skip pages where `Tier == FREEZE` in compactor loop | Medium |
 | Cross-node migration "acceptable for a cache" dismissal of transient miss window | Insert-before-erase ordering eliminates the miss window entirely; "it's a cache" is not a valid argument for returning wrong KEY_NOT_FOUND for keys that exist in memory | Critical |
+
+### 3.28 ARC Dimensionality: Recency is One Axis, Locality is Another
+
+**Context:** The Phase 2b design (§2.9, §3.27) uses ConcurrentARC (key-level ARC, §2.8) as the eviction policy and bolts cross-node migration on top via TempCtrl state bits (REMOTE = 0x04) and CrossNodeAccesses thresholds (§2.9.4). During design refinement, this approach produced persistent friction: "who sets REMOTE, when?" "What if a key is HOT but REMOTE?" "ARC says keep it, but NUMA says move it." The design session produced six categories of decisions (§3.27) but the cross-node migration category felt fundamentally ad hoc compared to the others. This section documents the insight that explains the friction and the architectural direction that resolves it.
+
+#### The dimensionality mismatch
+
+ARC classifies cache entries along exactly one dimension: **recency** (how recently was this entry accessed?). The ARC state machine has two inputs (access frequency, access recency) but produces one output (hot → cold → ghost → evicted). The `p_` tuning parameter adjusts where the boundary falls, but it's always a single boundary on a single axis.
+
+Cross-node migration requires classification along a **second dimension: NUMA locality** (is this key on the node that accesses it?). This produces four quadrants:
+
+| | LOCAL (correct node) | REMOTE (wrong node) |
+|---|---|---|
+| **HOT** (frequently accessed) | Ideal state. Do nothing. | Misplaced hot key. Urgent migration candidate. |
+| **COLD** (rarely accessed) | Correct placement, low priority. | Bonus: evict or migrate lazily. |
+| **GHOST** (recently evicted) | Normal ghost hit recovery. | Reload onto accessing node, not source node. |
+
+ARC's single-axis model cannot express these quadrants. When ARC says "this key is hot" (keep it), it has no opinion on whether the key is on the correct node. When ARC says "this key is cold" (evict it), it has no opinion on whether the key should be migrated rather than evicted. The Phase 2b design (§3.27) attempted to compress both dimensions into TempCtrl's 4-bit state field (HOT=0x1, COLD=0x2, REMOTE=0x4) but this creates ambiguous states: a HOT+REMOTE key (bitwise OR) is the most important migration candidate, yet TempCtrl's one-hot encoding cannot represent it. The design workaround was CrossNodeAccesses as a separate threshold counter, but this is orthogonal to ARC's recency tracking — it's a second policy pretending to be part of the first.
+
+#### ARC's natural granularity is the page, not the key
+
+ARC was designed (in the original Megiddo & Modha paper) as a block-level cache eviction policy for storage systems. The "blocks" in Furrballs are pages. ARC at the page level works cleanly because:
+
+1. **Eviction is wholesale.** ARC says "evict page P." Dispatch to page P's node. The node handles it locally. No cross-node coordination needed for eviction itself.
+2. **Location doesn't matter for eviction.** ARC doesn't care which node page P is on. It only cares about recency. The eviction decision is a single bit: "page P is cold, evict it."
+3. **Ghost hit recovery is natural.** If a ghost page is accessed, reload it (§2.9.6). The page comes back as HOT. Clean state transition.
+
+ARC at the key level (ConcurrentARC, §2.8) works for intra-node operations — hot keys stay on hot pages, cold keys migrate to cold pages within the same node. But key-level ARC has no mechanism to express "this key should move to a different node." That's not ARC's job. ARC tracks recency; it doesn't track locality.
+
+#### What the Phase 2b design got right
+
+The Phase 2b design (v1.8.0–v1.8.4) identified the correct mechanisms even if the framing was off:
+
+- **TempCtrl as per-key hot/cold tracking** — correct. Each page needs to know which keys are hot and cold. This feeds the page-level ARC (cold pages are eviction candidates) and the compactor (migrate cold keys off hot pages).
+- **Compactor** — correct. Cold keys on hot pages should be migrated to cold pages. This is an intra-node operation serving the page-level ARC.
+- **Whole-page persistence** — correct. Cold pages evicted wholesale to RocksDB. This is page-level ARC's eviction mechanism.
+- **Ghost hit recovery** — correct. Reload entire page from RocksDB. This is page-level ARC's promotion mechanism.
+- **Insert-before-erase** — correct. The migration ordering (§3.27) eliminates transient miss windows. This applies to both intra-node compaction and cross-node migration.
+- **CrossNodeAccesses in KeyMeta** — correct. Cross-node access counting is a Furrballs concern (not a CMap concern), thread-safe via atomic, and stored inside the seqlock-protected slot.
+
+#### What needs to change: three separate mechanisms, three dimensions
+
+The Phase 2b redesign separates concerns into three co-equal mechanisms, each handling one dimension:
+
+**1. Per-page TempCtrl (key-level hot/cold, intra-node):**
+- Tracks which keys on each page are HOT or COLD.
+- Set by ARC eviction callback (key evicted from ARC → TempCtrl = COLD).
+- Set by ARC promotion callback (key promoted to ARC → TempCtrl = HOT).
+- Feeds the compactor: cold keys on hot pages → migrate to cold pages.
+- Feeds the page-level ARC: a page where all keys are COLD is a cold page candidate.
+- This is the ONLY connection between key-level ARC and the page lifecycle. TempCtrl is the bridge.
+
+**2. Page-level ARC (page-level hot/cold/ghost, cross-page eviction):**
+- Tracks pages, not keys. Four ARC lists: hot pages (t1/t2), ghost pages (b1/b2).
+- Promoted by TempCtrl: when a page transitions from "has hot keys" to "all keys cold," it enters the cold page list. When a COLD page sits cold for N compaction cycles, it enters the ghost list.
+- Evicts wholesale: ghost pages are evicted to RocksDB (§2.9.5). Dispatch to page's node.
+- Ghost hit recovery: reload page from RocksDB into HOT state (§2.9.6).
+- This is the "wholesale page eviction mechanism" that ARC was designed for. No key-level tracking, no per-key ghost lists, no b1/b2 confusion. Pages are the units.
+
+**3. Cross-node migration policy (key-level locality, cross-node):**
+- Separate from ARC entirely. Not a recency policy; a locality policy.
+- Driven by CrossNodeAccesses threshold in KeyMeta (already designed, §3.27).
+- When threshold exceeded: migrate key to the accessing node (insert-before-erase, §2.9.4).
+- This is Furrballs' NUMA-aware placement contribution. It doesn't compete with ARC — it's orthogonal. A key can be HOT+REMOTE (ARC says keep, migration says move) or COLD+LOCAL (ARC says evict, migration says fine where it is). The two policies produce independent signals that are AND-ed, not OR-ed.
+
+#### Implications for ConcurrentARC
+
+Under this model, ConcurrentARC's role narrows:
+
+- **CMap** — still needed. Concurrent key storage with seqlock reads. NUMA-blind component. Unchanged.
+- **ArcList** — still needed if key-level ARC tracking is preserved for intra-node compaction (ARC evicts key → callback sets TempCtrl = COLD → compactor migrates to cold page). But key-level ARC is now strictly an intra-node mechanism, not the eviction authority.
+- **PromoteBuf** — still needed for deferred promotions out of the read path.
+- **SpinLock** — still needed for ARC list mutations.
+- **Key-level ARC lists (t1/t2/b1/b2)** — retained for intra-node hot/cold classification, but no longer the source of truth for eviction. Eviction authority moves to page-level ARC.
+
+The key change: ConcurrentARC's eviction callback no longer triggers page eviction. It triggers TempCtrl state change (key → COLD). Page-level ARC reads TempCtrl aggregates to make page eviction decisions. This is a clean separation: key-level ARC classifies keys, page-level ARC classifies pages, cross-node migration classifies locality.
+
+#### Open questions for the redesign
+
+1. **Page-level ARC implementation:** Does the page-level ARC use the same ArcList structure (hash-keyed doubly-linked list) but with PageId instead of HashPair? Or is a simpler structure sufficient (pages are fewer than keys, iteration is acceptable)?
+2. **Ghost page tracking:** When a cold page is evicted, it enters the ghost list. Ghost hit recovery (§2.9.6) promotes it back. Does the ghost list need the same two-list structure (b1 for recently evicted, b2 for twice-evicted)? Or is a single ghost list with LRU eviction sufficient?
+3. **TempCtrl state count:** With ARC as an intra-node mechanism only, TempCtrl may no longer need the REMOTE state (0x04). Cross-node migration uses CrossNodeAccesses, not TempCtrl, to flag migration candidates. TempCtrl becomes a pure ARC indicator: HOT (0x1) or COLD (0x2).
+4. **Interaction between compaction and cross-node migration:** If the compactor migrates a key to a cold page (intra-node), and that key has high CrossNodeAccesses, should the compactor also initiate cross-node migration? Or does cross-node migration happen independently on its own schedule?
+5. **Page-level ARC's p_ tuning:** Does the page-level ARC need adaptive `p_` like key-level ARC? With fewer pages than keys, the tuning dynamics may differ.
+
+#### What survives from Phase 2b v1.8.4
+
+Nearly everything survives. The mechanisms are correct; the framing is what changes:
+
+| Component | Survives? | Change |
+|---|---|---|
+| CMap | Yes | Unchanged |
+| ConcurrentARC (key-level) | Partially | Retained for intra-node hot/cold classification. Eviction authority narrowed: ARC eviction callback → TempCtrl state change, not page eviction. |
+| ArcList | Yes | Unchanged (key-level tracking) |
+| PromoteBuf | Yes | Unchanged |
+| TempCtrl | Partially | May drop REMOTE state. Becomes pure ARC indicator (HOT/COLD). |
+| Compactor | Yes | Unchanged mechanism. Driven by TempCtrl (ARC's output), not ARC directly. |
+| Insert-before-erase | Yes | Unchanged. Applies to both intra-node compaction and cross-node migration. |
+| CrossNodeAccesses | Yes | Unchanged. Separate from ARC, separate from TempCtrl. |
+| Whole-page persistence (PageBlob) | Yes | Unchanged. Driven by page-level ARC eviction. |
+| Ghost hit recovery | Yes | Unchanged. Reload from RocksDB on ghost page access. |
+| Page lifecycle (HOT/COLD/EMPTY/FREEZE) | Yes | Unchanged. |
+| **Page-level ARC (new)** | **New** | ARC lists at page granularity. Drives wholesale page eviction. |
+| **Cross-node migration policy (new framing)** | **Reframed** | Same mechanism (CrossNodeAccesses + insert-before-erase), but explicitly a separate policy from ARC, not a bolt-on. |
+
+The Phase 2b design from §2.9 and §3.27 is not wrong — it's incomplete in one respect: it doesn't explicitly separate the recency axis (ARC) from the locality axis (Furrballs). The redesign adds this separation as an architectural principle, making the design cleaner and the cross-node migration story coherent. The code changes are minimal (add page-level ARC, possibly simplify TempCtrl). The conceptual change is significant.
 
 ## 4. Related Work
 
