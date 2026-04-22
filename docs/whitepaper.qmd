@@ -1,6 +1,6 @@
 ---
 title: "Furrballs: A NUMA-Aware, High-Performance Caching Library"
-subtitle: "Technical Report v1.9.2"
+subtitle: "Technical Report v1.9.3"
 author: "Hamza Jamil Saied (The Sphynx)"
 date: last-modified
 doi: "10.5281/zenodo.19669844"
@@ -43,7 +43,7 @@ format:
 ---
 
 ## Status
-v1.9.2 --- REMARC: migration-first execution ordering, Bayesian rate estimation justification for mutual erosion, README/abstract/conclusion updated
+v1.9.3 --- Adam-style adaptive smoothing noted as future optimization, ML parallels documented for thesis framing
 
 ## Abstract
 Furrballs is a NUMA-aware caching library that uses NUMA topology as a first-class input to cache placement and eviction decisions. The core contribution is per-page allocation on specific NUMA nodes, with REMARC (Reduction-Modeled Adaptive Replacement Cache) as the unified eviction and migration policy. REMARC reduces three access dimensions (recency, frequency, locality) into a 2D state space (S_local, S_remote), producing dual action scores (Evict, Migrate) via precomputed SIMD lookup tables scanned with pshufb. The per-key Evict scores aggregate to per-page eviction decisions, collapsing the key-level and page-level policies into a single mechanism with one scanner and two thresholds. Pages are pre-allocated at initialization via one physical allocation per NUMA node, subdivided into logical pages filled by a bump allocator. Key routing supports round-robin distribution and thread-local placement (via a runtime config flag). The library is implemented in C++20, uses a platform abstraction layer (Numatic) for NUMA operations, and integrates a custom synchronization library (StreamLine) for thread coordination.
@@ -1143,6 +1143,8 @@ This eliminates the last piece of ARC's machinery that might have been needed. R
 5. **E_page aggregation strategy:** Compute per-scan via SIMD horizontal sum (O(1) amortized), or maintain a running aggregate updated on each access (O(1) per access but shared mutable state under contention)?
 6. **Migration execution:** Insert-before-erase (§3.27) remains the mechanism. Does the migration trigger happen synchronously (on Get() when M > θ_m) or asynchronously (scanner detects, background worker executes)?
 7. **Reload S_local initialization:** Set to MAX (full protection, slowest convergence to evictable) or a fraction (faster convergence but less ghost protection)? Related to the ghost-less reload design (§3.29).
+8. **Adam-style adaptive smoothing (future optimization):** Instead of fixed α_l, α_r, track a second moment (variance) per score: `V = β × V + (1-β) × (ΔS)²`, then adapt `α = α_base / (√V + ε)`. Keys with stable access patterns converge faster; keys with volatile patterns converge slower — resisting premature migration from noisy bursts. Adds ~2 bytes per key for variance tracking. Noted for post-validation optimization if fixed α proves insufficient.
+9. **ML parallels for thesis framing:** REMARC's update rule is mathematically equivalent to gradient descent (`S += α × (target - S)`, where (target-S) is the gradient), with L2 regularization via time decay (`S *= λ`). The probabilistic HotNode sampling is ε-greedy exploration. The adaptation loop is online learning with outcome feedback. These analogies strengthen the theoretical grounding but do not change the implementation.
 
 ## 4. Related Work
 
