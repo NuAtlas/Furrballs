@@ -1002,21 +1002,23 @@ Plus: uint8_t HotNode                     (probabilistically updated, stored in 
 
 **Update rules (first-order IIR smoothing):**
 
-The update model is a Bayesian rate estimation with exponential forgetting. S_local and S_remote represent smoothed estimates of the local and remote access rates. Observing an access of one type is evidence *against* the other type occurring in the same time window — so the non-observed rate decays. This is the principled justification for mutual erosion: if a remote access occurs, our estimate of the local access rate should decrease, because we occupied a time slot where a local access could have happened but didn't.
+The update model uses IIR smoothing with cross-channel erosion. S_local and S_remote represent smoothed estimates of the local and remote access rates. Observing an access of one type is evidence *against* the other type occurring in the same time window — so the non-observed rate decays. This mutual erosion captures the intuition that local and remote access rates compete: observing one is evidence against the other.
+
+**Quantization note:** All operations use 4-bit integer arithmetic (values 0–15). Integer division introduces systematic bias: truncation causes downward drift (scores converge to 0 faster than the continuous formula predicts). The implementation uses round-to-nearest (add half the divisor before dividing) to eliminate this bias. The lookup tables are unaffected — they compute exact scores from the quantized inputs.
 
 ```
 On local Get():
-  S_local  += α_l × (15 - S_local)        // boost local rate estimate toward max
-  S_remote *= (1 - α_r)                     // decay remote rate (observed local = evidence against remote)
+  S_local  += round(α_l × (15 - S_local) / 15)     // boost local, round to nearest
+  S_remote  = round(S_remote × (15 - α_r) / 15)     // decay remote, round to nearest
 
 On remote Get() from node N:
-  S_remote += α_r × (15 - S_remote)        // boost remote rate estimate toward max
-  S_local  *= (1 - α_l)                     // decay local rate (observed remote = evidence against local)
-  with probability p(S_remote): HotNode = N  // probabilistic migration target
+  S_remote += round(α_r × (15 - S_remote) / 15)     // boost remote, round to nearest
+  S_local   = round(S_local × (15 - α_l) / 15)      // decay local, round to nearest
+  with probability p(S_remote): HotNode = N            // probabilistic migration target
 
 Time decay (per scan cycle):
-  S_local  *= λ                             // both drift toward 0 (stale signals decay)
-  S_remote *= λ
+  S_local  = round(S_local × λ_num / λ_den)           // both drift toward 0
+  S_remote = round(S_remote × λ_num / λ_den)
 ```
 
 Parameters α_l, α_r, λ are fixed (control EMA responsiveness). The asymmetry (1-α_l) vs (1-α_r) determines migration bias: α_l > α_r means local signal recovers faster than remote signal, disfavoring migration.

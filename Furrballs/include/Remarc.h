@@ -81,18 +81,19 @@ namespace NuAtlas
     inline constexpr uint8_t UnpackSRemote(uint8_t tc) noexcept { return tc >> 4; }
 
     inline uint8_t RemarcBoost(uint8_t current, uint8_t alpha) noexcept {
-        uint16_t delta = static_cast<uint16_t>(alpha) * (REMARC_MAX - current);
-        return static_cast<uint8_t>(current + delta / REMARC_MAX);
+        uint16_t delta_num = static_cast<uint16_t>(alpha) * (REMARC_MAX - current);
+        uint8_t delta = static_cast<uint8_t>((delta_num + REMARC_MAX / 2) / REMARC_MAX);
+        return current + delta;
     }
 
     inline uint8_t RemarcDecay(uint8_t current, uint8_t alpha) noexcept {
-        uint16_t v = static_cast<uint16_t>(current) * (REMARC_MAX - alpha);
-        return static_cast<uint8_t>(v / REMARC_MAX);
+        uint16_t decay_num = static_cast<uint16_t>(current) * (REMARC_MAX - alpha);
+        return static_cast<uint8_t>((decay_num + REMARC_MAX / 2) / REMARC_MAX);
     }
 
     inline uint8_t RemarcTimeDecay(uint8_t current, uint8_t num, uint8_t den) noexcept {
         uint16_t v = static_cast<uint16_t>(current) * num;
-        return static_cast<uint8_t>(v / den);
+        return static_cast<uint8_t>((v + den / 2) / den);
     }
 
     inline uint8_t RemarcEvictScore(uint8_t tc) noexcept {
