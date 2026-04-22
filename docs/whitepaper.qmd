@@ -1,6 +1,6 @@
 ---
 title: "Furrballs: A NUMA-Aware, High-Performance Caching Library"
-subtitle: "Technical Report v1.9.1"
+subtitle: "Technical Report v1.9.2"
 author: "Hamza Jamil Saied (The Sphynx)"
 date: last-modified
 doi: "10.5281/zenodo.19669844"
@@ -43,10 +43,10 @@ format:
 ---
 
 ## Status
-v1.9.1 --- REMARC rename (Reduction-Modeled Adaptive Replacement Cache), page-level ARC collapse, one-scanner unification, ghost-less reload protection
+v1.9.2 --- REMARC: migration-first execution ordering, Bayesian rate estimation justification for mutual erosion, README/abstract/conclusion updated
 
 ## Abstract
-Furrballs is a NUMA-aware caching library that uses NUMA topology as a first-class input to cache placement and eviction decisions. The core contribution is per-page allocation on specific NUMA nodes, with a two-level ARC hierarchy: key-level ARC (L1) for hot/cold key tracking with NUMA-aware eviction preference, and page-level ARC (L2) for page eviction backed by RocksDB persistence (L3). Pages are pre-allocated at initialization via one physical allocation per NUMA node, subdivided into logical pages filled by a bump allocator. Key routing supports round-robin distribution and thread-local placement (via a runtime config flag). The library is implemented in C++20, uses a platform abstraction layer (Numatic) for NUMA operations, and integrates a custom synchronization library (StreamLine) for thread coordination.
+Furrballs is a NUMA-aware caching library that uses NUMA topology as a first-class input to cache placement and eviction decisions. The core contribution is per-page allocation on specific NUMA nodes, with REMARC (Reduction-Modeled Adaptive Replacement Cache) as the unified eviction and migration policy. REMARC reduces three access dimensions (recency, frequency, locality) into a 2D state space (S_local, S_remote), producing dual action scores (Evict, Migrate) via precomputed SIMD lookup tables scanned with pshufb. The per-key Evict scores aggregate to per-page eviction decisions, collapsing the key-level and page-level policies into a single mechanism with one scanner and two thresholds. Pages are pre-allocated at initialization via one physical allocation per NUMA node, subdivided into logical pages filled by a bump allocator. Key routing supports round-robin distribution and thread-local placement (via a runtime config flag). The library is implemented in C++20, uses a platform abstraction layer (Numatic) for NUMA operations, and integrates a custom synchronization library (StreamLine) for thread coordination.
 
 Phase 1 validated the core architecture using lock-free reads via SeqLock on per-node sharded KeyMeta. Phase 2a replaces the Phase 1 data structures with CMap, a lock-free-read concurrent Swiss table with SSE2 SIMD probing and per-slot seqlock concurrency, wrapped by ConcurrentARC which provides ARC eviction policy with hash-keyed O(1) list tracking and deferred promotions via a lock-free MPSC buffer (PromoteBuf). Phase 2a results show a 58% improvement in concurrent Set throughput (per-slot CAS eliminates shared_mutex serialization), safe concurrent reads during writes (resolving Phase 1's unordered_map data race), and a 6--41% single-threaded latency regression (architectural cost of concurrent data structures). A cross-VM baseline comparison shows Furrballs maintains a 2.60x concurrent Set advantage through lock partitioning via per-node CMaps.
 
@@ -976,7 +976,7 @@ Evict(S)   = (1 - R) × (1 - F)       // evict when cold AND infrequent
 Migrate(S) = F × L × (1 - R)          // migrate when frequent AND remote AND locally stale
 ```
 
-Furrballs applies the scores with mutual exclusion: `if E > θ_e: evict` then `elif M > θ_m: migrate to HotNode`. A cold key (high E) is evicted, not migrated. A misplaced hot key (high M, low E) is migrated, not evicted.
+Furrballs evaluates both scores independently. The execution priority is migration-first: `if M > θ_m: migrate to HotNode`, then `if E_page > θ_e: evict page`. Migration is processed first because evicting a page discards all keys on it — if a high-M key (migration candidate) lives on a high-E_page page (eviction candidate), migrating the key first extracts it before the page is evicted. After migration, E_page is recomputed (the migrated key no longer contributes). If E_page remains above θ_e, the page is evicted. This ordering preserves migration candidates that would otherwise be lost to page eviction.
 
 **Step 6: SIMD lookup tables.** Storing `S_local[4bit]` and `S_remote[4bit]` in one TempCtrl byte per key, the byte value `(S_remote << 4 | S_local)` is a direct index into a 256-entry precomputed lookup table. SIMD `pshufb` looks up 16 Evict/Migrate scores in a single instruction. Scanning a page of ~64 keys becomes 4 batches × ~6 SIMD instructions — effectively O(1) per page. The lookup tables are static (computed from the decision surface formula); only the thresholds (θ_e, θ_m) change at runtime.
 
@@ -1002,14 +1002,16 @@ Plus: uint8_t HotNode                     (probabilistically updated, stored in 
 
 **Update rules (first-order IIR smoothing):**
 
+The update model is a Bayesian rate estimation with exponential forgetting. S_local and S_remote represent smoothed estimates of the local and remote access rates. Observing an access of one type is evidence *against* the other type occurring in the same time window — so the non-observed rate decays. This is the principled justification for mutual erosion: if a remote access occurs, our estimate of the local access rate should decrease, because we occupied a time slot where a local access could have happened but didn't.
+
 ```
 On local Get():
-  S_local  += α_l × (15 - S_local)        // boost local signal toward max
-  S_remote *= (1 - α_r)                     // erode remote signal (recency anti-migration)
+  S_local  += α_l × (15 - S_local)        // boost local rate estimate toward max
+  S_remote *= (1 - α_r)                     // decay remote rate (observed local = evidence against remote)
 
 On remote Get() from node N:
-  S_remote += α_r × (15 - S_remote)        // boost remote signal toward max
-  S_local  *= (1 - α_l)                     // erode local signal (migration pressure builds)
+  S_remote += α_r × (15 - S_remote)        // boost remote rate estimate toward max
+  S_local  *= (1 - α_l)                     // decay local rate (observed remote = evidence against local)
   with probability p(S_remote): HotNode = N  // probabilistic migration target
 
 Time decay (per scan cycle):
@@ -1871,17 +1873,19 @@ The resulting model is a third variant combining shared-nothing data access with
 
 ## 9. Conclusion
 
-Phase 1 of Furrballs demonstrates that NUMA topology can serve as a meaningful input to cache placement decisions. The architecture---per-node physical allocation, bump-packed multi-value pages, and a planned two-level ARC hierarchy---provides a structured foundation for NUMA-aware caching where the **page** is the locality unit and the **key** is the access unit.
+Phase 1 of Furrballs demonstrates that NUMA topology can serve as a meaningful input to cache placement decisions. The architecture---per-node physical allocation, bump-packed multi-value pages, and REMARC's unified eviction/migration policy---provides a structured foundation for NUMA-aware caching where the **page** is the locality unit and the **key** is the access unit.
 
 The critical Phase 1 finding is that synchronization overhead masks the true NUMA memory latency signal: under `shared_mutex`, cross-node overhead was 5.1% at p50; under SeqLock lock-free reads, it is 11.7%---more than double. Thread-local routing with SeqLock achieves 26--41% improvement over round-robin, confirming that NUMA-aware placement provides compound benefits. Per-node sharding provides 3x concurrent Set throughput through natural lock partitioning at a mixed single-threaded cost (Set +3%, Get +17%).
 
 Phase 2a replaces the Phase 1 data structures with a concurrent Swiss table (CMap) and ARC policy (ConcurrentARC). The results reveal a tradeoff: single-threaded latency increases by 6--41% (architectural cost of CAS-based concurrency and ARC list management), but concurrent Set throughput improves by 58% (per-slot CAS eliminates shared_mutex serialization). CMap resolves the Phase 1 data race on `unordered_map::find()` during concurrent reads, making the system safe under mixed read/write workloads. PromoteBuf recovers concurrent Get from 0.56x to 0.80x vs baseline by deferring ARC promotions out of the critical read path. Hash-keyed ArcList eliminates all string copies from ARC tracking, and a `thread_local` cache in `GetCurrentNode()` eliminates ~1000ns VM exit per routing decision.
 
+Phase 2b introduces REMARC (Reduction-Modeled Adaptive Replacement Cache), which replaces the planned two-level ARC hierarchy with a single unified policy. REMARC reduces three access dimensions (recency, frequency, locality) into a 2D state space (S_local, S_remote) stored per-key in TempCtrl bytes. Per-key Evict and Migrate scores are computed via precomputed 256-entry lookup tables scanned with SIMD pshufb in O(1) per page. Per-key Evict scores aggregate to per-page eviction decisions, eliminating the need for a separate page-level ARC. Adaptation is outcome-based (eviction reversal and migration reversal rates adjust thresholds θ_e and θ_m), providing ARC's self-tuning principle without ghost lists. The probabilistic HotNode mechanism (biased sampling) provides migration targets with built-in anti-ping-pong protection. The three-mechanism model (key-level ARC, page-level ARC, cross-node migration policy) collapses to one: REMARC.
+
 The five-step ablation study (§5.10, §5.17) isolates the contribution of each architectural decision across both phases. The Phase 2a ablation reveals that the `thread_local` cache fundamentally changed the routing dynamics: thread-local routing is now *faster* than round-robin (ablation D < C), unlike Phase 1 where the `GetCurrentNode()` syscall made it 34% slower. This has a methodological implication: Phase 1's routing overhead findings (26--41% improvement from thread-local routing, ablation C→D +34% Set increase) are **environment-specific** rather than architectural. They reflect QEMU's VM exit cost on `sched_getcpu()`, not an inherent property of NUMA-aware routing. On real hardware where `GetCurrentNode()` costs ~1--10ns via VDSO, the Phase 1 routing story would resemble Phase 2a's.
 
 Real hardware validation on AWS c6i.metal (Intel Xeon Platinum 8375C, 2 sockets, 128 vCPUs) confirms the architecture's NUMA benefit: a genuine 4.5--7.0% p50 cross-node overhead (§5.18), thread-local routing providing +60--65% improvement over round-robin, and ablation step D (thread-local routing) as the primary driver of the cross-node signal (+21.0--38.9% Cross-OH). Get throughput scales +72% from 4→64 threads (§5.19), validating the lock partitioning thesis for reads. Set throughput degrades -79% at 64 threads due to per-node SpinLock contention, identifying striped SpinLocks or per-bucket ARC locks as the next optimization target. The QEMU results validated the methodology and architecture; the real hardware results validate the performance claims.
 
-Phase 2b will wire the eviction callback to flush dirty values to RocksDB, completing the L1 key-level ARC. The broadcast-race dispatch model (Phase 4) provides O(N) aggregate work with O(1)-round parallel latency.
+Phase 2b will implement REMARC as the unified eviction and migration policy, with cross-node key migration and RocksDB-backed page persistence. The broadcast-race dispatch model (Phase 4) provides O(N) aggregate work with O(1)-round parallel latency.
 
 ## Appendix A: Repository Structure
 ```

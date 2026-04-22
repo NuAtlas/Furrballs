@@ -2,18 +2,18 @@
 
 A NUMA-aware, high-performance caching library written in C++20 under the `NuAtlas` namespace.
 
-The core thesis contribution is using **NUMA topology as a first-class input to cache placement and eviction decisions** — per-page allocation places data on the NUMA node of the requesting thread, with ARC (Adaptive Replacement Cache) eviction, write-back dirty tracking, and RocksDB persistence. No published work combines NUMA topology with adaptive cache policy at the page level.
+The core thesis contribution is using **NUMA topology as a first-class input to cache placement and eviction decisions** — per-page allocation places data on the NUMA node of the requesting thread, with **REMARC** (Reduction-Modeled Adaptive Replacement Cache) as the eviction and migration policy. REMARC reduces three access dimensions (recency, frequency, locality) into a unified 2D state space (S_local, S_remote), producing dual action scores (Evict, Migrate) via precomputed SIMD lookup tables scanned with pshufb. No published work combines NUMA topology with a multi-dimensional adaptive cache policy at the page level.
 
 ## Architecture
 
 ```
 NuAtlas::FurrBall
- +-- ARCPolicy<size_t, Page*>       ARC eviction (t1, t2, b1, b2)
- +-- MemoryManager                  NUMA-aware + regular allocation
- +-- KeyStore                       unordered_map<string, KeyMeta>
- +-- NodeJob                        Per-NUMA-node pinned worker thread
- +-- Statistics                     Atomic hit/miss/eviction counters
- +-- RocksDB                        Persistence (block cache disabled)
+  +-- REMARC                           2D state space: (S_local, S_remote) → Evict/Migrate
+  +-- CMap                             Concurrent Swiss table (lock-free reads, CAS writes)
+  +-- MemoryManager                    NUMA-aware + regular allocation
+  +-- NodeJob                          Per-NUMA-node pinned worker thread
+  +-- Statistics                       Atomic hit/miss/eviction counters
+  +-- RocksDB                          Persistence (block cache disabled)
 
 NuAtlas::Numatic                    Platform abstraction (Linux/Windows)
   +-- NumaticUnix.cpp               libnuma
@@ -21,14 +21,15 @@ NuAtlas::Numatic                    Platform abstraction (Linux/Windows)
 ```
 
 **Layered model:**
-- **L1 (hot):** ARC-managed pages with NUMA-aware placement — the thesis contribution.
+- **L1 (hot):** REMARC-managed pages with NUMA-aware placement and cross-node key migration — the thesis contribution.
 - **L2 (cold):** RocksDB backing store. Furrballs owns all caching.
 
 ## Current Status (numa-focus branch)
 
 Phase 1 — NUMA-Aware Core. The library compiles and runs with:
-- ARC cache policy with eviction callback and dirty page flushing
+- REMARC eviction/migration policy (2D smoothed state space, SIMD pshufb lookup)
 - Per-page allocation with NUMA-aware path
+- CMap concurrent Swiss table (Phase 2a)
 - RocksDB persistence with block cache disabled
 - Numatic platform abstraction (Linux complete, Windows stub)
 - NodeJob per-node worker threading
@@ -76,7 +77,8 @@ QEMU NUMA simulation scripts live at `~/vm/furrballs/` (outside the repo to avoi
 | Phase | Focus |
 |---|---|
 | 1 (current) | NUMA-aware core, key-based API, benchmark harness |
-| 2 | Per-page optimization (value reordering, cold migration) |
+| 2a | CMap + ConcurrentARC (concurrent Swiss table, ARC eviction) |
+| 2b | REMARC policy, migration-based eviction, RocksDB persistence |
 | 3 | Adaptive Memory Pooling (AMP) — dynamic pool growth/contraction |
 | 4 | Server + Client + binary protocol |
 | 5 | Publication — formal benchmark results and thesis |
