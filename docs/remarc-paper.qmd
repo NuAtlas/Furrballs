@@ -519,12 +519,40 @@ The generalization in §6 shows that REMARC's policy framework is independent of
 
 ## Appendix B: Lookup Table Construction
 
-For K=2, MAX=15, the Evict and Migrate tables are constructed as:
+### B.1 General Construction Algorithm
+
+For any K with MAX=15, each action's lookup table maps a packed state tuple to a score. The state is packed by concatenating 4-bit fields:
+
+$$\text{index} = S_0 + S_1 \cdot 16 + S_2 \cdot 16^2 + \ldots + S_{K-1} \cdot 16^{K-1}$$
+
+For K=2 this produces indices in $[0, 255]$ (1 byte). For K=3, indices in $[0, 4095]$ (12 bits). For K=4, indices in $[0, 65535]$ (16 bits).
+
+The general construction:
+
+```
+For each index i ∈ [0, 16^K - 1]:
+  // Unpack state
+  temp = i
+  for j in [0, K-1]:
+    S[j] = temp & 0xF
+    temp >>= 4
+
+  // Compute normalized quantities (domain-specific per instantiation)
+  T = sum(S) / (K × MAX)
+  ... (see per-K formulas below)
+
+  // Compute action scores
+  Action_lookup[i] = formula(S) × MAX_SCORE
+```
+
+All tables are `constexpr` — constructible at compile time. The tables are static: they encode the decision surface geometry, which depends only on the formulas, not on the workload.
+
+### B.2 K=2 (NUMA, 2 tables × 256 entries)
 
 ```
 For each byte b ∈ [0, 255]:
-  S_0 = b & 0xF
-  S_1 = b >> 4
+  S_0 = b & 0xF       // S_local
+  S_1 = b >> 4         // S_remote
   R = S_0 / 15
   F = (S_0 + S_1) / 30
   L = S_1 / max(S_0 + S_1, 1)
@@ -532,4 +560,44 @@ For each byte b ∈ [0, 255]:
   M_lookup[b] = F × L × (1 - R) × MAX_SCORE
 ```
 
-Constructible at compile time via `constexpr`. The tables are static — they encode the decision surface geometry, which depends only on the formula, not on the workload.
+State packing: single byte `(S_1 << 4 | S_0)`. SIMD: SSSE3 `pshufb` performs 16 lookups in one instruction.
+
+### B.3 K=3 (Tiered Storage, 4 tables × 3375 entries)
+
+```
+For each index i ∈ [0, 4095]:
+  S_0 = i & 0xF               // DRAM
+  S_1 = (i >> 4) & 0xF        // Remote NUMA
+  S_2 = (i >> 8) & 0xF        // NVM
+  T = (S_0 + S_1 + S_2) / 45
+  R_local = S_0 / 15
+  R_remote = S_1 / max(S_0 + S_1, 1)
+  R_nvm = S_2 / max(S_0 + S_2, 1)
+  E_lookup[i] = (1 - T) × MAX_SCORE
+  M_lookup[i] = T × R_remote × (1 - R_local) × MAX_SCORE
+  P_lookup[i] = T × (1 - R_nvm) × MAX_SCORE
+  D_lookup[i] = (1 - R_local) × R_nvm × MAX_SCORE
+```
+
+State packing: 12 bits per key. Scanner processes keys in groups where stride and masking extract 12-bit indices. Total storage: $4 \times 3375 = 13500$ entries ≈ 13.5 KB (fits L1).
+
+### B.4 K=4 (Heterogeneous Memory, 5 tables × 50625 entries)
+
+```
+For each index i ∈ [0, 65535]:
+  S_0 = i & 0xF               // Local DRAM
+  S_1 = (i >> 4) & 0xF        // Remote DRAM
+  S_2 = (i >> 8) & 0xF        // HBM
+  S_3 = (i >> 12) & 0xF       // PMEM
+  T = (S_0 + S_1 + S_2 + S_3) / 60
+  R_local = S_0 / 15
+  R_remote = S_1 / max(S_0 + S_1, 1)
+  R_fast = (S_0 + S_2) / max(S_0 + S_2 + S_3, 1)
+  E_lookup[i] = (1 - T) × MAX_SCORE
+  M_lookup[i] = T × R_remote × (1 - R_local) × MAX_SCORE
+  P_hbm_lookup[i] = T × (1 - R_fast) × MAX_SCORE
+  P_dram_lookup[i] = T × (S_0 / max(S_0 + S_3, 1)) × MAX_SCORE
+  D_pmem_lookup[i] = (1 - T) × (S_3 / 15) × MAX_SCORE
+```
+
+State packing: 16 bits per key. No SIMD shortcut — indices are too wide for `pshufb` (which operates on bytes). Scanner falls back to direct array indexing. Total storage: $5 \times 50625 = 253125$ entries ≈ 248 KB (fits L2).
