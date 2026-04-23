@@ -152,6 +152,10 @@ This is **not** representable as $\sigma(a \cdot S)$ — it is a multiplicative 
 
 **The projection IS dimensional reduction:** $\text{proj}_s: \mathbb{R}^K \rightarrow \mathbb{R}^k$ with $k \le K$. The mapping is lossy by design — we keep only features relevant to decisions. The `decide` function then computes nonlinear interactions between those features.
 
+**Model class.** REMARC defines policies as nonlinear functionals over a low-dimensional linear projection of the state: $f(S) = g(AS)$. The projection $A$ determines what information is available to decisions (everything orthogonal to $\text{span}(A)$ is irretrievably lost). The decision function $g$ determines how that information is combined (multiplicative terms, thresholds, etc.). Expressiveness depends on both — a richer projection (larger $k$) or a more complex $g$ (higher-order interactions) increases the class of representable policies, but neither alone is sufficient.
+
+**Connection to sufficiency.** The steady-state result (§3.3) shows that $S$ encodes a biased empirical distribution of access sources. The projection $A$ extracts sufficient statistics from this distribution for the decision task at hand. The sufficiency condition (§3.4, Correlation Condition) formalizes this: every state dimension must carry non-zero information about at least one decision, ensuring the projection does not discard decision-relevant information.
+
 ### 3.3 Properties
 
 #### Steady-State Encoding (Key Result)
