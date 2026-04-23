@@ -7,11 +7,9 @@ lang: en
 format:
   html:
     toc: true
-    number-sections: true
   pdf:
     toc: true
     toc-depth: 4
-    number-sections: true
     documentclass: scrartcl
     fontsize: 11pt
     geometry:
@@ -19,11 +17,6 @@ format:
       - bottom=1in
 ---
 
-# REMARC: Reduction-Modeled Adaptive Replacement Cache
-
-*A Multi-Dimensional Framework for Unified Cache Eviction and Migration*
-
-**Author:** Hamza Jamil Saied (The Sphynx)
 **Status:** Draft outline
 **Date:** April 2026
 
