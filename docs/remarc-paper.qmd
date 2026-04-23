@@ -249,6 +249,10 @@ The framework rests on three independently axiomatized spaces:
 
 **Key property:** REMARC does not map into a decision space — it constructs the decision space. The composition $f: S \rightarrow D_f$ is a many-to-one compression (not injective, since multiple states can produce the same discrimination scores) that is surjective onto its constructed image by definition. The information loss is the compression itself: fewer distinguishable outputs than inputs, but no unrealizable outputs.
 
+**Compression invariant.** Since f is compressive (many-to-one), the intrinsic dimension of the decision space is bounded by that of the state space: $\dim(D_f) \le \dim(S)$. Equality holds only if f preserves all degrees of freedom (i.e., no compression). Cardinality is typically equal (both are continuum), but this is structurally irrelevant — a line and a plane have the same cardinality but different dimensions. The correct invariant is that the decision space does not introduce independent degrees of freedom beyond those present in the state space.
+
+**Family-level decision space.** Across the REMARC family of mappings $\mathcal{F} = \{f_\theta\}$ (parameterized by projection matrix $A$ and decision function $g$), the induced decision space is $D_\mathcal{F} := \bigcup_{f \in \mathcal{F}} f(S)$. This space is surjective by construction — it contains no unreachable elements relative to the model. Whether $D_\mathcal{F} = \mathbb{R}^k$ (expressive completeness) depends on whether the family of projections and decision functions is rich enough to cover all of $\mathbb{R}^k$. This is the central open question for the theoretical treatment (Paper 3).
+
 #### Three-Atom Decomposition
 
 A sequential decision function factors into three atomic operations:
