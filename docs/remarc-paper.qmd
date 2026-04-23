@@ -798,11 +798,33 @@ Paper 2 establishes the framework and validates it on real hardware. Paper 3 for
 
 #### Open Questions for the Theoretical Paper
 
-- **Approximation bounds:** given a policy π and a REMARC approximation with parameters (K, bit width, factorization graph), what is the maximum decision disagreement between π and its REMARC projection? Does the error decrease monotonically with K?
-- **Optimal decomposition:** for a given policy, what is the minimum K needed for exact representation? For approximate representation within error ε?
-- **Factorization as approximation:** what is the relationship between factorization topology (tree, chain, star) and approximation quality?
-- **Learnability:** can the REMARC parameters (α, λ, A_m) be learned from workload traces? Is there an online learning algorithm that converges to the optimal REMARC point for a given workload?
-- **Cooperative regime:** are there domains (beyond caching) where cooperative dimensions produce useful policies? What does a cooperative cache policy look like?
+The following questions are ranked by dependency: each question depends on the ones above it.
+
+**1. Approximation bounds (load-bearing question).** Given a policy $\pi$ and a REMARC approximation with parameters $(K, \text{bit width}, \text{factorization graph})$, what is the maximum decision disagreement $d(\pi, R(\pi))$ between $\pi$ and its REMARC projection $R(\pi)$? Does the error decrease monotonically with K?
+
+*Why this is load-bearing:* every other question requires a well-defined error metric first. Optimal decomposition (Q2) asks for minimum K within error $\varepsilon$ — but $\varepsilon$ has no meaning without this bound. Factorization (Q3) trades approximation quality for computational cost — but the tradeoff is undefined without this bound. This question must be answered first.
+
+*Approach:* define a metric on policy behavior (e.g., fraction of decisions that differ over a finite trace) and bound it as a function of K, bit width, and the distance between the policy's true decision surface and the REMARC projection. Known tools: quantization error analysis, function approximation theory.
+
+**2. Optimal decomposition (depends on Q1).** For a given policy $\pi$, what is the minimum $K$ needed for exact representation? For approximate representation within error $\varepsilon$?
+
+*Approach:* characterize the class of decision surfaces achievable with K-dimensional REMARC. Exact representation requires the policy's decision surface to lie in the span of the REMARC projections. Minimum K = minimum dimension of a subspace containing the decision surface.
+
+**3. Factorization as approximation (depends on Q1).** What is the relationship between factorization topology (tree, chain, star) and approximation quality?
+
+*Approach:* the factorization graph determines which cross-dimensional erosion is preserved (shared axes) and which is lost (non-shared axes). The approximation error is the information lost through non-shared erosion. Bound this loss as a function of the graph's connectivity. Known tools: junction tree theory, conditional independence in graphical models.
+
+**4. Learnability (depends on Q1, Q2).** Can the REMARC parameters $(\alpha, \lambda, A_m)$ be learned from workload traces? Is there an online learning algorithm that converges to the optimal REMARC point for a given workload?
+
+*Approach:* given the error metric from Q1, define a loss function over the parameter space and apply online convex optimization (if the loss is convex in the parameters) or bandit methods (if only noisy feedback is available). The convergence rate of the learning algorithm depends on the geometry of the parameter space (§3.4, geometric interpretation).
+
+**5. Cooperative regime (independent of Q1–Q4).** Are there domains (beyond caching) where cooperative dimensions produce useful policies? What does a cooperative cache policy look like?
+
+*Approach:* the cooperative regime ($f(\delta) + f(-\delta) = 2f(\delta)$, evidence reinforces evidence) is a genuinely unexplored region of the REMARC design space. No existing policy exploits it. Identify domains where signal agreement (rather than signal competition) is the decision-relevant structure. Candidates: sensor fusion, anomaly detection, consensus protocols.
+
+**6. Information Bottleneck connection (depends on Q1).** Does REMARC's deterministic construction achieve information-bottleneck-optimal compression for specific discrimination problems? Is the correlation condition (§3.4) the algebraic analog of the IB mutual information constraint?
+
+*Approach:* for a specific discrimination problem (e.g., K=2 eviction/migration), compute the IB-optimal compression and compare with the REMARC projection. If they coincide, the connection is proven for that case. General proof would require showing that the REMARC projection minimizes some deterministic analog of $I(X;T) - \beta I(T;Y)$.
 
 ---
 
