@@ -130,18 +130,27 @@ $$\mathbf{b}_j = (0, \ldots, \alpha_j \cdot \text{MAX}, \ldots, 0)$$
 
 $$\mathbf{S} \leftarrow \lambda \cdot \mathbf{S}$$
 
-#### Decision Surfaces (Linear Projection)
+#### Decision Surfaces (Projection + Nonlinear Combination)
 
-Action scores are computed via projection:
+Action scores are computed in two stages (matching the proj_s and decide atoms from §3.4):
 
-$$f_m(\mathbf{S}) = g_m(A_m \cdot \hat{\mathbf{S}})$$
+**Stage 1: Feature extraction (proj_s).** A matrix projection extracts k features from the K-dimensional state:
 
-Where:
-- $\hat{\mathbf{S}} = \mathbf{S} / \text{MAX}$ is the normalized state (each component in [0,1])
-- $A_m$ is the projection vector for action m
-- $g_m$ is the decision function (product of projected components)
+$$\mathbf{z} = A \cdot \hat{\mathbf{S}}, \quad A \in \mathbb{R}^{k \times K}, \quad k \le K$$
 
-**The projection IS the dimensional reduction:** $f: \mathbb{R}^K \rightarrow \mathbb{R}^M$ with $M < K$. The mapping is lossy by design — we discard information irrelevant to the decision.
+Where $\hat{\mathbf{S}} = \mathbf{S} / \text{MAX}$ is the normalized state (each component in [0,1]). Each component $z_i = \langle a_i, \hat{\mathbf{S}} \rangle$ is a scalar product — a linear functional over the state. The projection vectors $a_i$ determine which aspects of the state are decision-relevant.
+
+**Stage 2: Nonlinear scoring (decide).** Each action score is computed as a nonlinear function over the feature vector:
+
+$$f_m(\mathbf{S}) = g_m(\mathbf{z}) = g_m(z_1, z_2, \ldots, z_k)$$
+
+Where $g_m: \mathbb{R}^k \rightarrow \mathbb{R}$ is a fixed nonlinear function. In REMARC's current instantiation, $g_m$ is a product of projected components. For example, the NUMA Evict score is:
+
+$$\text{Evict} = (1 - R)(1 - F)$$
+
+This is **not** representable as $\sigma(a \cdot S)$ — it is a multiplicative interaction between two projected features, creating a nonlinear decision surface. The nonlinearity lives in `decide`, not in a scalar activation function.
+
+**The projection IS dimensional reduction:** $\text{proj}_s: \mathbb{R}^K \rightarrow \mathbb{R}^k$ with $k \le K$. The mapping is lossy by design — we keep only features relevant to decisions. The `decide` function then computes nonlinear interactions between those features.
 
 ### 3.3 Properties
 
@@ -212,7 +221,7 @@ For the cache application, workloads have empirical access frequencies (limiting
 
 #### Separability
 
-Different actions respond to different projections of the state. The Evict score responds to overall coldness (low total signal). The Migrate score responds to imbalance (high remote signal relative to local). These are independent axes in the decision space — the projection vectors $A_m$ are chosen to extract independent decision-relevant features.
+Different actions respond to different projections of the state. The Evict score responds to overall coldness (low total signal). The Migrate score responds to imbalance (high remote signal relative to local). These are independent axes in the decision space — the projection rows $a_i$ are chosen to extract independent decision-relevant features.
 
 ### 3.4 Representation Theorem
 
@@ -304,11 +313,11 @@ The combined projection $f = \texttt{decide} \circ \texttt{proj}_s: [0, \text{MA
 
 $$\exists m \in \{0, \ldots, M-1\} : \frac{\partial f_m}{\partial S_j} \neq 0$$
 
-That is: $S_j$ has non-zero weight in at least one projection vector $A_m$. If $\partial f_m / \partial S_j = 0$ for all $m$, then $S_j$ is irrelevant to every decision and should not be in the state space.
+That is: $S_j$ has non-zero weight in at least one projection row of $A$. If $\partial f_m / \partial S_j = 0$ for all $m$, then $S_j$ is irrelevant to every decision and should not be in the state space.
 
 **Definition (Weak REMARC).** Every input dimension is valid — each $S_j$ contributes to at least one action score. The projection discards no decision-relevant information. The reduction is lossless with respect to the discrimination space.
 
-**Definition (Strong REMARC).** Every input dimension correlates with every output discriminator — each $S_j$ has non-zero weight in every $A_m$. The projection matrix has no zero entries. The state is maximally coupled to the decision space.
+**Definition (Strong REMARC).** Every input dimension correlates with every output discriminator — each $S_j$ has non-zero weight in every row of $A$. The projection matrix has no zero entries. The state is maximally coupled to the decision space.
 
 **Consequence:** under Weak REMARC, the state is a sufficient statistic for the decisions (nothing decision-relevant is lost). Under Strong REMARC, the state is a *maximally informative* sufficient statistic (every dimension contributes to every decision). The design principle for signal selection is: given a budget of K dimensions, choose the K signal sources that maximize total correlation across all M outputs.
 
@@ -318,7 +327,7 @@ The REMARC configuration space has geometric structure:
 
 - $K$ is discrete — it stratifies the space into layers
 - $\{\alpha_j\}$ and $\lambda$ are continuous — coordinates within each stratum
-- $\{A_m\}$ are projection vectors — they live on a Grassmannian (the space of M-dimensional subspaces of $\mathbb{R}^K$)
+- $A$ is the projection matrix — its rows live on a Grassmannian (the space of k-dimensional subspaces of $\mathbb{R}^K$)
 
 Existing policies are specific points or curves in this stratified space. REMARC-as-framework is the space itself. This gives:
 
@@ -817,7 +826,7 @@ This analysis suggests a natural division of the work:
 |---|---|---|
 | **Paper 1: Furrballs** (systems) | Engineering | NUMA-aware cache implementation, real hardware validation, Phase 1 + 2a results |
 | **Paper 2: REMARC** (this paper, algorithm + framework) | Framework + instantiation | K=2 instantiation, SIMD implementation, K>2 generalization, representation theorem, evaluation |
-| **Paper 3: REMARC Theory** (mathematical) | Pure theory | Three-atom decomposition (phi, proj_s, decide), independent space axioms (S compact, D compact ordered), generation theorem ($\pi_c$ = decide . proj_s . $\varphi^t$), approximation bounds (error as function of K, bit width, factorization), geometric structure (stratified by K, parameterized by α/λ/A_m), symmetry classification, sigma as corollary |
+| **Paper 3: REMARC Theory** (mathematical) | Pure theory | Three-atom decomposition (phi, proj_s, decide), independent space axioms (S compact, D compact ordered), generation theorem ($\pi_c$ = decide . proj_s . $\varphi^t$), approximation bounds (error as function of K, bit width, factorization), geometric structure (stratified by K, parameterized by α/λ/A), symmetry classification, sigma as corollary |
 
 Paper 2 establishes the framework and validates it on real hardware. Paper 3 formalizes the algebra that Paper 2 discovers. Different venues, different reviewers, different contribution types.
 
@@ -839,7 +848,7 @@ The following questions are ranked by dependency: each question depends on the o
 
 *Approach:* the factorization graph determines which cross-dimensional erosion is preserved (shared axes) and which is lost (non-shared axes). The approximation error is the information lost through non-shared erosion. Bound this loss as a function of the graph's connectivity. Known tools: junction tree theory, conditional independence in graphical models.
 
-**4. Learnability (depends on Q1, Q2).** Can the REMARC parameters $(\alpha, \lambda, A_m)$ be learned from workload traces? Is there an online learning algorithm that converges to the optimal REMARC point for a given workload?
+**4. Learnability (depends on Q1, Q2).** Can the REMARC parameters $(\alpha, \lambda, A, g)$ be learned from workload traces? Is there an online learning algorithm that converges to the optimal REMARC composition for a given workload?
 
 *Approach:* given the error metric from Q1, define a loss function over the parameter space and apply online convex optimization (if the loss is convex in the parameters) or bandit methods (if only noisy feedback is available). The convergence rate of the learning algorithm depends on the geometry of the parameter space (§3.4, geometric interpretation).
 
