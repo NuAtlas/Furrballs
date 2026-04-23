@@ -151,7 +151,31 @@ For a key where source j accounts for fraction $p_j$ of total accesses (empirica
 
 $$S_j^* = \text{MAX} \cdot \frac{p_j \alpha_j}{p_j \alpha_j + (1-p_j)(1-\lambda)}$$
 
-This is the paper's most concrete theoretical result. It gives a **deterministic relationship between observed access frequency and REMARC state**: the state vector encodes the empirical access rate distribution across sources. No stationarity or independence assumptions required — $p_j$ is an observable quantity. Design implications:
+**Derivation.** At steady state, the expected boost equals the expected decay for each dimension. Consider dimension $j$ over one time step. With probability $p_j$, source $j$ fires and $S_j$ is boosted:
+
+$$S_j \leftarrow (1 - \alpha_j) S_j + \alpha_j \cdot \text{MAX}$$
+
+With probability $1 - p_j$, source $j$ does not fire and $S_j$ decays:
+
+$$S_j \leftarrow \lambda \cdot S_j$$
+
+At the fixed point $S_j^*$, the expected update must equal $S_j^*$:
+
+$$S_j^* = p_j \bigl[(1-\alpha_j) S_j^* + \alpha_j \cdot \text{MAX}\bigr] + (1-p_j) \lambda S_j^*$$
+
+$$S_j^* = p_j(1-\alpha_j) S_j^* + p_j \alpha_j \cdot \text{MAX} + (1-p_j)\lambda S_j^*$$
+
+$$S_j^* - p_j(1-\alpha_j) S_j^* - (1-p_j)\lambda S_j^* = p_j \alpha_j \cdot \text{MAX}$$
+
+$$S_j^* \bigl[1 - p_j(1-\alpha_j) - (1-p_j)\lambda\bigr] = p_j \alpha_j \cdot \text{MAX}$$
+
+$$S_j^* \bigl[1 - p_j + p_j\alpha_j - \lambda + p_j\lambda\bigr] = p_j \alpha_j \cdot \text{MAX}$$
+
+$$S_j^* \bigl[p_j \alpha_j + (1-p_j)(1-\lambda)\bigr] = p_j \alpha_j \cdot \text{MAX}$$
+
+$$S_j^* = \text{MAX} \cdot \frac{p_j \alpha_j}{p_j \alpha_j + (1-p_j)(1-\lambda)} \quad \square$$
+
+This gives a **deterministic relationship between observed access frequency and REMARC state**: the state vector encodes the empirical access rate distribution across sources. No stationarity or independence assumptions required — $p_j$ is an observable quantity. Design implications:
 
 - **Sensitivity:** increasing $\alpha_j$ makes the state respond faster to source j (larger $S_j^*$ for the same $p_j$). This is how migration disfavor is implemented ($\alpha_l > \alpha_r$ makes local signal dominate).
 - **Memory:** $\lambda$ controls how quickly stale patterns fade. Lower $\lambda$ = shorter memory = faster adaptation to workload shifts.
@@ -167,15 +191,21 @@ $$\rho = \max\bigl(\max_j(1 - \alpha_j),\ \lambda\bigr) < 1$$
 
 Since $0 < \alpha_j < 1$ and $0 < \lambda < 1$, the JSR is strictly less than 1. This means the homogeneous system $M_{\sigma(t)} \cdots M_{\sigma(1)} \cdot S_0 \to 0$ for any switching sequence $\sigma$ — adversarial, periodic, or stochastic.
 
-**Why diagonal matters:** for general (non-diagonal) matrices, the JSR can exceed individual spectral radii because off-diagonal coupling in products can amplify eigenvalues. Diagonal matrices have no off-diagonal coupling. Each entry of the product $M_{\sigma(t)} \cdots M_{\sigma(1)}$ is a product of scalars, each strictly less than 1, decaying independently. No amplification is possible.
+**Proof.** For any switching sequence $\sigma = (j_1, j_2, \ldots, j_t)$, the product $P = M_{j_t} \cdots M_{j_2} M_{j_1}$ is diagonal. Its $i$-th diagonal entry is:
+
+$$P_{ii} = \prod_{k=1}^{t} d_i(j_k), \quad d_i(j_k) = \begin{cases} 1 - \alpha_i & \text{if } j_k = i \\ \lambda & \text{if } j_k \neq i \end{cases}$$
+
+Each factor satisfies $0 < d_i(j_k) < 1$. Therefore $P_{ii} \to 0$ as $t \to \infty$, and $\|P\|_{\infty} = \max_i |P_{ii}| \to 0$. The convergence rate is geometric: $\|P\|_{\infty} \leq \rho^t$, where $\rho = \max(\max_j(1-\alpha_j), \lambda) < 1$. $\square$
+
+**Why diagonal matters:** for general (non-diagonal) matrices, the JSR can exceed individual spectral radii because off-diagonal coupling in products can amplify eigenvalues. Diagonal matrices have no off-diagonal coupling. Each entry of the product decays as a product of independent scalars. No amplification is possible.
 
 **Convergence behavior by access pattern:**
 
 | Switching sequence | Convergence |
 |---|---|
-| Each source has limiting frequency $p_j$ | Converges to steady-state formula $S_j^*$ |
+| Each source has limiting frequency $p_j$ | Converges to steady-state formula $S_j^*$ at rate $O(\rho^t)$ |
 | Periodic (e.g., alternating sources) | Converges to periodic orbit |
-| Adversarial (worst case) | State stays bounded, homogeneous transient decays to 0 |
+| Adversarial (worst case) | State stays bounded, homogeneous transient decays to 0 at rate $O(\rho^t)$ |
 | Non-stationary (changing frequencies) | State tracks the changing frequencies with lag determined by $\alpha_j$ and $\lambda$ |
 
 For the cache application, workloads have empirical access frequencies (limiting $p_j$ exists), so convergence to the steady-state formula is guaranteed. But the guarantee does not depend on this — the state remains well-behaved under any access pattern.
@@ -221,16 +251,21 @@ That is: two access histories that produce the same EMA state must produce the s
 
 | Policy | Sufficient statistic | Factorization | Coverage |
 |---|---|---|---|
-| **LRU** (recency) | $S_0$ = EMA of recency | K=1, M=1, $A = -1$ | Exact |
+| **LRU** (recency) | $S_0$ = EMA of recency | K=1, M=1, $A = -1$ | Approximate |
 | **LFU** (frequency) | $S_0$ = accumulating EMA of frequency | K=1, M=1, $A = -1$ | Exact |
-| **Clock** (reference bit) | $S_0$ = binary EMA (α→1, λ→0) | K=1, M=1 | Approximate |
+| **Clock** (reference bit) | $S_0$ = binary EMA ($\alpha \to 1$, $\lambda \to 0$) | K=1, M=1 | Approximate |
 | **ARC** (decision structure) | $S_0$ = recency, $S_1$ = frequency | K=2, M=1 | Exact |
 | **W-TinyLFU** (decision) | $S_0$ = frequency estimate | K=1, M=1 | Exact |
 | **LeCaR** (decision structure) | $S_0$ = LRU score, $S_1$ = LFU score | K=2, M=1 | Exact |
-| **LIRS** (reuse distance) | IRR ≈ EMA recency | K=1, M=1 | Approximate |
-| **ARC** (ghost lists) | Ghost membership ≈ binary EMA | K=2, M=1 | Approximate |
+| **LIRS** (reuse distance) | IRR $\approx$ EMA recency | K=1, M=1 | Approximate |
+| **ARC** (ghost lists) | Ghost membership $\approx$ binary EMA | K=2, M=1 | Approximate |
+| **S3-FIFO** (binary frequency gate) | Single-bit reaccess $\approx$ steep EMA ($\alpha \to 1$, fast $\lambda$) | K=1, M=1 | Approximate |
 
-**"Exact"** means the REMARC configuration produces the same decision on every access sequence. **"Approximate"** means the decisions converge as α and λ are tuned to approach the policy's behavior.
+**"Exact"** means the REMARC configuration produces the same decision on every access sequence. **"Approximate"** means the REMARC decisions converge toward the policy's behavior as $\alpha$ and $\lambda$ are tuned.
+
+**Why LRU is approximate, not exact:** LRU evicts the globally least-recently-used item, which requires knowing the total ordering of all items. REMARC's per-key EMA state tracks recency independently per item — the item with lowest $S_0$ is approximately least-recent, but the approximation error depends on the relative timing of accesses to different items. The error vanishes as $\alpha \to 1$ (state becomes binary: recently accessed or not).
+
+**Why S3-FIFO is a boundary case:** S3-FIFO's promotion condition (one reaccess in the small queue) is a binary frequency gate — the sharpest possible threshold. REMARC approximates this with a fast-response, fast-decay EMA ($\alpha \to 1$, $\lambda \to 0$) that produces a steep sigmoid rather than a hard step. The approximation error is the difference between a binary gate and a steep sigmoid, and is quantifiable: the "false promotion" region where EMA crosses the threshold without a true reaccess has width $O(\lambda / \alpha)$.
 
 The distinction between exact and approximate coverage corresponds to the modeling vs. approximation distinction:
 
@@ -248,6 +283,22 @@ Policies that fall **outside** the REMARC space:
 | **Oracle-assisted policies** | Depend on external information beyond access history. |
 
 These exclusions are precise and principled. Bélády's MIN is the fundamental limit of online policies — no online policy can match it. Randomized policies are outside because REMARC is deterministic. Everything else is inside.
+
+#### Correlation Condition
+
+The projection $f: [0, \text{MAX}]^K \rightarrow \mathcal{A}$ discards information — this is reduction by design. But the reduction is **compressive**, not lossy, when a specific condition holds.
+
+**Definition (Valid Signal).** Input dimension $S_j$ is *valid* if it carries non-zero information about at least one output discriminator:
+
+$$\exists m \in \{0, \ldots, M-1\} : \frac{\partial f_m}{\partial S_j} \neq 0$$
+
+That is: $S_j$ has non-zero weight in at least one projection vector $A_m$. If $\partial f_m / \partial S_j = 0$ for all $m$, then $S_j$ is irrelevant to every decision and should not be in the state space.
+
+**Definition (Weak REMARC).** Every input dimension is valid — each $S_j$ contributes to at least one action score. The projection discards no decision-relevant information. The reduction is lossless with respect to the discrimination space.
+
+**Definition (Strong REMARC).** Every input dimension correlates with every output discriminator — each $S_j$ has non-zero weight in every $A_m$. The projection matrix has no zero entries. The state is maximally coupled to the decision space.
+
+**Consequence:** under Weak REMARC, the state is a sufficient statistic for the decisions (nothing decision-relevant is lost). Under Strong REMARC, the state is a *maximally informative* sufficient statistic (every dimension contributes to every decision). The design principle for signal selection is: given a budget of K dimensions, choose the K signal sources that maximize total correlation across all M outputs.
 
 #### Geometric Interpretation
 
@@ -585,6 +636,7 @@ REMARC's current instantiations (§4–§6) use the competitive regime exclusive
 - **LeCaR** (Vietri et al., 2018): Uses regret minimization to adaptively combine LRU and LFU via online learning. The closest prior work to REMARC's "adaptive policy that blends multiple signals" — but LeCaR blends two 1D eviction policies, while REMARC projects K signals onto M action axes. LeCaR's W-TinyLFU window is a special case of REMARC's state space with K=1.
 - **CACHEUS** (Cheng et al., 2021): Learned cache replacement using workload features. Maps workload characteristics to policy parameters. REMARC differs by maintaining per-item state (not per-workload) and producing continuous action scores (not discrete policy selection).
 - **Glaze** (Liu et al., 2023): Tiered caching with learned placement decisions. Directly competes with REMARC's K=3 tiered storage generalization (§6.1). Glaze uses a separate ML model per tier; REMARC uses a unified state space across all tiers.
+- **S3-FIFO** (Yang et al., SOSP 2023): Three FIFO queues (small, main, ghost) with a single-bit reference counter for promotion. Structurally different from other policies: the binary frequency gate is the sharpest possible threshold (one reaccess = promote). REMARC approximates this as a boundary case (§3.4, coverage table) — the steep EMA ($\alpha \to 1$, fast $\lambda$) approaches binary behavior with quantifiable error. S3-FIFO's ghost queue serves the same role as REMARC's ghost-less reload protection (§4.5).
 
 ### 7.2 NUMA-Aware Systems
 
@@ -597,6 +649,13 @@ REMARC's current instantiations (§4–§6) use the competitive regime exclusive
 - **PCA** (Pearson, 1901): Eigenvalue decomposition of the covariance matrix → principal components. REMARC's projection is structurally similar (linear projection from K to M dimensions) but the projection vectors are hand-designed from domain knowledge, not derived from the data covariance. A data-driven variant using access-pattern covariance eigenvectors is discussed as future work (§6.3).
 - **SVD** (Singular Value Decomposition): General matrix factorization. REMARC's precomputed lookup tables can be viewed as a discretized low-rank approximation of the full decision function.
 - **Autoencoders (ML):** Neural network-based dimensionality reduction. REMARC's lookup tables are a non-learned (analytically derived) analog — the "encoding" is the switched linear system, and the "decoding" is the linear projection.
+
+### 7.4 Information-Theoretic Connections
+
+- **Fisher's Linear Discriminant** (Fisher, 1936): A linear projection from K-dimensional observation space onto a lower-dimensional space that maximally separates classes. REMARC's projection is structurally analogous — a domain-defined (rather than data-driven) discriminant that maps K-dimensional state to M action scores. The key difference: LDA is batch and requires labeled data; REMARC is online, sequential, and uses no labels.
+- **Information Bottleneck** (Tishby et al., 1999): Finds a compressed representation $T$ of input $X$ that preserves information about output $Y$: minimize $I(X;T)$ subject to $I(T;Y) \geq$ constraint. REMARC's correlation condition (§3.4) is a deterministic algebraic analog of this constraint — every input dimension must carry non-zero information about at least one output discriminator. The Information Bottleneck requires knowing the joint distribution $P(X,Y)$; REMARC achieves compression without distributional assumptions, through algebraic structure alone. Whether REMARC's deterministic construction achieves information-bottleneck-optimal compression for specific discrimination problems is an open question.
+- **Sufficient Statistics** (Fisher, 1922; Neyman, 1935): The concept that a compressed representation retains all decision-relevant information. REMARC's state vector is a sufficient statistic for the discrimination (under the Weak REMARC condition). Classical sufficient statistics are defined probabilistically; REMARC's version is algebraic — no distribution required.
+- **Switched Linear Systems** (Sun & Ge, 2005): Convergence of systems that switch between linear update rules. The joint spectral radius (JSR) characterizes stability. REMARC applies this to cache policy analysis for the first time — the diagonal structure of $M_j$ makes the JSR computable in closed form (§3.3).
 
 ---
 
