@@ -184,7 +184,89 @@ For the cache application, workloads have empirical access frequencies (limiting
 
 Different actions respond to different projections of the state. The Evict score responds to overall coldness (low total signal). The Migrate score responds to imbalance (high remote signal relative to local). These are independent axes in the decision space — the projection vectors $A_m$ are chosen to extract independent decision-relevant features.
 
-### 3.4 SIMD-Optimized Implementation
+### 3.4 Representation Theorem
+
+The preceding sections define REMARC as a specific mechanism (competitive erosion + linear projection). This section shows that the mechanism is not arbitrary — it captures the algebraic structure of history-based online cache policies as a class.
+
+#### Definition
+
+A **history-based online cache policy** is a function:
+
+$$\pi: \mathcal{H} \rightarrow \mathcal{A}$$
+
+Where $\mathcal{H}$ is the space of access histories (sequences of observed accesses to a key) and $\mathcal{A}$ is the space of actions (evict, migrate, promote, demote, keep). The policy is **online** because $\pi(h)$ depends only on the past history $h$, not on future accesses. The policy has **bounded per-key state** because real systems cannot store unbounded history per key.
+
+#### Factorization
+
+REMARC's structural claim is that $\pi$ factors:
+
+$$\pi = f \circ \varphi$$
+
+Where:
+
+- $\varphi: \mathcal{H} \rightarrow [0, \text{MAX}]^K$ is the **state compression** — the EMA smoothing that reduces the full access history to a bounded K-dimensional state vector
+- $f: [0, \text{MAX}]^K \rightarrow \mathcal{A}$ is the **decision projection** — the map that reads action scores from the compressed state
+
+A cache policy, under this view, is not an algorithm or a data structure. It is a composition of two maps: a history compression and a decision projection. The REMARC configuration space $(K, \{M_j\}, \{A_m\}, \{\alpha_j\}, \lambda)$ parameterizes all such compositions.
+
+#### Sufficient Statistic Condition
+
+The factorization holds if and only if the EMA state is a **sufficient statistic** for the policy's decision:
+
+$$\pi(h) \text{ depends on } h \text{ only through } \varphi(h)$$
+
+That is: two access histories that produce the same EMA state must produce the same decision. If this condition holds, the full history is redundant — the compressed state captures everything the policy needs.
+
+#### Coverage of Existing Policies
+
+| Policy | Sufficient statistic | Factorization | Coverage |
+|---|---|---|---|
+| **LRU** (recency) | $S_0$ = EMA of recency | K=1, M=1, $A = -1$ | Exact |
+| **LFU** (frequency) | $S_0$ = accumulating EMA of frequency | K=1, M=1, $A = -1$ | Exact |
+| **Clock** (reference bit) | $S_0$ = binary EMA (α→1, λ→0) | K=1, M=1 | Approximate |
+| **ARC** (decision structure) | $S_0$ = recency, $S_1$ = frequency | K=2, M=1 | Exact |
+| **W-TinyLFU** (decision) | $S_0$ = frequency estimate | K=1, M=1 | Exact |
+| **LeCaR** (decision structure) | $S_0$ = LRU score, $S_1$ = LFU score | K=2, M=1 | Exact |
+| **LIRS** (reuse distance) | IRR ≈ EMA recency | K=1, M=1 | Approximate |
+| **ARC** (ghost lists) | Ghost membership ≈ binary EMA | K=2, M=1 | Approximate |
+
+**"Exact"** means the REMARC configuration produces the same decision on every access sequence. **"Approximate"** means the decisions converge as α and λ are tuned to approach the policy's behavior.
+
+The distinction between exact and approximate coverage corresponds to the modeling vs. approximation distinction:
+
+- **Modeling**: REMARC *is* the policy. Same decisions on every input. Holds for policies whose state is literally EMA signals (LRU, LFU, W-TinyLFU frequency estimate).
+- **Approximation**: REMARC gets arbitrarily close as K increases or parameters are tuned. Holds for policies whose decision boundaries can be approached by linear projections over EMA state (LIRS, ARC ghost lists).
+
+#### Boundary
+
+Policies that fall **outside** the REMARC space:
+
+| Policy | Reason excluded |
+|---|---|
+| **Bélády's MIN / OPT** | Requires future knowledge. Not online. $\pi$ depends on $\mathcal{H} \cup \text{future}$, violating the factorization. |
+| **Randomized eviction** | Non-deterministic. $\pi(h)$ is not a function of $h$ alone. |
+| **Oracle-assisted policies** | Depend on external information beyond access history. |
+
+These exclusions are precise and principled. Bélády's MIN is the fundamental limit of online policies — no online policy can match it. Randomized policies are outside because REMARC is deterministic. Everything else is inside.
+
+#### Geometric Interpretation
+
+The REMARC configuration space has geometric structure:
+
+- $K$ is discrete — it stratifies the space into layers
+- $\{\alpha_j\}$ and $\lambda$ are continuous — coordinates within each stratum
+- $\{A_m\}$ are projection vectors — they live on a Grassmannian (the space of M-dimensional subspaces of $\mathbb{R}^K$)
+
+Existing policies are specific points or curves in this stratified space. REMARC-as-framework is the space itself. This gives:
+
+- **Policy comparison** = distance in the parameter space
+- **Policy design** = search over the parameter space for a point that satisfies performance constraints
+- **Policy analysis** = algebraic properties (convergence, stability) are properties of the space, not of individual algorithms
+- **Policy generalization** = moving to a higher stratum (increasing K) expands the reachable decisions
+
+The K=2 NUMA instantiation (§4) is a navigation of this space to a specific point. The K>2 generalizations (§6) are other strata. The open questions (§9) are questions about the geometry of the space itself.
+
+### 3.5 SIMD-Optimized Implementation
 
 For K ≤ 2 with 4-bit quantization (MAX=15):
 
@@ -198,7 +280,7 @@ For K > 2 or 8-bit quantization:
 - Decision surfaces computed via SIMD multiply-add
 - AVX2 processes 32 keys per batch
 
-### 3.5 Outcome-Based Adaptation
+### 3.6 Outcome-Based Adaptation
 
 Standard ARC adapts via ghost lists (observe what was evicted, adjust p_). REMARC adapts via **reversal feedback**:
 
