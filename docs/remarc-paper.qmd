@@ -47,7 +47,7 @@ These are independent questions that existing policies answer with separate mech
 
 1. A formal framework for multi-dimensional cache policy based on switched linear systems and linear projection.
 2. REMARC: an instantiation of this framework for NUMA-aware caching (K=2, M=2).
-3. SIMD-optimized implementation using precomputed lookup tables (256 entries, pshufb, O(1) per 16 keys).
+3. SIMD-optimized implementation using precomputed lookup tables (256 entries, SSE2 direct arithmetic, O(1) amortized per 16 keys).
 4. Real hardware validation on AWS c6i.metal (Intel Xeon Platinum 8375C, 2 sockets) confirming the NUMA placement signal (4.5--7.0% p50 cross-node overhead, thread-local routing +60--65% improvement) that motivates REMARC's migration axis. Full REMARC policy validation pending implementation.
 5. Generalization to K>2 for tiered storage, heterogeneous memory, and distributed caching.
 
@@ -319,15 +319,16 @@ The K=2 NUMA instantiation (§4) is a navigation of this space to a specific poi
 
 ### 3.5 SIMD-Optimized Implementation
 
-For K ≤ 2 with 4-bit quantization (MAX=15):
+For K = 2 with 4-bit quantization (MAX=15):
 
 - State is packed into one byte: `(S_1 << 4 | S_0)`
-- Each byte is an index into a 256-entry precomputed lookup table
-- SSSE3 `pshufb` performs 16 lookups in one instruction
+- Decision surfaces are precomputed into 256-entry lookup tables (`E_lookup`, `M_lookup`)
+- **SIMD batch scoring:** load 16 state bytes, extract S_0 and S_1 nibbles via SSE2 mask+shift, compute E and M scores using SIMD 16-bit multiply-add arithmetic (~18 instructions per batch of 16 keys)
 - Scanning N keys: O(N/16) SIMD operations
+- Note: `pshufb` (SSSE3) cannot perform 256-entry lookups directly — it uses only the low 4 bits of each control byte, limiting it to 16-entry tables. Since the E and M formulas mix both S_0 and S_1 (F = (S_0+S_1)/30, L = S_1/(S_0+S_1)), the tables are not separable into independent nibble lookups. Direct SIMD arithmetic is used instead.
 
 For K > 2 or 8-bit quantization:
-- State occupies K bytes per key
+- State occupies K × 4 bits per key (or K bytes for 8-bit)
 - Decision surfaces computed via SIMD multiply-add
 - AVX2 processes 32 keys per batch
 
@@ -417,7 +418,7 @@ Compared to:
 ### 5.1 Microbenchmarks (Achievable Immediately)
 
 - **Lookup table accuracy:** compare precomputed E/S/M scores against floating-point formula (expected: perfect match by construction)
-- **SIMD throughput:** pshufb scan rate vs sequential scan vs CMap probe
+- **SIMD throughput:** batch scan rate (SSE2 direct arithmetic) vs sequential scan vs CMap probe
 - **Update cost:** RemarcBoost/Decay per Get() vs ARC SpinLock + list manipulation
 
 ### 5.2 Furrballs Integration
@@ -881,7 +882,7 @@ For each byte b ∈ [0, 255]:
   M_lookup[b] = F × L × (1 - R) × MAX_SCORE
 ```
 
-State packing: single byte `(S_1 << 4 | S_0)`. SIMD: SSSE3 `pshufb` performs 16 lookups in one instruction.
+State packing: single byte `(S_1 << 4 | S_0)`. SIMD: SSE2 nibble-unpack + 16-bit multiply arithmetic, ~18 instructions per batch of 16 keys. `pshufb` cannot be used for direct 256-entry lookup (4-bit index limitation).
 
 ### B.3 K=3 (Tiered Storage, 4 tables × 3375 entries)
 
@@ -921,4 +922,4 @@ For each index i ∈ [0, 65535]:
   D_pmem_lookup[i] = (1 - T) × (S_3 / 15) × MAX_SCORE
 ```
 
-State packing: 16 bits per key. No SIMD shortcut — indices are too wide for `pshufb` (which operates on bytes). Scanner falls back to direct array indexing. Total storage: $5 \times 50625 = 253125$ entries ≈ 248 KB (fits L2).
+State packing: 16 bits per key. No SIMD shortcut — indices are too wide for per-instruction lookup. Scanner falls back to direct array indexing. Total storage: $5 \times 50625 = 253125$ entries ≈ 248 KB (fits L2).

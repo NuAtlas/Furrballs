@@ -46,7 +46,7 @@ format:
 v1.9.4 --- REMARC paper outline drafted (docs/remarc-paper.md), Steps 1-4 of REMARC implementation (Remarc.h, Page.h, Furrballs.h, CMakeLists.txt)
 
 ## Abstract
-Furrballs is a NUMA-aware caching library that uses NUMA topology as a first-class input to cache placement and eviction decisions. The core contribution is per-page allocation on specific NUMA nodes, with REMARC (Reduction-Modeled Adaptive Replacement Cache) as the unified eviction and migration policy. REMARC reduces three access dimensions (recency, frequency, locality) into a 2D state space (S_local, S_remote), producing dual action scores (Evict, Migrate) via precomputed SIMD lookup tables scanned with pshufb. The per-key Evict scores aggregate to per-page eviction decisions, collapsing the key-level and page-level policies into a single mechanism with one scanner and two thresholds. Pages are pre-allocated at initialization via one physical allocation per NUMA node, subdivided into logical pages filled by a bump allocator. Key routing supports round-robin distribution and thread-local placement (via a runtime config flag). The library is implemented in C++20, uses a platform abstraction layer (Numatic) for NUMA operations, and integrates a custom synchronization library (StreamLine) for thread coordination.
+Furrballs is a NUMA-aware caching library that uses NUMA topology as a first-class input to cache placement and eviction decisions. The core contribution is per-page allocation on specific NUMA nodes, with REMARC (Reduction-Modeled Adaptive Replacement Cache) as the unified eviction and migration policy. REMARC reduces three access dimensions (recency, frequency, locality) into a 2D state space (S_local, S_remote), producing dual action scores (Evict, Migrate) via precomputed lookup tables scored with SSE2 SIMD arithmetic. The per-key Evict scores aggregate to per-page eviction decisions, collapsing the key-level and page-level policies into a single mechanism with one scanner and two thresholds. Pages are pre-allocated at initialization via one physical allocation per NUMA node, subdivided into logical pages filled by a bump allocator. Key routing supports round-robin distribution and thread-local placement (via a runtime config flag). The library is implemented in C++20, uses a platform abstraction layer (Numatic) for NUMA operations, and integrates a custom synchronization library (StreamLine) for thread coordination.
 
 Phase 1 validated the core architecture using lock-free reads via SeqLock on per-node sharded KeyMeta. Phase 2a replaces the Phase 1 data structures with CMap, a lock-free-read concurrent Swiss table with SSE2 SIMD probing and per-slot seqlock concurrency, wrapped by ConcurrentARC which provides ARC eviction policy with hash-keyed O(1) list tracking and deferred promotions via a lock-free MPSC buffer (PromoteBuf). Phase 2a results show a 58% improvement in concurrent Set throughput (per-slot CAS eliminates shared_mutex serialization), safe concurrent reads during writes (resolving Phase 1's unordered_map data race), and a 6--41% single-threaded latency regression (architectural cost of concurrent data structures). A cross-VM baseline comparison shows Furrballs maintains a 2.60x concurrent Set advantage through lock partitioning via per-node CMaps.
 
@@ -978,7 +978,7 @@ Migrate(S) = F × L × (1 - R)          // migrate when frequent AND remote AND 
 
 Furrballs evaluates both scores independently. The execution priority is migration-first: `if M > θ_m: migrate to HotNode`, then `if E_page > θ_e: evict page`. Migration is processed first because evicting a page discards all keys on it — if a high-M key (migration candidate) lives on a high-E_page page (eviction candidate), migrating the key first extracts it before the page is evicted. After migration, E_page is recomputed (the migrated key no longer contributes). If E_page remains above θ_e, the page is evicted. This ordering preserves migration candidates that would otherwise be lost to page eviction.
 
-**Step 6: SIMD lookup tables.** Storing `S_local[4bit]` and `S_remote[4bit]` in one TempCtrl byte per key, the byte value `(S_remote << 4 | S_local)` is a direct index into a 256-entry precomputed lookup table. SIMD `pshufb` looks up 16 Evict/Migrate scores in a single instruction. Scanning a page of ~64 keys becomes 4 batches × ~6 SIMD instructions — effectively O(1) per page. The lookup tables are static (computed from the decision surface formula); only the thresholds (θ_e, θ_m) change at runtime.
+**Step 6: SIMD lookup tables.** Storing `S_local[4bit]` and `S_remote[4bit]` in one TempCtrl byte per key, the byte value `(S_remote << 4 | S_local)` is a direct index into a 256-entry precomputed lookup table. For SIMD batch scoring, SSE2 nibble-unpack and 16-bit multiply arithmetic computes E and M scores for 16 keys per batch (~18 instructions). Note: `pshufb` cannot perform 256-entry lookups directly (4-bit index limitation), and the E/M formulas are not separable into independent nibble lookups, so direct SIMD arithmetic is used instead. Scanning a page of ~64 keys becomes 4 batches — effectively O(1) per page. The lookup tables are static (computed from the decision surface formula); only the thresholds (θ_e, θ_m) change at runtime.
 
 **Discarded approaches during evolution:**
 
@@ -1065,8 +1065,12 @@ uint8_t M_lookup[256];   // byte = (S_remote << 4 | S_local) → Migrate score
 
 // Per batch of 16 keys:
 __m128i tc = _mm_loadu_si128(page.TempCtrl + batch);
-__m128i e  = _mm_shuffle_epi8(E_table_vec, tc);    // pshufb: 16 lookups in 1 instruction
-__m128i m  = _mm_shuffle_epi8(M_table_vec, tc);
+__m128i s0 = _mm_and_si128(tc, _mm_set1_epi8(0x0F));   // extract S_local
+__m128i s1 = _mm_srli_epi16(tc, 4);                      // extract S_remote
+// Compute E and M via SIMD 16-bit arithmetic (~18 instructions total)
+// (direct lookup via pshufb not possible — 256-entry table, 4-bit index limit)
+__m128i e = /* SIMD compute Evict(s0, s1) */;
+__m128i m = /* SIMD compute Migrate(s0, s1) */;
 __m128i e_mask = _mm_cmpgt_epi8(e, θ_e_vec);       // evict candidates
 __m128i m_mask = _mm_cmpgt_epi8(m, θ_m_vec);       // migrate candidates
 ```
@@ -1092,7 +1096,7 @@ REMARC is a new design direction (Direction A from §3.28). Direction B (Concurr
 | PromoteBuf | Not needed (no deferred promotions) | Retained |
 | TempCtrl | Reencoded: (S_local[4bit], S_remote[4bit]) | Retained as flags (HOT/COLD/REMOTE_CANDIDATE) |
 | HotNode (KeyMeta) | New: 1 byte, probabilistic | New: equivalent concept |
-| SIMD scan | Precomputed lookup tables (pshufb) | Flag scanning (cmpeq) |
+| SIMD scan | Precomputed lookup tables (SSE2 arithmetic) | Flag scanning (cmpeq) |
 | Adaptation | Outcome-based reversal feedback | ARC ghost list p_ adjustment |
 | Memory per key | 3 bytes (TempCtrl 1 + HotNode 1 + eviction/migration derived) | 4+ bytes (TempCtrl 1 + ArcList 16 + CrossNodeAccesses 4) |
 
@@ -1138,7 +1142,7 @@ This eliminates the last piece of ARC's machinery that might have been needed. R
 
 #### Open questions
 
-1. **4-bit vs 8-bit encoding:** 4 bits per score (16 levels) is SIMD-optimal (1 byte per key, pshufb) but coarse. 8 bits (256 levels) requires 2 bytes per key and SSE/AVX for arithmetic, but provides better precision for EMA smoothing. Empirical comparison needed.
+1. **4-bit vs 8-bit encoding:** 4 bits per score (16 levels) is compact (1 byte per key) but coarse. 8 bits (256 levels) requires 2 bytes per key and SSE/AVX for arithmetic, but provides better precision for EMA smoothing. Empirical comparison needed.
 2. **α_l, α_r, λ calibration:** These control EMA responsiveness. Should be empirically determined or derived from workload characteristics (e.g., total key count, access rate).
 3. **θ_e, θ_m initial values and δ step sizes:** The adaptation loop needs starting points and step sizes. Too aggressive adaptation causes oscillation; too conservative causes slow convergence.
 4. **HotNode probability function p(S_remote):** Should p increase linearly with S_remote (more confident with more remote signal), or is a fixed p sufficient? Linear p provides faster convergence for high-traffic keys.
@@ -1883,7 +1887,7 @@ The critical Phase 1 finding is that synchronization overhead masks the true NUM
 
 Phase 2a replaces the Phase 1 data structures with a concurrent Swiss table (CMap) and ARC policy (ConcurrentARC). The results reveal a tradeoff: single-threaded latency increases by 6--41% (architectural cost of CAS-based concurrency and ARC list management), but concurrent Set throughput improves by 58% (per-slot CAS eliminates shared_mutex serialization). CMap resolves the Phase 1 data race on `unordered_map::find()` during concurrent reads, making the system safe under mixed read/write workloads. PromoteBuf recovers concurrent Get from 0.56x to 0.80x vs baseline by deferring ARC promotions out of the critical read path. Hash-keyed ArcList eliminates all string copies from ARC tracking, and a `thread_local` cache in `GetCurrentNode()` eliminates ~1000ns VM exit per routing decision.
 
-Phase 2b introduces REMARC (Reduction-Modeled Adaptive Replacement Cache), which replaces the planned two-level ARC hierarchy with a single unified policy. REMARC reduces three access dimensions (recency, frequency, locality) into a 2D state space (S_local, S_remote) stored per-key in TempCtrl bytes. Per-key Evict and Migrate scores are computed via precomputed 256-entry lookup tables scanned with SIMD pshufb in O(1) per page. Per-key Evict scores aggregate to per-page eviction decisions, eliminating the need for a separate page-level ARC. Adaptation is outcome-based (eviction reversal and migration reversal rates adjust thresholds θ_e and θ_m), providing ARC's self-tuning principle without ghost lists. The probabilistic HotNode mechanism (biased sampling) provides migration targets with built-in anti-ping-pong protection. The three-mechanism model (key-level ARC, page-level ARC, cross-node migration policy) collapses to one: REMARC.
+Phase 2b introduces REMARC (Reduction-Modeled Adaptive Replacement Cache), which replaces the planned two-level ARC hierarchy with a single unified policy. REMARC reduces three access dimensions (recency, frequency, locality) into a 2D state space (S_local, S_remote) stored per-key in TempCtrl bytes. Per-key Evict and Migrate scores are computed via precomputed 256-entry lookup tables scored with SSE2 SIMD arithmetic in O(1) per page. Per-key Evict scores aggregate to per-page eviction decisions, eliminating the need for a separate page-level ARC. Adaptation is outcome-based (eviction reversal and migration reversal rates adjust thresholds θ_e and θ_m), providing ARC's self-tuning principle without ghost lists. The probabilistic HotNode mechanism (biased sampling) provides migration targets with built-in anti-ping-pong protection. The three-mechanism model (key-level ARC, page-level ARC, cross-node migration policy) collapses to one: REMARC.
 
 The five-step ablation study (§5.10, §5.17) isolates the contribution of each architectural decision across both phases. The Phase 2a ablation reveals that the `thread_local` cache fundamentally changed the routing dynamics: thread-local routing is now *faster* than round-robin (ablation D < C), unlike Phase 1 where the `GetCurrentNode()` syscall made it 34% slower. This has a methodological implication: Phase 1's routing overhead findings (26--41% improvement from thread-local routing, ablation C→D +34% Set increase) are **environment-specific** rather than architectural. They reflect QEMU's VM exit cost on `sched_getcpu()`, not an inherent property of NUMA-aware routing. On real hardware where `GetCurrentNode()` costs ~1--10ns via VDSO, the Phase 1 routing story would resemble Phase 2a's.
 
