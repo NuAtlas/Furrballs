@@ -676,6 +676,75 @@ Increasing K does not require increasing bit width. Increasing bit width does no
 
 This design space is the natural generalization of REMARC beyond a single cache policy into a family of related policies, connected by the shared mathematical structure of competitive coupling and linear projection.
 
+### 9.5 Toward an Algebra of Cache Policies
+
+The representation theorem (§3.4) and factorization analysis (§9.1) suggest that REMARC is not merely a cache policy framework but the **algebraic structure underlying the class of history-based online cache policies**. This section outlines the theoretical direction; full formalization is planned as a separate paper.
+
+#### REMARC as Projection Space
+
+A REMARC function is an approximation (a decision function) of a policy. The space of REMARC configurations is a **projection space** for the space of history-based online policies. This supports two operations:
+
+1. **Constructive:** build any cache policy in the history-based online space by composing K=1 REMARC atoms with different (α, λ) parameters.
+2. **Projective:** map any existing policy to a 1:1 REMARC approximation with characterizable error. The approximation inherits REMARC's computational properties (O(1) per decision, SIMD, deterministic convergence).
+
+The projective property is the stronger statement. Every policy π maps to a REMARC point:
+
+$$\pi \mapsto (K, \{M_j\}, \{A_m\}, \{\alpha_j\}, \lambda)$$
+
+Navigating the REMARC space (adjusting K, α, λ, A_m) is **policy optimization** — searching for the point that minimizes a cost function over the workload.
+
+#### Generation Theorem
+
+The K=1 REMARC function is the **atom** of the policy space. The atom is: "track one exponentially-smoothed signal, decay it over time, threshold to decide." Compose enough atoms with different α and λ values, project their outputs, and you get any policy in the space.
+
+$$\pi = \text{REMARC}_{\text{project}} \circ (\text{REMARC}_1 \otimes \text{REMARC}_2 \otimes \cdots \otimes \text{REMARC}_K)$$
+
+Where ⊗ is parallel composition (simultaneous K=1 instances) and ∘ is serial composition (hierarchical decision). This is analogous to basis decompositions in other mathematical spaces:
+
+| Analogy | Basis element | Space generated |
+|---|---|---|
+| Fourier analysis | sin(nωt), cos(nωt) | L² functions on [0,T] |
+| Polynomials (Weierstrass) | xⁿ | Continuous functions on [a,b] |
+| **REMARC** | **K=1 REMARC (α, λ)** | **History-based online policies** |
+
+The "spectrum" in REMARC is the time constant (α, λ). Fast α tracks recency; slow α tracks frequency; λ controls memory. Composing across the spectrum yields the full policy.
+
+#### Decomposition and Factorization
+
+Any policy in the REMARC space can be decomposed into K+1 atoms: K parallel K=1 instances for state compression, plus one projection atom for decision making. The factorization results from §9.1 apply at every level — the projection atom itself can be decomposed into smaller REMARC instances connected by shared axes, approximating a higher-dimensional projection with compositions of lower-dimensional ones.
+
+This means: **ARC is two K=1 REMARC instances (recency tracker + frequency tracker) composed with a K=2 meta-REMARC that blends their outputs.** ARC's adaptive parameter p is the projection vector in the meta-REMARC. The recency and frequency signals are independent (not competitive), placing ARC in the independent regime (§6.4) of the REMARC space — same algebraic structure as NUMA-REMARC, different symmetry stratum.
+
+#### Symmetry Classification
+
+§6.4 identified three regimes of the REMARC projection (competitive, independent, cooperative). These correspond to three symmetry classes of the policy space:
+
+- **Competitive** ($f(\delta) + f(-\delta) = 0$): dimensions oppose each other. Examples: NUMA local/remote, eviction vs retention.
+- **Independent** ($f(\delta) + f(-\delta) = c$): dimensions are uncorrelated. Examples: ARC's recency + frequency, LIRS tracking multiple unrelated metrics.
+- **Cooperative** ($f(\delta) + f(-\delta) = 2f(\delta)$): dimensions reinforce each other. No known existing policy exploits this regime — it is a genuinely new region of design space that the algebraic framing opens naturally.
+
+Existing policies occupy only the competitive and independent regimes. The cooperative regime is unexplored territory.
+
+#### Three-Paper Structure
+
+This analysis suggests a natural division of the work:
+
+| Paper | Scope | Contribution |
+|---|---|---|
+| **Paper 1: Furrballs** (systems) | Engineering | NUMA-aware cache implementation, real hardware validation, Phase 1 + 2a results |
+| **Paper 2: REMARC** (this paper, algorithm + framework) | Framework + instantiation | K=2 instantiation, SIMD implementation, K>2 generalization, representation theorem, evaluation |
+| **Paper 3: REMARC Theory** (mathematical) | Pure theory | Generation theorem, projection theorem, 1:1 mapping, approximation bounds (error as function of K, bit width, factorization), geometric structure of the policy space (stratified by K, parameterized by α/λ/A_m), symmetry classification, boundary characterization |
+
+Paper 2 establishes the framework and validates it on real hardware. Paper 3 formalizes the algebra that Paper 2 discovers. Different venues, different reviewers, different contribution types.
+
+#### Open Questions for the Theoretical Paper
+
+- **Approximation bounds:** given a policy π and a REMARC approximation with parameters (K, bit width, factorization graph), what is the maximum decision disagreement between π and its REMARC projection? Does the error decrease monotonically with K?
+- **Optimal decomposition:** for a given policy, what is the minimum K needed for exact representation? For approximate representation within error ε?
+- **Factorization as approximation:** what is the relationship between factorization topology (tree, chain, star) and approximation quality?
+- **Learnability:** can the REMARC parameters (α, λ, A_m) be learned from workload traces? Is there an online learning algorithm that converges to the optimal REMARC point for a given workload?
+- **Cooperative regime:** are there domains (beyond caching) where cooperative dimensions produce useful policies? What does a cooperative cache policy look like?
+
 ---
 
 ## Appendix A: REMARC-Furrballs Coupling
