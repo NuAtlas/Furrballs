@@ -241,12 +241,13 @@ The framework rests on three independently axiomatized spaces:
 - Boundedness is the compression property — phi maps unbounded histories to bounded state
 - No sign constraint — positivity is a specialization of the REMARC instantiation, not an axiom
 
-**Discrimination space D.** A compact ordered subset of R^m, m > 0.
-- Bounded because decisions are definite values (there is no semantically meaningful "infinity-strength decision")
+**Discrimination space D.** Defined constructively as the image of the decision mapping: $D_f := f(S)$ where $f = \texttt{decide} \circ \texttt{proj}_s$. D is not a predefined codomain — it is the space of realizable discrimination scores, constructed by the composition itself.
+- Compact because S is compact and f is continuous (continuous image of compact is compact)
 - Ordered because decisions must be comparable (higher score = stronger evidence for that action)
-- Boundedness is independent of S — it follows from the semantics of what a decision IS, not from the function that produces it
+- Surjectivity is trivial: $f: S \rightarrow D_f$ is surjective by construction (D_f is exactly the image)
+- There are no "unmapped regions" in D — by definition, every point in D_f is realized by some state in S
 
-**Key property:** S and D are bounded independently. No circularity. S is bounded because compression requires it. D is bounded because decisions are definite values. The function f: S -> D bridges two independently bounded spaces.
+**Key property:** REMARC does not map into a decision space — it constructs the decision space. The composition $f: S \rightarrow D_f$ is a many-to-one compression (not injective, since multiple states can produce the same discrimination scores) that is surjective onto its constructed image by definition. The information loss is the compression itself: fewer distinguishable outputs than inputs, but no unrealizable outputs.
 
 #### Three-Atom Decomposition
 
@@ -780,7 +781,7 @@ Navigating the REMARC space (adjusting the three atoms) is **policy optimization
 
 #### Generation Theorem
 
-The K=1 REMARC function is the **atom** of the decision function space. The atom is: "track one exponentially-smoothed signal, decay it over time." Compose enough atoms with different α and λ values, project their outputs, and you get any sequential decision function in the space.
+The K=1 REMARC function is the **atom** of the decision function space. The atom is: "track one exponentially-smoothed signal, decay it over time." Composing enough atoms with different α and λ values, projecting their outputs, and applying nonlinear decision surfaces can approximate a broad class of sequential decision functions. Whether the three-atom composition is universal (generates *all* sequential decision functions) or dense (generates a class dense in the target space) is the central open question for Paper 3.
 
 $$\pi_c = \texttt{decide} \circ \texttt{proj}_s \circ \varphi^t$$
 
