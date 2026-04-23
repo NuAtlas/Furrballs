@@ -216,36 +216,48 @@ Different actions respond to different projections of the state. The Evict score
 
 ### 3.4 Representation Theorem
 
-The preceding sections define REMARC as a specific mechanism (competitive erosion + linear projection). This section shows that the mechanism is not arbitrary — it captures the algebraic structure of history-based online cache policies as a class.
+The preceding sections define REMARC as a specific mechanism (competitive erosion + linear projection + nonlinear decision surface). This section shows that the mechanism is not arbitrary — it captures the algebraic structure of sequential decision functions as a class.
 
-#### Definition
+#### Spaces (Independent Axioms)
 
-A **history-based online cache policy** is a function:
+The framework rests on three independently axiomatized spaces:
 
-$$\pi: \mathcal{H} \rightarrow \mathcal{A}$$
+**Observation space O.** The set of observable events (which source fired, which tier was accessed, etc.). For REMARC: O = {0, 1, ..., K-1} (discrete sources). No axioms beyond being a non-empty set.
 
-Where $\mathcal{H}$ is the space of access histories (sequences of observed accesses to a key) and $\mathcal{A}$ is the space of actions (evict, migrate, promote, demote, keep). The policy is **online** because $\pi(h)$ depends only on the past history $h$, not on future accesses. The policy has **bounded per-key state** because real systems cannot store unbounded history per key.
+**State space S.** A compact (closed and bounded) subset of R^n, n > 0. In REMARC: S = [0, MAX]^K.
+- Boundedness is the compression property — phi maps unbounded histories to bounded state
+- No sign constraint — positivity is a specialization of the REMARC instantiation, not an axiom
 
-#### Factorization
+**Discrimination space D.** A compact ordered subset of R^m, m > 0.
+- Bounded because decisions are definite values (there is no semantically meaningful "infinity-strength decision")
+- Ordered because decisions must be comparable (higher score = stronger evidence for that action)
+- Boundedness is independent of S — it follows from the semantics of what a decision IS, not from the function that produces it
 
-REMARC's structural claim is that $\pi$ factors:
+**Key property:** S and D are bounded independently. No circularity. S is bounded because compression requires it. D is bounded because decisions are definite values. The function f: S -> D bridges two independently bounded spaces.
 
-$$\pi = f \circ \varphi$$
+#### Three-Atom Decomposition
 
-Where:
+A sequential decision function factors into three atomic operations:
 
-- $\varphi: \mathcal{H} \rightarrow [0, \text{MAX}]^K$ is the **state compression** — the EMA smoothing that reduces the full access history to a bounded K-dimensional state vector
-- $f: [0, \text{MAX}]^K \rightarrow \mathcal{A}$ is the **decision projection** — the map that reads action scores from the compressed state
+$$\pi_c = \texttt{decide} \circ \texttt{proj}_s \circ \varphi^t$$
 
-A cache policy, under this view, is not an algorithm or a data structure. It is a composition of two maps: a history compression and a decision projection. The REMARC configuration space $(K, \{M_j\}, \{A_m\}, \{\alpha_j\}, \lambda)$ parameterizes all such compositions.
+Where $\varphi^t$ denotes $\varphi$ composed $t$ times (repeated state updates over $t$ observations).
+
+**Atom 1: phi (state update).** $\varphi: S \times O \rightarrow S$. An incremental map that takes current state + observation, produces new state. In REMARC: a switched linear system ($S_t = M_j \cdot S_{t-1} + b_j$). Contractive (JSR < 1), guaranteeing convergence for any observation sequence.
+
+**Atom 2: proj_s (linear projection).** $\texttt{proj}_s: S \rightarrow \mathbb{R}^k$. A linear map (scalar products) that extracts k features from the n-dimensional state. Each component is $\langle a_j, S \rangle = \sum_i a_{ji} s_i$. The projection vectors $a_j$ determine which aspects of the state are relevant for each decision.
+
+**Atom 3: decide (nonlinear combination).** $\texttt{decide}: \mathbb{R}^k \rightarrow D$. A fixed nonlinear function that combines projected features into discrimination scores. In REMARC: a product of projected components (e.g., Evict = (1-R)(1-F) where R and F are projected features). The nonlinearity is what gives the framework expressive power beyond linear classification.
+
+**Note on sigma (discretization):** Converting continuous discrimination scores to discrete actions (thresholding) is NOT an atomic operation of the framework. It is an implementation concern — a downstream step applied by the system that reads the scores. For the algebraic framework, the output is D (continuous biases), not A (discrete actions). Discretization is a corollary: "for discrete decisions, apply any monotone threshold to D."
 
 #### Sufficient Statistic Condition
 
-The factorization holds if and only if the EMA state is a **sufficient statistic** for the policy's decision:
+The factorization holds if and only if the state S is a **sufficient statistic** for the decision:
 
-$$\pi(h) \text{ depends on } h \text{ only through } \varphi(h)$$
+$$\pi(h) \text{ depends on } h \text{ only through } \varphi^t(h)$$
 
-That is: two access histories that produce the same EMA state must produce the same decision. If this condition holds, the full history is redundant — the compressed state captures everything the policy needs.
+That is: two observation histories that produce the same state must produce the same discrimination scores. If this condition holds, the full history is redundant — the compressed state captures everything the decision needs.
 
 #### Coverage of Existing Policies
 
@@ -286,7 +298,7 @@ These exclusions are precise and principled. Bélády's MIN is the fundamental l
 
 #### Correlation Condition
 
-The projection $f: [0, \text{MAX}]^K \rightarrow \mathcal{A}$ discards information — this is reduction by design. But the reduction is **compressive**, not lossy, when a specific condition holds.
+The combined projection $f = \texttt{decide} \circ \texttt{proj}_s: [0, \text{MAX}]^K \rightarrow D$ discards information — this is reduction by design. But the reduction is **compressive**, not lossy, when a specific condition holds.
 
 **Definition (Valid Signal).** Input dimension $S_j$ is *valid* if it carries non-zero information about at least one output discriminator:
 
@@ -736,44 +748,56 @@ Increasing K does not require increasing bit width. Increasing bit width does no
 
 This design space is the natural generalization of REMARC beyond a single cache policy into a family of related policies, connected by the shared mathematical structure of competitive coupling and linear projection.
 
-### 9.5 Toward an Algebra of Cache Policies
+### 9.5 Toward an Algebra of Sequential Decision Functions
 
-The representation theorem (§3.4) and factorization analysis (§9.1) suggest that REMARC is not merely a cache policy framework but the **algebraic structure underlying the class of history-based online cache policies**. This section outlines the theoretical direction; full formalization is planned as a separate paper.
+The representation theorem (§3.4) and factorization analysis (§9.1) suggest that REMARC is not merely a cache policy framework but the **algebraic structure underlying the class of history-based online sequential decision functions**. This section outlines the theoretical direction; full formalization is planned as Paper 3.
 
 #### REMARC as Projection Space
 
-A REMARC function is an approximation (a decision function) of a policy. The space of REMARC configurations is a **projection space** for the space of history-based online policies. This supports two operations:
+A REMARC function is an approximation (a decision function) of a policy. The space of REMARC configurations is a **projection space** for the space of sequential decision functions. This supports two operations:
 
-1. **Constructive:** build any cache policy in the history-based online space by composing K=1 REMARC atoms with different (α, λ) parameters.
-2. **Projective:** map any existing policy to a 1:1 REMARC approximation with characterizable error. The approximation inherits REMARC's computational properties (O(1) per decision, SIMD, deterministic convergence).
+1. **Constructive:** build any sequential decision function by composing phi atoms with different (α, λ) parameters, then applying proj_s and decide.
+2. **Projective:** map any existing policy to a REMARC approximation with characterizable error. The approximation inherits REMARC's computational properties (O(1) per decision, SIMD, deterministic convergence).
 
 The projective property is the stronger statement. Every policy π maps to a REMARC point:
 
-$$\pi \mapsto (K, \{M_j\}, \{A_m\}, \{\alpha_j\}, \lambda)$$
+$$\pi \mapsto (\varphi, \texttt{proj}_s, \texttt{decide}) = (K, \{\alpha_j\}, \lambda, A, g)$$
 
-Navigating the REMARC space (adjusting K, α, λ, A_m) is **policy optimization** — searching for the point that minimizes a cost function over the workload.
+Navigating the REMARC space (adjusting the three atoms) is **policy optimization** — searching for the composition that minimizes a cost function over the workload.
 
 #### Generation Theorem
 
-The K=1 REMARC function is the **atom** of the policy space. The atom is: "track one exponentially-smoothed signal, decay it over time, threshold to decide." Compose enough atoms with different α and λ values, project their outputs, and you get any policy in the space.
+The K=1 REMARC function is the **atom** of the decision function space. The atom is: "track one exponentially-smoothed signal, decay it over time." Compose enough atoms with different α and λ values, project their outputs, and you get any sequential decision function in the space.
 
-$$\pi = \text{REMARC}_{\text{project}} \circ (\text{REMARC}_1 \otimes \text{REMARC}_2 \otimes \cdots \otimes \text{REMARC}_K)$$
+$$\pi_c = \texttt{decide} \circ \texttt{proj}_s \circ \varphi^t$$
 
-Where ⊗ is parallel composition (simultaneous K=1 instances) and ∘ is serial composition (hierarchical decision). This is analogous to basis decompositions in other mathematical spaces:
+Where the three atoms are (as defined in §3.4):
+
+| Atom | Type | Free parameters |
+|---|---|---|
+| phi: S x O -> S | Incremental state update | n (dimension), α_j (boost), λ (decay), MAX (bound) |
+| proj_s: S -> R^k | Linear projection (scalar product) | k (feature count), A (projection matrix) |
+| decide: R^k -> D | Nonlinear combination | g (decision surface geometry) |
+
+The "spectrum" in REMARC is the time constant (α, λ). Fast α tracks recency; slow α tracks frequency; λ controls memory. Composing across the spectrum yields the full range of sequential decision functions.
+
+This decomposition is analogous to basis decompositions in other mathematical spaces:
 
 | Analogy | Basis element | Space generated |
 |---|---|---|
 | Fourier analysis | sin(nωt), cos(nωt) | L² functions on [0,T] |
 | Polynomials (Weierstrass) | xⁿ | Continuous functions on [a,b] |
-| **REMARC** | **K=1 REMARC (α, λ)** | **History-based online policies** |
-
-The "spectrum" in REMARC is the time constant (α, λ). Fast α tracks recency; slow α tracks frequency; λ controls memory. Composing across the spectrum yields the full policy.
+| **REMARC** | **(phi, proj_s, decide)** | **Sequential decision functions** |
 
 #### Decomposition and Factorization
 
-Any policy in the REMARC space can be decomposed into K+1 atoms: K parallel K=1 instances for state compression, plus one projection atom for decision making. The factorization results from §9.1 apply at every level — the projection atom itself can be decomposed into smaller REMARC instances connected by shared axes, approximating a higher-dimensional projection with compositions of lower-dimensional ones.
+In the three-atom decomposition (§3.4), phi is the only atom that varies across parallel instances (different α, λ per dimension). The proj_s and decide atoms are shared — they read from the K-dimensional state that the parallel phi instances collectively produce. So the decomposition is:
 
-This means: **ARC is two K=1 REMARC instances (recency tracker + frequency tracker) composed with a K=2 meta-REMARC that blends their outputs.** ARC's adaptive parameter p is the projection vector in the meta-REMARC. The recency and frequency signals are independent (not competitive), placing ARC in the independent regime (§6.4) of the REMARC space — same algebraic structure as NUMA-REMARC, different symmetry stratum.
+$$\pi_c = \texttt{decide} \circ \texttt{proj}_s \circ (\varphi_1 \otimes \varphi_2 \otimes \cdots \otimes \varphi_K)^t$$
+
+Where each $\varphi_i$ is a K=1 phi atom tracking one dimension. The factorization results from §9.1 apply at every level — proj_s itself can be decomposed into smaller REMARC instances connected by shared axes, approximating a higher-dimensional projection with compositions of lower-dimensional ones.
+
+**ARC is two K=1 phi atoms (recency tracker + frequency tracker) composed with a K=2 proj_s + decide that blends their outputs.** ARC's adaptive parameter p is the projection vector in the meta-REMARC. The recency and frequency signals are independent (not competitive), placing ARC in the independent regime (§6.4) of the REMARC space — same algebraic structure as NUMA-REMARC, different symmetry stratum.
 
 #### Symmetry Classification
 
@@ -793,7 +817,7 @@ This analysis suggests a natural division of the work:
 |---|---|---|
 | **Paper 1: Furrballs** (systems) | Engineering | NUMA-aware cache implementation, real hardware validation, Phase 1 + 2a results |
 | **Paper 2: REMARC** (this paper, algorithm + framework) | Framework + instantiation | K=2 instantiation, SIMD implementation, K>2 generalization, representation theorem, evaluation |
-| **Paper 3: REMARC Theory** (mathematical) | Pure theory | Generation theorem, projection theorem, 1:1 mapping, approximation bounds (error as function of K, bit width, factorization), geometric structure of the policy space (stratified by K, parameterized by α/λ/A_m), symmetry classification, boundary characterization |
+| **Paper 3: REMARC Theory** (mathematical) | Pure theory | Three-atom decomposition (phi, proj_s, decide), independent space axioms (S compact, D compact ordered), generation theorem ($\pi_c$ = decide . proj_s . $\varphi^t$), approximation bounds (error as function of K, bit width, factorization), geometric structure (stratified by K, parameterized by α/λ/A_m), symmetry classification, sigma as corollary |
 
 Paper 2 establishes the framework and validates it on real hardware. Paper 3 formalizes the algebra that Paper 2 discovers. Different venues, different reviewers, different contribution types.
 
