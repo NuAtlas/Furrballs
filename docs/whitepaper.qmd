@@ -1119,8 +1119,10 @@ No separate page-level ARC lists (t1_page/t2_page/b1_page/b2_page), no per-page 
 ```
 // Same scanner, same infrastructure, now with per-page aggregation:
 __m128i tc = _mm_loadu_si128(page.TempCtrl + batch);
-__m128i e  = _mm_shuffle_epi8(E_table_vec, tc);    // 16 Evict scores
-__m128i m  = _mm_shuffle_epi8(M_table_vec, tc);    // 16 Migrate scores
+__m128i s0 = _mm_and_si128(tc, _mm_set1_epi8(0x0F));
+__m128i s1 = _mm_srli_epi16(tc, 4);
+__m128i e  = /* SIMD compute Evict(s0, s1) */;    // 16 Evict scores
+__m128i m  = /* SIMD compute Migrate(s0, s1) */;   // 16 Migrate scores
 // Horizontal sum of e → accumulate into page's E_page
 ```
 
