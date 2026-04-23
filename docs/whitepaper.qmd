@@ -423,7 +423,7 @@ FindAndEraseByHash is identical but accepts `{h1, h2}` directly, skipping the xx
 
 ### 2.8 ConcurrentARC
 
-ConcurrentARC wraps CMap + four ARC lists + SpinLock + PromoteBuf into a per-node ARC cache policy. It replaces the Phase 1 flat KeyStore, providing key-level hot/cold tracking with eviction support.
+ConcurrentARC wraps CMap + four ARC lists + SpinLock + PromoteBuf into a per-node ARC cache policy. It replaces the Phase 1 flat KeyStore, providing key-level hot/cold tracking with eviction support. **Note:** ConcurrentARC is the Phase 2a policy. Phase 2b replaces it with REMARC (§3.29), which collapses the ARC hierarchy and TempCtrl-based compaction into a single unified mechanism. The ConcurrentARC infrastructure (ArcList, PromoteBuf, SpinLock) remains as the Phase 2a implementation baseline.
 
 #### 2.8.1 ArcList: Hash-Keyed Doubly-Linked List
 
@@ -466,7 +466,7 @@ TAS lock with `_mm_pause()` backoff. Provides `lock()`, `try_lock()`, `unlock()`
 
 ### 2.9 Compactor and Migration-Based Eviction
 
-Phase 2b introduces a migration-based eviction model that replaces per-key eviction from bump-allocated pages with value migration between pages, followed by wholesale page eviction. This solves the fundamental constraint of the append-only bump allocator: per-key eviction leaves holes that cannot be reclaimed without compaction.
+Phase 2b introduces a migration-based eviction model that replaces per-key eviction from bump-allocated pages with value migration between pages, followed by wholesale page eviction. This solves the fundamental constraint of the append-only bump allocator: per-key eviction leaves holes that cannot be reclaimed without compaction. **Note:** The compactor, evictor, and migration scanner described here are unified under REMARC (§3.29) in Phase 2b — a single scanner operating on REMARC Evict/Migrate scores replaces the separate ARC-driven cold-flagging and compaction mechanisms.
 
 #### 2.9.1 Migration Model
 
@@ -1779,7 +1779,7 @@ The project is on the `numa-focus` branch. Licensed under MIT. Build and test ar
 - [x] Real hardware validation (AWS c6i.metal, Intel Xeon Platinum 8375C, 2 sockets, 128 vCPUs)
 - [x] Thread scaling test (4/8/16/32/64 threads)
 
-### Phase 2: Two-Level ARC
+### Phase 2: ConcurrentARC → REMARC
 
 #### Phase 2a: Concurrent Key Store (Complete)
 - [x] CMap: concurrent Swiss table with SSE2 SIMD probing, per-slot seqlock, separate ctrl/slot allocations
@@ -1792,19 +1792,19 @@ The project is on the `numa-focus` branch. Licensed under MIT. Build and test ar
 - [x] Phase 2a benchmark suite (ST, concurrent, routing, inline/cross-VM baseline, ablation)
 - [x] Per-node `rwMutex`, `KeyShard`, `KeyMetaStore` removed
 
-#### Phase 2b: Migration-Based Eviction + Persistence
-- [ ] KeyMeta additions: `Dirty` flag (seqlock-protected), `CrossNodeAccesses` atomic counter
-- [ ] Page lifecycle: `PageTier` enum (HOT/COLD/EMPTY/FREEZE), `HasColdKeys`, `ActiveKeys`, `KeyIndex`, `TempCtrl`
-- [ ] `CrossNodeAccesses` increment in `Get()` (relaxed fetch_add when accessing from different node)
-- [ ] Eviction callback wiring: set `HasColdKeys` + `TempCtrl[i] = COLD` on ARC eviction
-- [ ] Promotion callback wiring: set `TempCtrl[i] = HOT` on ghost hit promotion
-- [ ] Compactor: NodeJob worker(s) scan `HasColdKeys` pages, SIMD-scan `TempCtrl` for COLD keys, migrate to COLD pages
+#### Phase 2b: REMARC Unified Policy + Migration + Persistence
+- [ ] KeyMeta additions: `Dirty` flag (seqlock-protected), `HotNode` (uint8_t), `TempCtrlIdx` (uint8_t)
+- [ ] Page lifecycle: `PageTier` enum (HOT/COLD/EMPTY/FREEZE), `ActiveKeys`, `KeyIndex`, `TempCtrl`, `CompactLock`
+- [ ] REMARC scoring in `Get()`: update S_local/S_remote on every hit, update HotNode probabilistically on remote Get()
+- [ ] REMARC scanner: SSE2 batch scoring of TempCtrl → Evict/Migrate candidates, migration-first execution ordering
+- [ ] Cross-node migration: insert-before-erase for M > θ_m candidates, HotNode as target
+- [ ] Page eviction: E_page aggregation from per-key scores, page flush to RocksDB for E_page > θ_e
+- [ ] Outcome-based adaptation: track eviction/migration reversal rates, adjust θ_e/θ_m
+- [ ] Ghost-less reload protection: S_local=MAX on page reload from persistent storage
 - [ ] Page recycling: HOT → EMPTY → COLD → FREEZE → EMPTY transitions, `ResetBump()`
 - [ ] Cold page eviction → whole-page RocksDB persistence (PageBlob format)
 - [ ] Ghost hit recovery → whole-page RocksDB reload (speculative, full page)
 - [ ] `evictedKeyIndex_` (H2 → PageId) for ghost hit lookup
-- [ ] Cooperative `Set()` migration (every 16th Set on HasColdKeys page migrates one cold key)
-- [ ] Cross-node migration: `memcpy` → `Insert` dest → `FindAndErase` source (insert-before-erase, triggered by CrossNodeAccesses threshold)
 
 ### Phase 3: Adaptive Memory Pooling (AMP)
 - [ ] Dynamic page pool expansion under eviction pressure
