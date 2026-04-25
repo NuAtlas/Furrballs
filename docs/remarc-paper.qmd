@@ -330,7 +330,7 @@ Policies that fall **outside** the REMARC space:
 | **Randomized eviction** | Non-deterministic. $\pi(h)$ is not a function of $h$ alone. |
 | **Oracle-assisted policies** | Depend on external information beyond access history. |
 
-These exclusions are precise and principled. Bélády's MIN is the fundamental limit of online policies — no online policy can match it. Randomized policies are outside because REMARC is deterministic. Everything else is inside.
+These exclusions are precise and principled. Bélády's MIN is the fundamental limit of online policies — no online policy can match it. Randomized policies are outside because REMARC is deterministic. The remaining known policies fit within the framework or are approximable by it, though we make no claim of exhaustiveness.
 
 #### Correlation Condition
 
@@ -506,31 +506,31 @@ Figure 1 isolates the effect of numeric representation across the four core work
 
 ![Figure 1: Hit rate by workload across quantization classes. Integer quantization preserves ScanResistant (~90%) and enables Looping (~49%). Float64 collapses ScanResistant to 48% and scores 0% on Looping. Log8 trades Looping for a marginal Zipfian gain.](fig-quantization.svg){#fig-quantization fig-align="center"}
 
-The central finding is that **integer quantization is load-bearing, not a compression technique** (Finding 2). Float64 EMA allows R → 0.99999 for hot keys, making (1−R) ≈ 10⁻⁵. After 10 decay steps the state jumps 1000×, causing hypersensitivity and cascading evictions. Integer truncation floors (MAX−R) ≥ 1, preventing this divergence. The 4-bit and 8-bit integer variants produce nearly identical results, confirming that B controls effective dynamics (α/2^B) rather than precision.
+The central finding is that **integer quantization is critical for scan resistance** (Finding 2). Float64 EMA allows R → 0.99999 for hot keys, making (1−R) ≈ 10⁻⁵. After 10 decay steps the state jumps 1000×, causing hypersensitivity and cascading evictions. Integer truncation floors (MAX−R) ≥ 1, preventing this divergence. The 4-bit and 8-bit integer variants produce nearly identical results, suggesting that B controls effective dynamics (α/2^B) rather than precision.
 
 #### 5.2.3 Key Findings (Single-Node)
 
 **Finding 1 (Locality Barrier).** No REMARC variant within the integer EMA per-key scoring class exceeds ~24.5% Zipfian hit rate (cache-only, 10% cap/keys ratio). Ghost restoration adds at most +1.5pp. This ceiling is robust across all tested D_f (scalar scoring, Q-modulated scoring, directional scoring, capacity allocation, logarithmic quantization). ARC achieves 44.7% through structural identity — its T1/T2 partition provides population-level information that per-key scalar scoring cannot express.
 
-**Finding 2 (Integer Quantization Is Load-Bearing).** Replacing integer EMA with floating-point EMA collapses ScanRes hit rate from 90.4% to 48.2% across ALL formula variants. The discretization acts as a noise filter on the frequency axis, preventing scan pollution from inflating sF. This is a structural requirement, not a tuning choice.
+**Finding 2 (Integer Quantization Is Critical).** Replacing integer EMA with floating-point EMA collapses ScanRes hit rate from 90.4% to 48.2% across all tested formula variants. The discretization acts as a noise filter on the frequency axis, preventing scan pollution from inflating sF. We conjecture this is a structural requirement rather than a tuning artifact, but a formal proof is open.
 
 **Finding 3 (REMARC Dominates on Looping).** REMARC achieves ~49% on the Looping workload where ARC and LRU score 0%. This is structurally impossible for list-based policies — a cyclic access over 2× capacity evicts phase N-1 items before phase N revisits them. REMARC's scoring retains high-R, high-F items from all phases simultaneously.
 
 **Finding 4 (Ghost Provides Marginal Single-Node Benefit).** Ghost (dormant phi re-insertion) adds +1pp Zipfian over the best flat configuration. The mechanism is constrained: uniform phi produces homogeneous ghost populations, providing no directional information for proj_s. Ghost benefits ScanRes (+2pp) and Temporal (+3pp) but not Zipfian.
 
-**Finding 5 (Feedback Is Signal-Degenerate).** Q-modulated proj_s weights and directional (Q_r, Q_f) feedback provide zero improvement over static proj_s. Cause: the REMARC state update phi produces uniform population statistics (G, H, Q) because all keys receive identical boost/decay treatment. Without discriminable sub-populations, feedback has no gradient to exploit.
+**Finding 5 (Feedback Is Signal-Degenerate in Current Design).** Q-modulated proj_s weights and directional (Q_r, Q_f) feedback provided no measurable improvement over static proj_s across all tested configurations. Cause: the REMARC state update phi produces uniform population statistics (G, H, Q) because all keys receive identical boost/decay treatment. Without discriminable sub-populations, feedback has no gradient to exploit. Whether non-uniform phi (e.g., per-key adaptive rates) would enable effective feedback is an open question.
 
-**Finding 6 (Tiered/Capacity Allocation Collapses).** ARC-like T_R/T_F partition with p-controlled split causes p to always collapse to pMin. Ghost_R fills with cold revolving-door keys — recently evicted items from T_F re-enter T_R at zero cost, preventing meaningful capacity rebalancing.
+**Finding 6 (Tiered/Capacity Allocation Collapsed in Our Tests).** ARC-like T_R/T_F partition with p-controlled split caused p to collapse to pMin in all tested configurations. Ghost_R filled with cold revolving-door keys — recently evicted items from T_F re-enter T_R at zero cost, preventing meaningful capacity rebalancing. This may be specific to the p-update rule we used; alternative mechanisms (e.g., frequency-gated admission) are not excluded.
 
 #### 5.2.4 Locality Barrier Analysis
 
-The ~24.5% Zipfian ceiling is a property of the per-key scalar scoring class, not of REMARC specifically. Any policy where D_evict = g(S(K)) for scalar S(K) produces a total order on keys. ARC's T1/T2 partition breaks this total order — it maintains two populations with distinct admission criteria, providing strictly more information per capacity unit.
+The ~24.5% Zipfian ceiling is an empirically observed property of the per-key scalar scoring class at 10% cap/keys ratio, not of REMARC specifically. Any policy where D_evict = g(S(K)) for scalar S(K) produces a total order on keys. ARC's T1/T2 partition breaks this total order — it maintains two populations with distinct admission criteria, providing strictly more information per capacity unit.
 
-The barrier can be formalized: for a Zipf(α) distribution with α → 1, the optimal fixed-threshold scalar policy captures the top-K keys by score. ARC's adaptive partition captures a different subset — recent-but-infrequent keys in T1 that would be evicted by any scalar policy but contribute to future hits via ghost-mediated promotion.
+An informal argument: for a Zipf(α) distribution with α → 1, the optimal fixed-threshold scalar policy captures the top-K keys by score. ARC's adaptive partition captures a different subset — recent-but-infrequent keys in T1 that would be evicted by any scalar policy but contribute to future hits via ghost-mediated promotion. A formal proof that scalar scoring cannot exceed a specific bound would require characterizing the optimal scalar policy's hit rate as a function of α and cap/keys ratio; we leave this open.
 
 This barrier does NOT extend to multi-node decisions (§5.3), where REMARC's 2D scoring space provides information that list-based policies structurally cannot express.
 
-**Finding 14 (ARC Dominates Single-Node Zipfian).** ARC achieves 44.7% Zipfian hit rate — nearly 2× REMARC's ceiling. This is not a deficiency of REMARC; REMARC is designed for NUMA multi-node decisions where per-key scoring provides structural advantages (desire encoding, §5.3). Single-node Zipfian is the wrong benchmark for REMARC.
+**Finding 14 (ARC Dominates Single-Node Zipfian).** ARC achieves 44.7% Zipfian hit rate — nearly 2× REMARC's best observed single-node performance. This reflects ARC's structural advantage (T1/T2 partition) for single-node eviction. REMARC's design target is multi-node decisions where per-key scoring provides structural advantages (desire encoding, §5.3); single-node Zipfian is not the primary evaluation metric for this framework.
 
 ### 5.3 Multi-Node Study: Desire Encoding
 
@@ -538,7 +538,7 @@ This barrier does NOT extend to multi-node decisions (§5.3), where REMARC's 2D 
 
 In the standard REMARC formulation, migration uses value-based scoring: a key migrates from node A to node B when its REMARC score on B exceeds a threshold. We tested this on a 2-node simulation with 4 workloads (Skewed-Zipf 80% remote, Node-Shift 4-phase, Cross-Loop 50/50, Oscillating 10K phase).
 
-**Finding 7 (Value-Based Migration Fails on Phase Shifts).** On Node-Shift (where the hot set moves from node 0 to node 1 every 50K ops), value-based migration produces cost identical to no-migration (422.6 vs 422.9). Cause: slow-decaying sF creates "frequency momentum" — phase-0 keys retain sF ≈ 133 after phase shift, while newly-arriving phase-1 keys start at sF ≈ 80. The migration threshold prefers high-score keys that are stale.
+**Finding 7 (Value-Based Migration Failed on Phase Shifts).** On Node-Shift (where the hot set moves from node 0 to node 1 every 50K ops), value-based migration produced cost identical to no-migration (422.6 vs 422.9). Cause: slow-decaying sF creates "frequency momentum" — phase-0 keys retain sF ≈ 133 after phase shift, while newly-arriving phase-1 keys start at sF ≈ 80. The migration threshold prefers high-score keys that are stale.
 
 #### 5.3.2 Desire Encoding
 
@@ -666,9 +666,9 @@ The shadow desire map is the dominant cost. For a 10M-key space across 2 nodes: 
 
 **Optimization.** The shadow desire map can be periodically compacted: keys with sR = 0 and sF = 0 for T consecutive compaction intervals can be removed, as their desire score provides no information. This bounds the map size to O(|active keys|) rather than O(|keyspace|).
 
-#### 5.6.3 Expected Benefits
+#### 5.6.3 Simulated Benefits
 
-Based on the simulation results (§5.3, §5.4), the expected benefits for Furrballs on a 2-socket c6i.metal:
+Based on the simulation results (§5.3, §5.4), the benefits projected for Furrballs on a 2-socket c6i.metal (subject to real-hardware validation):
 
 1. **Cross-node access reduction:** Desire encoding reduces cost by 3-4× on skewed workloads (87.2 vs 337.5 on Skewed-Zipf). This translates directly to reduced inter-socket traffic.
 
@@ -685,11 +685,11 @@ Based on the simulation results (§5.3, §5.4), the expected benefits for Furrba
 | # | Finding | Implication |
 |---|---|---|
 | 1 | Locality barrier: ~24.5% Zipfian ceiling for per-key scalar scoring | REMARC's strength is multi-node, not single-node |
-| 2 | Integer quantization is load-bearing | Float EMA collapses ScanRes; discrete state is structural |
+| 2 | Integer quantization is critical for scan resistance | Float EMA collapses ScanRes; discrete state is structural (conjectured) |
 | 3 | REMARC dominates Looping (49% vs 0%) | Structural advantage for phase-based workloads |
 | 4 | Ghost provides marginal single-node benefit (+1pp) | Ghost's value is multi-node (desire signal) |
-| 5 | Feedback is signal-degenerate | Uniform phi → no gradient for feedback |
-| 6 | Tiered capacity collapses | p → pMin; revolving-door prevents rebalancing |
+| 5 | Feedback is signal-degenerate in current design | Uniform phi → no gradient for feedback; non-uniform phi unexplored |
+| 6 | Tiered capacity collapsed in all tests | p → pMin; alternative mechanisms not excluded |
 | 7 | Value-based migration fails on phase shifts | Frequency momentum prevents adaptation |
 | 8 | Desire encoding: 3-4× cost reduction | Threshold-free migration from local desire signal |
 | 9 | Global state necessary for n ≥ 3 | Cross-node compare prevents thrashing |
@@ -697,7 +697,7 @@ Based on the simulation results (§5.3, §5.4), the expected benefits for Furrba
 | 11 | 65% remote rate is structural (capacity) | Dynamic allocation is the next step |
 | 12 | Ghost marginal on Zipfian (+1.5pp) | Shadow map's value is multi-node |
 | 13 | Ghost helps Temporal, hurts Looping | Workload-dependent; not universally beneficial |
-| 14 | ARC dominates single-node Zipfian (2×) | REMARC designed for NUMA; single-node is wrong benchmark |
+| 14 | ARC dominates single-node Zipfian (2×) | REMARC targets multi-node; single-node not primary metric |
 | 15 | Per-node independence holds for desire encoding | Scales to n nodes without coordination |
 | 16 | G is O(1) per decision, O(n) state | Practical for production deployment |
 
@@ -922,9 +922,9 @@ REMARC reframes cache replacement as a dimensional reduction problem: multiple a
 
 The evaluation (Section 5) establishes three principal results across single-node (30+ variants, 5 workloads), 2-node (10 experiments, 4 workloads), and 3-node (3 variants, 4 workloads) configurations:
 
-1. **Single-node ceiling ($\sim$24.5% Zipfian at 10% capacity):** The bounded per-key scoring class has an information-theoretic ceiling below ARC's T1/T2 structural identity. This holds across all tested variants including feedback modulation, capacity allocation, and ghost restoration. REMARC compensates with structural dominance on looping workloads (49% vs 0% for ARC/LRU) and strong scan resistance ($\sim$90%).
+1. **Single-node ceiling ($\sim$24.5% Zipfian at 10% capacity):** No tested REMARC variant within the bounded per-key scoring class exceeds this ceiling, which we attribute to ARC's T1/T2 structural identity providing more information per capacity unit than scalar scoring can express. This holds across all tested variants including feedback modulation, capacity allocation, and ghost restoration. REMARC compensates with structural dominance on looping workloads (49% vs 0% for ARC/LRU) and strong scan resistance ($\sim$90%).
 
-2. **Desire encoding breaks the multi-node barrier:** By reformulating the state as per-node desire ($S_i(K)$ = "how much does node $i$ want key $K$") rather than cross-node value, migration decisions become threshold-free conjunctions of independent local decisions. This produces 3--4$\times$ cost reduction on skewed multi-node workloads and preserves per-node independence for $n$ nodes (Theorem, Section 5.3.3). The shadow desire map costs 2 bytes per key per node.
+2. **Desire encoding reduces multi-node cost:** By reformulating the state as per-node desire ($S_i(K)$ = "how much does node $i$ want key $K$") rather than cross-node value, migration decisions become threshold-free conjunctions of independent local decisions. This produces 3--4$\times$ cost reduction on skewed multi-node workloads in simulation and preserves per-node independence for $n$ nodes (Theorem, Section 5.3.3). The shadow desire map costs 2 bytes per key per node.
 
 3. **Scalable global state for $n \geq 3$:** A cross-node desire comparison ($O(1)$ per decision, $O(n)$ state) resolves contention for shared hot keys. The compare ratio $r$ has a sharp cliff at 1.1$\times$ and a wide effective range (1.1$\times$--1.5$\times$), making the system robust to parameter selection.
 
@@ -1002,7 +1002,7 @@ This design space is the natural generalization of REMARC beyond a single cache 
 
 ### 9.5 Toward an Algebra of Sequential Decision Functions
 
-The representation theorem (§3.4) and factorization analysis (§9.1) suggest that REMARC is not merely a cache policy framework but the **algebraic structure underlying the class of history-based online sequential decision functions**. This section outlines the theoretical direction; full formalization is planned as Paper 3.
+The representation framework (§3.4) and factorization analysis (§9.1) suggest that REMARC captures an algebraic structure common to the class of history-based online sequential decision functions. This section outlines the theoretical direction; full formalization is planned as Paper 3.
 
 #### REMARC as Projection Space
 
