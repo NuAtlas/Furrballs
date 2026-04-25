@@ -10,3 +10,7 @@ target_link_libraries(BaselineBenchmark PRIVATE Threads::Threads)
 add_executable(IsolatedBench "IsolatedBench.cpp")
 target_include_directories(IsolatedBench PRIVATE "${CMAKE_SOURCE_DIR}/Furrballs/include" "${CMAKE_SOURCE_DIR}/numatic/include")
 target_link_libraries(IsolatedBench PRIVATE Furrballs Numatic Threads::Threads)
+
+add_executable(RemarcBench "RemarcBench.cpp")
+target_include_directories(RemarcBench PRIVATE "${CMAKE_SOURCE_DIR}/Furrballs/include")
+target_compile_options(RemarcBench PRIVATE -mssse3 -mavx2 -mbmi2)

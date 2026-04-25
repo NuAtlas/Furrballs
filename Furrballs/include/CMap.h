@@ -355,6 +355,21 @@ namespace NuAtlas {
             return FindAndErase(key).err;
         }
 
+        template <typename Fn>
+        Error UpdateInPlaceByHash(const HashPair& hashes, Fn&& fn) noexcept {
+            ProbeResult result = Probe<false>(hashes);
+            if (result.matchSlot == SIZE_MAX) return KEY_NOT_FOUND;
+            Slot& targetSlot = Slots()[result.matchSlot];
+            uint8_t expected = targetSlot.seq.load(std::memory_order_acquire);
+            if (expected & 1) return ABANDONED_SET;
+            if (!targetSlot.seq.compare_exchange_strong(expected, expected + 1,
+                    std::memory_order_acq_rel, std::memory_order_acquire))
+                return ABANDONED_SET;
+            fn(targetSlot.value);
+            targetSlot.seq.store(expected + 2, std::memory_order_release);
+            return NO_ERR;
+        }
+
         struct FindAndEraseResult {
             Error err = KEY_NOT_FOUND;
             std::optional<Value> value = std::nullopt;
@@ -511,6 +526,34 @@ namespace NuAtlas {
         template <typename Fn>
         Error UpdateInPlace(const std::string& key, Fn&& fn) {
             return store_.UpdateInPlace(key, std::forward<Fn>(fn));
+        }
+
+        template <typename Fn>
+        Error UpdateInPlaceByHash(const HashPair& hashes, Fn&& fn) {
+            return store_.UpdateInPlaceByHash(hashes, std::forward<Fn>(fn));
+        }
+
+        typename CMap<Value>::FindAndEraseResult Erase(const std::string& key) {
+            std::lock_guard<SpinLock> guard(arcLock_);
+            promoteBuf_.drain(t1_, t2_);
+            HashPair hashes = HashKey(key);
+            uint64_t h2 = hashes.h2;
+            t1_.erase(h2);
+            t2_.erase(h2);
+            b1_.erase(h2);
+            b2_.erase(h2);
+            return store_.FindAndErase(key);
+        }
+
+        typename CMap<Value>::FindAndEraseResult EraseByHash(const HashPair& hashes) {
+            std::lock_guard<SpinLock> guard(arcLock_);
+            promoteBuf_.drain(t1_, t2_);
+            uint64_t h2 = hashes.h2;
+            t1_.erase(h2);
+            t2_.erase(h2);
+            b1_.erase(h2);
+            b2_.erase(h2);
+            return store_.FindAndEraseByHash(hashes);
         }
 
         Error Set(const std::string& key, const Value& val) {

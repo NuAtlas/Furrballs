@@ -103,6 +103,7 @@ NuAtlas::FurrBall::FurrBall(const FurrConfig& config, size_t numPages) noexcept
     Volatile(config.IsVolatile),
     UseNUMA(config.EnableNUMA),
     ThreadLocalRoute(config.numaConfig ? config.numaConfig->UseThreadLocalRouting : false),
+    remarcConfig(config.remarcConfig),
     DataMembers(new ImplDetail())
 {
 }
@@ -139,6 +140,130 @@ void NuAtlas::FurrBall::FlushPage(Page* page) noexcept {
         }
         else {
             Logger::getInstance().error("FlushPage failed for page " + std::to_string(page->PageIndex) + ": " + status.ToString());
+        }
+    }
+}
+
+bool NuAtlas::FurrBall::MigrateKey(const std::string& key, const HashPair& hp, int sourceNode, int destNode) noexcept {
+    if (sourceNode == destNode) return false;
+    if (!DataMembers || !DataMembers->privateNumaState) return false;
+
+    PerNodeDetails* srcDetails = DataMembers->privateNumaState->NodeDetails[sourceNode];
+    PerNodeDetails* dstDetails = DataMembers->privateNumaState->NodeDetails[destNode];
+
+    auto srcMeta = srcDetails->KeyStore.Find(key);
+    if (!srcMeta.has_value()) return false;
+
+    size_t dataSize = srcMeta->DataSize;
+    if (dataSize == 0) return false;
+
+    size_t dstPageIdx = dstDetails->CurrentPage.load(std::memory_order_relaxed);
+    void* dstLoc = nullptr;
+    for (size_t attempts = 0; attempts < dstDetails->NodePages.size(); attempts++) {
+        if (dstPageIdx >= dstDetails->NodePages.size()) break;
+        dstLoc = dstDetails->NodePages[dstPageIdx].TryBump(dataSize);
+        if (dstLoc) break;
+        size_t nextIdx = dstPageIdx + 1;
+        if (nextIdx >= dstDetails->NodePages.size()) break;
+        if (!dstDetails->CurrentPage.compare_exchange_weak(dstPageIdx, nextIdx,
+                std::memory_order_relaxed, std::memory_order_relaxed)) {
+            dstPageIdx = dstDetails->CurrentPage.load(std::memory_order_relaxed);
+        } else {
+            dstPageIdx = nextIdx;
+        }
+    }
+    if (!dstLoc) return false;
+
+    memcpy(dstLoc, srcMeta->DataOffset, dataSize);
+
+    KeyMeta dstMeta;
+    dstMeta.DataSize = dataSize;
+    dstMeta.NodeID = destNode;
+    dstMeta.PageIndex = dstPageIdx;
+    dstMeta.DataOffset = dstLoc;
+
+    Page& dstPage = dstDetails->NodePages[dstPageIdx];
+    dstPage.AddKeyEntry(hp, static_cast<uint8_t>(destNode));
+    dstMeta.TempCtrlIdx = static_cast<uint8_t>(dstPage.TempCtrl.size() - 1);
+    dstMeta.HotNode = static_cast<uint8_t>(destNode);
+
+    Error insertErr = dstDetails->KeyStore.Set(key, dstMeta);
+    if (insertErr != NO_ERR) {
+        dstPage.RemoveKeyEntry(dstPage.TempCtrl.size() - 1);
+        return false;
+    }
+
+    auto erased = srcDetails->KeyStore.Erase(key);
+    if (erased.err != NO_ERR) {
+        dstDetails->KeyStore.Erase(key);
+        dstPage.RemoveKeyEntry(dstPage.TempCtrl.size() - 1);
+        return false;
+    }
+
+    if (srcMeta->PageIndex < srcDetails->NodePages.size()) {
+        Page& srcPage = srcDetails->NodePages[srcMeta->PageIndex];
+        size_t idx = srcPage.FindKeyIndex(hp);
+        if (idx != SIZE_MAX) {
+            HashPair swappedHp = srcPage.RemoveKeyEntry(idx);
+            if (idx < srcPage.KeyIndex.size() && swappedHp.h2 != hp.h2) {
+                srcDetails->KeyStore.UpdateInPlaceByHash(swappedHp,
+                    [idx](KeyMeta& m) {
+                    m.TempCtrlIdx = static_cast<uint8_t>(idx);
+                });
+            }
+        }
+    }
+
+    Stats.MigrationCount.fetch_add(1, std::memory_order_relaxed);
+    Stats.BytesWritten.fetch_add(dataSize, std::memory_order_relaxed);
+    return true;
+}
+
+void NuAtlas::FurrBall::ScanAndExecute(int nodeID) noexcept {
+    if (!DataMembers || !DataMembers->privateNumaState) return;
+    if (nodeID < 0 || nodeID >= globalNumaState.NumaNodeCount) return;
+
+    PerNodeDetails* details = DataMembers->privateNumaState->NodeDetails[nodeID];
+
+    // Pass 1: Process pages frozen in a previous scan (grace period for in-flight Gets)
+    for (size_t p = 0; p < details->NodePages.size(); p++) {
+        Page& page = details->NodePages[p];
+        if (page.Tier.load(std::memory_order_relaxed) != PageTier::Freeze) continue;
+
+        if (page.Dirty) {
+            FlushPage(&page);
+        }
+
+        page.CompactLock.lock();
+        auto keys = page.KeyIndex;
+        page.CompactLock.unlock();
+
+        for (const auto& hp : keys) {
+            details->KeyStore.EraseByHash(hp);
+        }
+
+        page.Recycle();
+        Stats.EvictionCount.fetch_add(static_cast<unsigned int>(keys.size()),
+            std::memory_order_relaxed);
+    }
+
+    // Pass 2: Scan Hot pages, freeze those with high E_page
+    for (size_t p = 0; p < details->NodePages.size(); p++) {
+        Page& page = details->NodePages[p];
+        PageTier tier = page.Tier.load(std::memory_order_relaxed);
+        if (tier == PageTier::Freeze || tier == PageTier::Empty) continue;
+        size_t keyCount = page.TempCtrl.size();
+        if (keyCount == 0) continue;
+
+        uint32_t totalEnum = 0;
+        for (size_t off = 0; off < keyCount; off += 32) {
+            auto scan = RemarcScanBatch(page.TempCtrl.data(), off, keyCount, remarcConfig);
+            totalEnum += scan.ePageNumSum;
+        }
+
+        float ePage = RemarcComputeEPage(totalEnum, keyCount);
+        if (ePage > static_cast<float>(remarcConfig.ThetaEvict)) {
+            page.TryTransition(PageTier::Hot, PageTier::Freeze);
         }
     }
 }
@@ -240,15 +365,45 @@ Error NuAtlas::FurrBall::Get(const std::string &key, void* outBuf, size_t BufSiz
     }
 
     int nodeCount = globalNumaState.NumaNodeCount;
+    int currentNode = Numatic::GetCurrentNode();
     auto tryNode = [&](int n) -> Error {
         PerNodeDetails* details = DataMembers->privateNumaState->NodeDetails[n];
         auto meta = details->KeyStore.Find(key);
         if(meta.has_value()){
 #ifdef SIMULATE_NUMA_LATENCY_NS
-            if(Numatic::GetCurrentNode() != n) {
+            if(currentNode != n) {
                 simulateCrossNodeLatency();
             }
 #endif
+                if(meta->PageIndex < details->NodePages.size()) {
+                    Page& page = details->NodePages[meta->PageIndex];
+                    if(meta->TempCtrlIdx < page.TempCtrl.size()) {
+                        bool isRemote = (currentNode != n);
+                        uint8_t tc = page.TempCtrl[meta->TempCtrlIdx];
+
+                        bool shouldMigrate = isRemote &&
+                            RemarcMigrateScore(tc) > remarcConfig.ThetaMigrate &&
+                            RemarcShouldUpdateHotNode(tc, remarcConfig);
+
+                        if(shouldMigrate) {
+                            MigrateKey(key, HashKey(key), n, currentNode);
+                            return NO_ERR;
+                        }
+
+                        tc = isRemote ? RemarcUpdateRemote(tc, remarcConfig)
+                                      : RemarcUpdateLocal(tc, remarcConfig);
+                        page.TempCtrl[meta->TempCtrlIdx] = tc;
+
+                        if(isRemote && RemarcShouldUpdateHotNode(tc, remarcConfig)) {
+                            details->KeyStore.UpdateInPlace(key, [currentNode](KeyMeta& m) {
+                                m.HotNode = static_cast<uint8_t>(currentNode);
+                            });
+                            if(meta->TempCtrlIdx < page.HotNodes.size()) {
+                                page.HotNodes[meta->TempCtrlIdx] = static_cast<uint8_t>(currentNode);
+                            }
+                        }
+                    }
+                }
             outSize = meta->DataSize;
             if(BufSize < meta->DataSize) return BUF_NOT_LARGE_ENOUGH;
             memcpy(outBuf, meta->DataOffset, meta->DataSize);
@@ -260,7 +415,7 @@ Error NuAtlas::FurrBall::Get(const std::string &key, void* outBuf, size_t BufSiz
     };
 
     if(ThreadLocalRoute){
-        int local = Numatic::GetCurrentNode();
+        int local = currentNode;
         Error err = tryNode(local);
         if(err == NO_ERR){
             Stats.LocalHitCount.fetch_add(1, std::memory_order_relaxed);
@@ -294,9 +449,20 @@ Error NuAtlas::FurrBall::Set(const std::string &key, void *data, size_t size) no
 
     auto existing = details->KeyStore.Find(key);
     if(existing.has_value() && size <= existing->DataSize){
-        Error err = details->KeyStore.UpdateInPlace(key, [&data, &size](KeyMeta& meta){
+        Error err = details->KeyStore.UpdateInPlace(key, [&data, &size, this, targetNode, &details](KeyMeta& meta){
             memcpy(meta.DataOffset, data, size);
             meta.DataSize = size;
+            if(meta.PageIndex < details->NodePages.size()) {
+                Page& page = details->NodePages[meta.PageIndex];
+                if(meta.TempCtrlIdx < page.TempCtrl.size()) {
+                    int currentNode = Numatic::GetCurrentNode();
+                    bool isRemote = (currentNode != targetNode);
+                    uint8_t tc = page.TempCtrl[meta.TempCtrlIdx];
+                    tc = isRemote ? RemarcUpdateRemote(tc, remarcConfig)
+                                  : RemarcUpdateLocal(tc, remarcConfig);
+                    page.TempCtrl[meta.TempCtrlIdx] = tc;
+                }
+            }
         });
         if(err == NO_ERR){
             Stats.BytesWritten.fetch_add(size, std::memory_order_relaxed);
@@ -326,9 +492,16 @@ Error NuAtlas::FurrBall::Set(const std::string &key, void *data, size_t size) no
     metadata.PageIndex = pageIdx;
     metadata.DataOffset = Loc;
 
+    Page& page = details->NodePages[pageIdx];
+    HashPair hp = HashKey(key);
+    page.AddKeyEntry(hp);
+    metadata.TempCtrlIdx = static_cast<uint8_t>(page.TempCtrl.size() - 1);
+
     Error err = details->KeyStore.Set(key, metadata);
     if (err == NO_ERR) {
         Stats.BytesWritten.fetch_add(size, std::memory_order_relaxed);
+    } else {
+        page.RemoveKeyEntry(page.TempCtrl.size() - 1);
     }
     return err;
 }

@@ -19,7 +19,7 @@ set(HEADERS
 
 add_library(Furrballs STATIC ${SOURCES} ${HEADERS})
 
-target_compile_options(Furrballs PUBLIC -mssse3)
+target_compile_options(Furrballs PUBLIC -mssse3 -mavx2 -mbmi2)
 
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR}/src PREFIX "Source Files" FILES ${SOURCES})
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR}/include PREFIX "Header Files" FILES ${HEADERS})

@@ -241,6 +241,7 @@ private:
         bool Volatile;
         bool UseNUMA;
         bool ThreadLocalRoute;
+        RemarcConfig remarcConfig;
 
         std::vector<void*> AllocatedPages;
 
@@ -263,6 +264,8 @@ private:
 
         Page* AllocatePage(size_t pageIndex)noexcept;
         void FlushPage(Page* page)noexcept;
+        bool MigrateKey(const std::string& key, const HashPair& hp, int sourceNode, int destNode)noexcept;
+        void ScanAndExecute(int nodeID)noexcept;
 
     public:
         struct KeyMeta{
@@ -284,6 +287,8 @@ private:
             alignas(64) std::atomic<size_t> BytesWritten{0};
             alignas(64) std::atomic<size_t> BytesRead{0};
             alignas(64) std::atomic<unsigned int> LocalHitCount{0};
+            alignas(64) std::atomic<unsigned int> MigrationCount{0};
+            alignas(64) std::atomic<unsigned int> MigrationReversalCount{0};
             Statistics()noexcept = default;
             Statistics& operator=(const Statistics&) = delete;
             Statistics& operator=(Statistics&&) = delete;
@@ -296,6 +301,8 @@ private:
             size_t GetBytesWritten()const noexcept { return BytesWritten.load(); }
             size_t GetBytesRead()const noexcept { return BytesRead.load(); }
             unsigned int GetLocalHitCount()const noexcept { return LocalHitCount.load(); }
+            unsigned int GetMigrationCount()const noexcept { return MigrationCount.load(); }
+            unsigned int GetMigrationReversalCount()const noexcept { return MigrationReversalCount.load(); }
         } Stats;
 
         FurrBall(const FurrBall& cpy) = delete;

@@ -4,6 +4,7 @@ project:
   render:
     - index.qmd
     - whitepaper.qmd
+    - remarc-paper.qmd
   resources:
     - CNAME
 
@@ -15,6 +16,8 @@ website:
         text: Home
       - href: whitepaper.qmd
         text: Whitepaper
+      - href: remarc-paper.qmd
+        text: REMARC Paper
 
 format:
   html:
