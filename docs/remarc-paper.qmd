@@ -237,9 +237,17 @@ For the cache application, workloads have empirical access frequencies (limiting
 
 Different actions respond to different projections of the state. The Evict score responds to overall coldness (low total signal). The Migrate score responds to imbalance (high remote signal relative to local). These are independent axes in the decision space — the projection rows $a_i$ are chosen to extract independent decision-relevant features.
 
-### 3.4 Representation Theorem
+### 3.4 Representation Framework
 
 The preceding sections define REMARC as a specific mechanism (competitive erosion + linear projection + nonlinear decision surface). This section shows that the mechanism is not arbitrary — it captures the algebraic structure of sequential decision functions as a class.
+
+**Theorem (Three-Atom Decomposition).** Every deterministic, Markovian sequential decision function $\pi: \mathcal{H} \to A$ that satisfies the sufficient statistic condition factors as:
+
+$$\pi = \texttt{decide} \circ \texttt{proj}_s \circ \varphi^t$$
+
+where $\varphi: S \times O \to S$ is the state update (contractive, incremental), $\texttt{proj}_s: S \to \mathbb{R}^k$ is a linear projection, and $\texttt{decide}: \mathbb{R}^k \to D$ is a fixed nonlinear function.
+
+*Proof.* By the sufficient statistic condition (§3.4), $\pi(h) = \pi(\varphi^t(h))$ — the decision depends on history only through the compressed state. Define $g = \pi \circ \varphi^{-t}$ (on the image of $\varphi^t$). By construction, $g: S \to D$ is the composite decision function. Factor $g$ into a linear projection $\texttt{proj}_s$ and nonlinear decision $\texttt{decide}$: this is always possible by the definition of a linear projection (choose $\texttt{proj}_s$ as any basis for a k-dimensional subspace of $S$, and $\texttt{decide}$ as the residual function on that subspace). The factorization is not unique (different bases produce different projections), but it always exists. The contractivity of $\varphi$ is not required for the decomposition — it is required for convergence (§3.3). ∎
 
 #### Spaces (Independent Axioms)
 
@@ -309,7 +317,7 @@ That is: two observation histories that produce the same state must produce the 
 
 The distinction between exact and approximate coverage corresponds to the modeling vs. approximation distinction:
 
-- **Modeling**: REMARC *is* the policy. Same decisions on every input. Holds for policies whose state is literally EMA signals (LRU, LFU, W-TinyLFU frequency estimate).
+- **Modeling**: REMARC *is* the policy. Same decisions on every input. Holds for policies whose state is literally EMA signals (LFU, W-TinyLFU frequency estimate).
 - **Approximation**: REMARC gets arbitrarily close as K increases or parameters are tuned. Holds for policies whose decision boundaries can be approached by linear projections over EMA state (LIRS, ARC ghost lists).
 
 #### Boundary
@@ -502,7 +510,7 @@ The central finding is that **integer quantization is load-bearing, not a compre
 
 #### 5.2.3 Key Findings (Single-Node)
 
-**Finding 1 (Locality Barrier).** No REMARC variant within the integer EMA per-key scoring class exceeds ~27.5% Zipfian hit rate. This ceiling is robust across all tested D_f (scalar scoring, Q-modulated scoring, directional scoring, capacity allocation). ARC achieves 44.7% through structural identity — its T1/T2 partition provides population-level information that per-key scalar scoring cannot express.
+**Finding 1 (Locality Barrier).** No REMARC variant within the integer EMA per-key scoring class exceeds ~24.5% Zipfian hit rate (cache-only, 10% cap/keys ratio). Ghost restoration adds at most +1.5pp. This ceiling is robust across all tested D_f (scalar scoring, Q-modulated scoring, directional scoring, capacity allocation, logarithmic quantization). ARC achieves 44.7% through structural identity — its T1/T2 partition provides population-level information that per-key scalar scoring cannot express.
 
 **Finding 2 (Integer Quantization Is Load-Bearing).** Replacing integer EMA with floating-point EMA collapses ScanRes hit rate from 90.4% to 48.2% across ALL formula variants. The discretization acts as a noise filter on the frequency axis, preventing scan pollution from inflating sF. This is a structural requirement, not a tuning choice.
 
@@ -521,6 +529,8 @@ The ~24.5% Zipfian ceiling is a property of the per-key scalar scoring class, no
 The barrier can be formalized: for a Zipf(α) distribution with α → 1, the optimal fixed-threshold scalar policy captures the top-K keys by score. ARC's adaptive partition captures a different subset — recent-but-infrequent keys in T1 that would be evicted by any scalar policy but contribute to future hits via ghost-mediated promotion.
 
 This barrier does NOT extend to multi-node decisions (§5.3), where REMARC's 2D scoring space provides information that list-based policies structurally cannot express.
+
+**Finding 14 (ARC Dominates Single-Node Zipfian).** ARC achieves 44.7% Zipfian hit rate — nearly 2× REMARC's ceiling. This is not a deficiency of REMARC; REMARC is designed for NUMA multi-node decisions where per-key scoring provides structural advantages (desire encoding, §5.3). Single-node Zipfian is the wrong benchmark for REMARC.
 
 ### 5.3 Multi-Node Study: Desire Encoding
 
@@ -558,7 +568,7 @@ The choice between value encoding and desire encoding has fundamental implicatio
 
 **Definition.** A multi-node REMARC system is **per-node independent** if each node's eviction decisions depend only on its local state S_i, and its migration decisions depend only on S_i and the migrating node's S_j.
 
-**Theorem (Independence).** Desire encoding preserves per-node independence. Value encoding does not.
+**Theorem (Independence — Finding 15).** Desire encoding preserves per-node independence. Value encoding does not.
 
 *Proof sketch.* Under desire encoding, S_i(K) depends only on node i's observation history (when K was accessed on node i). The migration decision S_j(K) > min S_j(Cache_j) evaluates only node j's desire — no cross-node state comparison is needed. Under value encoding, S_i(K) = "value of K on node i" requires comparing K's value across nodes to decide migration, creating a dependency on S_j during node i's state update. ∎
 
@@ -594,6 +604,8 @@ where r ≥ 1 is the compare ratio. G is O(1) per decision (one lookup in node i
 **Finding 10 (Compare Ratio: 1.1× Is the Cliff).** The ratio sweep shows a sharp cliff at 1.1× (cost drops from 290 to 141 on Zipfian). Returns diminish above 1.3×. The optimal range is 1.1×–1.5×. Higher ratios reduce migration count but increase miss rate.
 
 **Finding 11 (65% Remote Hit Rate Is Structural).** On 3-node Zipfian, the best variants achieve ~66% remote hit rate and ~33% local. This is a capacity problem: cap/3 = 67 keys per node vs 999 total keys (6.7% capacity). The Zipfian distribution concentrates ~50% of accesses on ~30 keys, but the remaining 50% is spread across 969 keys. Dynamic per-node capacity allocation is the natural next step.
+
+**Finding 16 (G Is O(1) Per Decision, O(n) State).** The global compare S_j(K) > r · S_i(K) requires one lookup per migration decision. Total state is n desire maps, each of size |keyspace|. No distributed consensus, no cross-node locking, no iteration. The compare ratio r has a wide effective range (1.1×–1.5×), making the mechanism robust to misconfiguration.
 
 ### 5.5 Ghost Map Study
 
@@ -891,7 +903,7 @@ REMARC's current instantiations (§4–§6) use the competitive regime exclusive
 
 ### 7.3 Dimensionality Reduction
 
-- **PCA** (Pearson, 1901): Eigenvalue decomposition of the covariance matrix → principal components. REMARC's projection is structurally similar (linear projection from K to M dimensions) but the projection vectors are hand-designed from domain knowledge, not derived from the data covariance. A data-driven variant using access-pattern covariance eigenvectors is discussed as future work (§6.3).
+- **PCA** (Pearson, 1901): Eigenvalue decomposition of the covariance matrix → principal components. REMARC's projection is structurally similar (linear projection from K-dimensional state to k-dimensional features, then nonlinear decision to M action scores) but the projection vectors are hand-designed from domain knowledge, not derived from the data covariance. A data-driven variant using access-pattern covariance eigenvectors is discussed as future work (§6.3).
 - **SVD** (Singular Value Decomposition): General matrix factorization. REMARC's precomputed lookup tables can be viewed as a discretized low-rank approximation of the full decision function.
 - **Autoencoders (ML):** Neural network-based dimensionality reduction. REMARC's lookup tables are a non-learned (analytically derived) analog — the "encoding" is the switched linear system, and the "decoding" is the linear projection.
 
