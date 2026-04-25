@@ -4,6 +4,7 @@ subtitle: "A Multi-Dimensional Framework for Unified Cache Eviction and Migratio
 author: "Hamza Jamil Saied (The Sphynx)"
 date: last-modified
 lang: en
+babel-lang: none
 format:
   html:
     toc: true

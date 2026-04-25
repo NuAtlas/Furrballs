@@ -5,6 +5,7 @@ author: "Hamza Jamil Saied (The Sphynx)"
 date: last-modified
 doi: "10.5281/zenodo.19669844"
 lang: en
+babel-lang: none
 format:
   html:
     toc: true
