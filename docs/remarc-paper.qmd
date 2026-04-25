@@ -492,7 +492,15 @@ We tested 30+ REMARC variants including: bare REMARC (linear formula), factored 
 | REMARC Log8 (8,4,8,512) | 24.3% | 14.7% | 84.2% | 3.1% |
 | REMARC tiered (p-adaptive) | 24.5% | 11.7% | 85.3% | 44.2% |
 
-#### 5.2.2 Key Findings (Single-Node)
+#### 5.2.2 Quantization Comparison
+
+Figure 1 isolates the effect of numeric representation across the four core workloads. The data covers four quantization classes: **Float64** (factored EMA with R,F ∈ [0,1]), **4-bit integer** (bare REMARC), **8-bit integer** (factored FI-Mult), and **Log8 integer** (logarithmic quantization, best-tuned).
+
+![Figure 1: Hit rate by workload across quantization classes. Integer quantization preserves ScanResistant (~90%) and enables Looping (~49%). Float64 collapses ScanResistant to 48% and scores 0% on Looping. Log8 trades Looping for a marginal Zipfian gain.](fig-quantization.svg){#fig-quantization fig-align="center"}
+
+The central finding is that **integer quantization is load-bearing, not a compression technique** (Finding 2). Float64 EMA allows R → 0.99999 for hot keys, making (1−R) ≈ 10⁻⁵. After 10 decay steps the state jumps 1000×, causing hypersensitivity and cascading evictions. Integer truncation floors (MAX−R) ≥ 1, preventing this divergence. The 4-bit and 8-bit integer variants produce nearly identical results, confirming that B controls effective dynamics (α/2^B) rather than precision.
+
+#### 5.2.3 Key Findings (Single-Node)
 
 **Finding 1 (Locality Barrier).** No REMARC variant within the integer EMA per-key scoring class exceeds ~27.5% Zipfian hit rate. This ceiling is robust across all tested D_f (scalar scoring, Q-modulated scoring, directional scoring, capacity allocation). ARC achieves 44.7% through structural identity — its T1/T2 partition provides population-level information that per-key scalar scoring cannot express.
 
@@ -506,7 +514,7 @@ We tested 30+ REMARC variants including: bare REMARC (linear formula), factored 
 
 **Finding 6 (Tiered/Capacity Allocation Collapses).** ARC-like T_R/T_F partition with p-controlled split causes p to always collapse to pMin. Ghost_R fills with cold revolving-door keys — recently evicted items from T_F re-enter T_R at zero cost, preventing meaningful capacity rebalancing.
 
-#### 5.2.3 Locality Barrier Analysis
+#### 5.2.4 Locality Barrier Analysis
 
 The ~24.5% Zipfian ceiling is a property of the per-key scalar scoring class, not of REMARC specifically. Any policy where D_evict = g(S(K)) for scalar S(K) produces a total order on keys. ARC's T1/T2 partition breaks this total order — it maintains two populations with distinct admission criteria, providing strictly more information per capacity unit.
 
