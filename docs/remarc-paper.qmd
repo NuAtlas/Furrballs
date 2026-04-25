@@ -31,7 +31,7 @@ format:
         \KOMAoptions{headsepline=true}
 ---
 
-**Status:** Draft with evaluation
+**Status:** Research journal (living document). This is not a definitive paper — it documents ongoing work, negative results, and open questions alongside findings. Conclusions may change as experiments progress.
 **Date:** April 2026
 
 [Download PDF](remarc-paper.pdf)
