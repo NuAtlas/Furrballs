@@ -3,6 +3,7 @@ title: "REMARC: Reduction-Modeled Adaptive Replacement Cache"
 subtitle: "A Multi-Dimensional Framework for Unified Cache Eviction and Migration"
 author: "Hamza Jamil Saied (The Sphynx)"
 date: last-modified
+doi: "10.5281/zenodo.19669984"
 lang: en
 babel-lang: none
 format:
