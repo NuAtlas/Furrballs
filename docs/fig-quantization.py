@@ -45,6 +45,8 @@ ax.grid(axis="y", linestyle=":", alpha=0.4)
 
 fig.tight_layout()
 fig.subplots_adjust(bottom=0.22)
+fig.savefig("/home/ubuntu/source/repos/Furrballs/docs/fig-quantization.pdf",
+            format="pdf", dpi=150, bbox_inches="tight")
 fig.savefig("/home/ubuntu/source/repos/Furrballs/docs/fig-quantization.svg",
-            format="svg", dpi=150)
+            format="svg", dpi=150, bbox_inches="tight")
 print("OK")
