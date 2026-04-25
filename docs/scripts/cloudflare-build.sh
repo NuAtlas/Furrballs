@@ -11,9 +11,7 @@ curl -fsSL "${QUARTO_URL}" -o /tmp/quarto.tar.gz
 tar -xzf /tmp/quarto.tar.gz -C "${QUARTO_ROOT}"
 export PATH="${QUARTO_ROOT}/quarto-${QUARTO_VERSION}/bin:${PATH}"
 
-apt-get install -y wget perl
-
-wget -qO- "https://yihui.org/tinytex/install-bin-unix.sh" | sh
+curl -L "https://tinytex.yihui.org/install-bin-unix.sh" | sh
 
 export PATH="$PATH:$HOME/.TinyTeX/bin/x86_64-linux"
 
