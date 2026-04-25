@@ -4,7 +4,7 @@ title: "Furrballs Documentation"
 
 ## Overview
 
-Furrballs is a NUMA-aware, high-performance caching library in C++. **DOI: [10.5281/zenodo.19669984](https://doi.org/10.5281/zenodo.19669984)**
+Furrballs is a NUMA-aware, high-performance caching library in C++.
 
 Use this site to read the current technical whitepaper and follow project progress.
 

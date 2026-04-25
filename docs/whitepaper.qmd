@@ -3,7 +3,7 @@ title: "Furrballs: A NUMA-Aware, High-Performance Caching Library"
 subtitle: "Technical Report v1.9.4"
 author: "Hamza Jamil Saied (The Sphynx)"
 date: last-modified
-doi: "10.5281/zenodo.19669844"
+doi: "10.5281/zenodo.19669984"
 lang: en
 babel-lang: none
 format:
