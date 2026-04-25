@@ -16,4 +16,4 @@ curl -L "https://tinytex.yihui.org/install-bin-unix.sh" | sh
 export PATH="$PATH:$HOME/.TinyTeX/bin/x86_64-linux"
 
 cd docs
-quarto render --to html
+quarto render
