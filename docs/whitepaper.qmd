@@ -42,8 +42,6 @@ format:
     number-sections: false
 ---
 
-[Download PDF](whitepaper.pdf)
-
 ## Status
 v1.9.4 --- REMARC paper outline drafted (docs/remarc-paper.md), Steps 1-4 of REMARC implementation (Remarc.h, Page.h, Furrballs.h, CMakeLists.txt)
 

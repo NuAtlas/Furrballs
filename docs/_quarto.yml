@@ -24,12 +24,6 @@ format:
     toc: true
     number-sections: true
     code-fold: false
-  pdf:
-    toc: true
-    number-sections: true
-  docx:
-    toc: true
-    number-sections: true
 
 execute:
   enabled: false
