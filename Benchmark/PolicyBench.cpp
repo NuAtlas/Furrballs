@@ -3187,6 +3187,122 @@ public:
     }
 };
 
+// --- Quota-Free: Pure predictive eviction, no ARC structure ---
+//
+//  Research direction 1 from the delivery-quota tension: eliminate all ARC
+//  machinery (T1/T2/B1/B2, p-adaptation, ghost lists) and rely entirely
+//  on prediction (predictedNext = lastEpoch + avgGap) for eviction.
+//
+//  Design:
+//  - Single unordered_map<uint64_t, Entry> (no lists, no tiers)
+//  - Max-heap keyed by predictedNext with lazy deletion via version stamps
+//  - On miss + cache full: pop heap for highest predictedNext, evict it
+//  - On hit: update REMARC state, push new heap entry
+//  - No ghost lists, no p-adaptation, no quota mechanism
+//
+//  This tests whether prediction alone suffices without ARC's structural
+//  information (scan resistance from ghost lists, p-adaptation from B1/B2).
+
+class BareREMARC_QuotaFree {
+
+    struct HeapEntry {
+        uint64_t predictedNext;
+        uint64_t key;
+        uint64_t version;
+        bool operator<(const HeapEntry& o) const {
+            if (predictedNext != o.predictedNext) return predictedNext < o.predictedNext;
+            return version < o.version;
+        }
+    };
+
+    struct Entry {
+        uint8_t state = 0;
+        uint32_t lastEpoch = 0;
+        uint32_t avgGap = 0;
+        uint64_t version = 0;
+    };
+
+    std::unordered_map<uint64_t, Entry> idx_;
+    std::priority_queue<HeapEntry> heap_;
+    size_t cap_;
+    size_t hits_ = 0, misses_ = 0, evictions_ = 0;
+    uint32_t epoch_ = 0;
+
+    void pushToHeap(uint64_t key) {
+        auto it = idx_.find(key);
+        if (it == idx_.end()) return;
+        Entry& e = it->second;
+        e.version++;
+        uint64_t pred = (e.avgGap > 0) ? (uint64_t)e.lastEpoch + e.avgGap
+                                       : (uint64_t)epoch_;
+        heap_.push({pred, key, e.version});
+    }
+
+    void evictOne() {
+        size_t attempts = 0;
+        while (!heap_.empty() && attempts < 64) {
+            attempts++;
+            HeapEntry top = heap_.top();
+            auto it = idx_.find(top.key);
+            if (it == idx_.end()) { heap_.pop(); continue; }
+            Entry& e = it->second;
+            if (e.version != top.version) { heap_.pop(); continue; }
+            idx_.erase(top.key);
+            heap_.pop();
+            evictions_++;
+            return;
+        }
+        if (!idx_.empty()) {
+            auto it = idx_.begin();
+            idx_.erase(it);
+            evictions_++;
+        }
+    }
+
+    void touchState(uint64_t key) {
+        auto it = idx_.find(key);
+        if (it == idx_.end()) return;
+        Entry& e = it->second;
+        uint32_t gap = epoch_ - e.lastEpoch;
+        e.lastEpoch = epoch_;
+        if (gap > 0) {
+            e.avgGap = e.avgGap * 3 / 4 + gap / 4;
+        }
+        uint8_t s = e.state;
+        uint8_t r = augGetR(s), f = augGetF(s);
+        for (uint32_t i = 0; i < gap && r > 0; i++) r = augDecayR(r);
+        r = augBoostR(r);
+        f = augBoostF(f);
+        e.state = augPack(r, f);
+        pushToHeap(key);
+    }
+
+public:
+    BareREMARC_QuotaFree(size_t capacity, size_t, const RemarcConfig&, size_t = 64, uint8_t = 4)
+        : cap_(capacity) {}
+
+    void access(uint64_t key) {
+        epoch_++;
+        auto it = idx_.find(key);
+        if (it != idx_.end()) {
+            touchState(key);
+            hits_++;
+            return;
+        }
+        misses_++;
+        if (idx_.size() >= cap_) {
+            evictOne();
+        }
+        idx_[key] = {augPack(AUG_REMARC_MAX, 0), epoch_, 0, 0};
+        pushToHeap(key);
+    }
+
+    size_t hits() const { return hits_; }
+    size_t misses() const { return misses_; }
+    size_t evictions() const { return evictions_; }
+    size_t scans() const { return 0; }
+};
+
 // --- Aug-BOTHEND: ARC quota + MRU/LRU dual-end eviction ---
 //
 //  Same as AUG-TS4 but in replace(), compares predicted_next of front (MRU)
@@ -3862,6 +3978,7 @@ int main(int argc, char** argv) {
         "AUG-HEAP",
         "AUG-BOTHEND",
         "AUG-ADAPT",
+        "QuotaFree",
     };
     constexpr int NPOL = sizeof(policyNames) / sizeof(policyNames[0]);
 
@@ -3916,6 +4033,8 @@ int main(int argc, char** argv) {
             samples["AUG-BOTHEND"].push_back(runBench(augBE, wl));
             BareREMARC_Aug_ADAPT augADAPT(capacity, kpp, defaultCfg, 64, 4);
             samples["AUG-ADAPT"].push_back(runBench(augADAPT, wl));
+            BareREMARC_QuotaFree qf(capacity, kpp, defaultCfg, 64, 4);
+            samples["QuotaFree"].push_back(runBench(qf, wl));
         }
 
         std::map<std::string, AggBench> agg;
