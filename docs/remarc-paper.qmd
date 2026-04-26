@@ -1372,6 +1372,8 @@ Storage: 2 bytes × |active keys| per node. For 10M keys on 2 nodes: ~40 MB tota
 
 **Get() Path.**
 
+### A.3 Access Path
+
 ```
 Get(key K):
   1. Route to home node (NUMA affinity)
