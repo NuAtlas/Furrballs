@@ -4,17 +4,19 @@
 #include <vector>
 #include <string>
 
-int main() {
-    FurrBall::Bootstrap();
+using FB = NuAtlas::FurrBall<NuAtlas::StandardRemarc>;
 
-    FurrConfig config;
+int main() {
+    FB::Bootstrap();
+
+    NuAtlas::FurrConfig config;
     config.EnableLogging = true;
     config.InitialPageCount = 16;
     config.EnableNUMA = true;
-    NumaConfig numaConfig;
+    NuAtlas::NumaConfig numaConfig;
     config.numaConfig = &numaConfig;
 
-    FurrBall* fb = FurrBall::CreateBall("TestDB", config);
+    FB* fb = FB::CreateBall("TestDB", config);
     if (!fb) {
         std::cerr << "Error: Furrball has not initialized" << std::endl;
         return -1;
@@ -37,15 +39,15 @@ int main() {
     size_t outSize = 0;
 
     for (const auto& entry : entries) {
-        Error err = fb->Set(entry.key, (void*)entry.value.c_str(), entry.value.size());
-        if (err != NO_ERR) {
+        NuAtlas::Error err = fb->Set(entry.key, (void*)entry.value.c_str(), entry.value.size());
+        if (err != NuAtlas::NO_ERR) {
             std::cerr << "Set failed for key '" << entry.key << "': " << err << std::endl;
         }
     }
 
     for (const auto& entry : entries) {
-        Error err = fb->Get(entry.key, buf, sizeof(buf), outSize);
-        if (err == NO_ERR) {
+        NuAtlas::Error err = fb->Get(entry.key, buf, sizeof(buf), outSize);
+        if (err == NuAtlas::NO_ERR) {
             std::string readVal((char*)buf, outSize);
             bool match = (readVal == entry.value);
             std::cout << "[" << (match ? "OK" : "FAIL") << "] "
@@ -56,16 +58,16 @@ int main() {
         }
     }
 
-    Error missErr = fb->Get("nonexistent", buf, sizeof(buf), outSize);
+    NuAtlas::Error missErr = fb->Get("nonexistent", buf, sizeof(buf), outSize);
     std::cout << "["
-              << (missErr == INVALID_ARG ? "OK" : "FAIL")
+              << (missErr == NuAtlas::INVALID_ARG ? "OK" : "FAIL")
               << "] nonexistent key: "
-              << (missErr == INVALID_ARG ? "correctly returned error" : "unexpected success")
+              << (missErr == NuAtlas::INVALID_ARG ? "correctly returned error" : "unexpected success")
               << std::endl;
 
     const char* updateData = "updated value!";
-    Error setErr = fb->Set("counter", (void*)updateData, std::strlen(updateData));
-    if (setErr == NO_ERR) {
+    NuAtlas::Error setErr = fb->Set("counter", (void*)updateData, std::strlen(updateData));
+    if (setErr == NuAtlas::NO_ERR) {
         fb->Get("counter", buf, sizeof(buf), outSize);
         std::string readVal((char*)buf, outSize);
         bool match = (readVal == std::string(updateData));
@@ -81,6 +83,6 @@ int main() {
     std::cout << "  TotalAllocated: " << fb->Stats.GetTotalAllocated() << std::endl;
 
     delete fb;
-    FurrBall::Shutdown();
+    FB::Shutdown();
     return 0;
 }

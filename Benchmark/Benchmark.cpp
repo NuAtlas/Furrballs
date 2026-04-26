@@ -52,8 +52,10 @@ static double computeStddev(const std::vector<ns>& sorted, double mean) {
     return std::sqrt(sum / sorted.size());
 }
 
+using FB = FurrBall<StandardRemarc>;
+
 struct ThreadArg {
-    FurrBall* fb;
+    FB* fb;
     size_t startKey;
     size_t endKey;
     size_t valueSize;
@@ -89,7 +91,7 @@ static void threadWorker(ThreadArg* arg) {
     }
 }
 
-static void warmupSet(FurrBall* fb, const std::string& prefix, size_t numOps, size_t valueSize) {
+static void warmupSet(FB* fb, const std::string& prefix, size_t numOps, size_t valueSize) {
     std::vector<char> value(valueSize, 'X');
     for (size_t i = 0; i < numOps; i++) {
         std::string key = prefix + "_key_" + std::to_string(i);
@@ -97,7 +99,7 @@ static void warmupSet(FurrBall* fb, const std::string& prefix, size_t numOps, si
     }
 }
 
-static void warmupSetMT(FurrBall* fb, int numThreads, size_t keysPerThread, size_t valueSize, bool crossNode, int numNodes) {
+static void warmupSetMT(FB* fb, int numThreads, size_t keysPerThread, size_t valueSize, bool crossNode, int numNodes) {
     std::vector<ThreadArg> args(numThreads);
     std::vector<std::thread> threads(numThreads);
     std::vector<std::vector<ns>> dummy(numThreads);
@@ -117,7 +119,7 @@ static void warmupSetMT(FurrBall* fb, int numThreads, size_t keysPerThread, size
     for (auto& th : threads) th.join();
 }
 
-static BenchResult benchSingleThread(FurrBall* fb, const std::string& prefix, size_t numOps, size_t valueSize, bool doSet) {
+static BenchResult benchSingleThread(FB* fb, const std::string& prefix, size_t numOps, size_t valueSize, bool doSet) {
     BenchResult result;
     result.name = prefix + (doSet ? " Set" : " Get");
     result.ops = numOps;
@@ -163,7 +165,7 @@ static BenchResult benchSingleThread(FurrBall* fb, const std::string& prefix, si
     return result;
 }
 
-static BenchResult benchMultiThread(FurrBall* fb, const std::string& name, int numThreads, int numNodes, size_t keysPerThread, size_t valueSize, bool doSet, bool crossNode) {
+static BenchResult benchMultiThread(FB* fb, const std::string& name, int numThreads, int numNodes, size_t keysPerThread, size_t valueSize, bool doSet, bool crossNode) {
     BenchResult result;
     result.name = name;
 
@@ -222,7 +224,7 @@ struct IterationResult {
     double avgStddev = 0;
 };
 
-static IterationResult runIterations(FurrBall* fb, const std::function<BenchResult(FurrBall*)>& benchFn, int iterations) {
+static IterationResult runIterations(FB* fb, const std::function<BenchResult(FB*)>& benchFn, int iterations) {
     IterationResult ir;
     std::vector<double> opsPerSec(iterations);
     std::vector<double> p50s(iterations);
@@ -256,7 +258,7 @@ struct RoutingBenchResult {
     double crossGetP50 = 0, crossGetP99 = 0;
 };
 
-static RoutingBenchResult benchRoutingStrategy(FurrBall* fb, const std::string& name, int numNodes, size_t keysPerThread, size_t valueSize) {
+static RoutingBenchResult benchRoutingStrategy(FB* fb, const std::string& name, int numNodes, size_t keysPerThread, size_t valueSize) {
     RoutingBenchResult result;
     result.name = name;
 
@@ -339,7 +341,7 @@ static RoutingBenchResult benchRoutingStrategy(FurrBall* fb, const std::string& 
 }
 
 int main() {
-    FurrBall::Bootstrap();
+    FB::Bootstrap();
 
     int numNodes = Numatic::GetNodeCount();
     int iterations = 10;
@@ -364,16 +366,16 @@ int main() {
     config.InitialPageCount = 2048;
     config.numaConfig = &numaConfig;
 
-    FurrBall* fb = FurrBall::CreateBall("BenchDB", config);
+    FB* fb = FB::CreateBall("BenchDB", config);
     if (!fb) {
         config.EnableNUMA = false;
         config.numaConfig = nullptr;
-        fb = FurrBall::CreateBall("BenchDB", config);
+        fb = FB::CreateBall("BenchDB", config);
         numNodes = 1;
     }
     if (!fb) {
         std::cerr << "Cannot create FurrBall" << std::endl;
-        FurrBall::Shutdown();
+        FB::Shutdown();
         return -1;
     }
 
@@ -386,8 +388,8 @@ int main() {
     std::cout << "64-byte values, 10000 ops" << std::endl;
     std::cout << std::string(110, '-') << std::endl;
     {
-        auto setI = runIterations(fb, [&](FurrBall* b){ return benchSingleThread(b, "64B", 10000, 64, true); }, iterations);
-        auto getI = runIterations(fb, [&](FurrBall* b){ return benchSingleThread(b, "64B", 10000, 64, false); }, iterations);
+        auto setI = runIterations(fb, [&](FB* b){ return benchSingleThread(b, "64B", 10000, 64, true); }, iterations);
+        auto getI = runIterations(fb, [&](FB* b){ return benchSingleThread(b, "64B", 10000, 64, false); }, iterations);
         std::cout << "Set  | " << std::fixed << std::setprecision(0)
                   << "avg " << setI.avgOpsPerSec << " ops/s | p50 " << setI.avgP50 << " ns | p99 " << setI.avgP99 << " ns | stddev " << setI.avgStddev << " ns" << std::endl;
         std::cout << "Get  | " << std::fixed << std::setprecision(0)
@@ -399,8 +401,8 @@ int main() {
     std::cout << "512-byte values, 5000 ops" << std::endl;
     std::cout << std::string(110, '-') << std::endl;
     {
-        auto setI = runIterations(fb, [&](FurrBall* b){ return benchSingleThread(b, "512B", 5000, 512, true); }, iterations);
-        auto getI = runIterations(fb, [&](FurrBall* b){ return benchSingleThread(b, "512B", 5000, 512, false); }, iterations);
+        auto setI = runIterations(fb, [&](FB* b){ return benchSingleThread(b, "512B", 5000, 512, true); }, iterations);
+        auto getI = runIterations(fb, [&](FB* b){ return benchSingleThread(b, "512B", 5000, 512, false); }, iterations);
         std::cout << "Set  | " << std::fixed << std::setprecision(0)
                   << "avg " << setI.avgOpsPerSec << " ops/s | p50 " << setI.avgP50 << " ns | p99 " << setI.avgP99 << " ns | stddev " << setI.avgStddev << " ns" << std::endl;
         std::cout << "Get  | " << std::fixed << std::setprecision(0)
@@ -412,8 +414,8 @@ int main() {
     std::cout << "4KB values, 1000 ops" << std::endl;
     std::cout << std::string(110, '-') << std::endl;
     {
-        auto setI = runIterations(fb, [&](FurrBall* b){ return benchSingleThread(b, "4KB", 1000, 4096, true); }, iterations);
-        auto getI = runIterations(fb, [&](FurrBall* b){ return benchSingleThread(b, "4KB", 1000, 4096, false); }, iterations);
+        auto setI = runIterations(fb, [&](FB* b){ return benchSingleThread(b, "4KB", 1000, 4096, true); }, iterations);
+        auto getI = runIterations(fb, [&](FB* b){ return benchSingleThread(b, "4KB", 1000, 4096, false); }, iterations);
         std::cout << "Set  | " << std::fixed << std::setprecision(0)
                   << "avg " << setI.avgOpsPerSec << " ops/s | p50 " << setI.avgP50 << " ns | p99 " << setI.avgP99 << " ns | stddev " << setI.avgStddev << " ns" << std::endl;
         std::cout << "Get  | " << std::fixed << std::setprecision(0)
@@ -560,7 +562,7 @@ int main() {
                 scfg.PageSize = 4096;
                 scfg.InitialPageCount = 2048;
                 scfg.numaConfig = &sncfg;
-                FurrBall* sfb = FurrBall::CreateBall("BenchDB_Scale_" + std::to_string(tc), scfg, true);
+                FB* sfb = FB::CreateBall("BenchDB_Scale_" + std::to_string(tc), scfg, true);
                 if (!sfb) continue;
                 auto sr = benchMultiThread(sfb, "Set", tc, numNodes, kpt, 64, true, false);
                 auto gr = benchMultiThread(sfb, "Get", tc, numNodes, kpt, 64, false, false);
@@ -592,7 +594,7 @@ int main() {
         configTL.InitialPageCount = 2048;
         configTL.numaConfig = &numaTL;
 
-        FurrBall* fb_tl = FurrBall::CreateBall("BenchDB_TL", configTL);
+        FB* fb_tl = FB::CreateBall("BenchDB_TL", configTL);
         if (fb_tl) {
             double rrSetP50 = 0, rrSetP99 = 0, rrSelfP50 = 0, rrSelfP99 = 0, rrCrossP50 = 0, rrCrossP99 = 0;
             double tlSetP50 = 0, tlSetP99 = 0, tlSelfP50 = 0, tlSelfP99 = 0, tlCrossP50 = 0, tlCrossP99 = 0;
@@ -664,13 +666,13 @@ int main() {
         std::cout << "Same SeqLock reads, same bump allocator. Difference: per-node allocation + sharding." << std::endl;
         std::cout << std::string(110, '=') << std::endl;
 
-        FurrBall* fb_fresh = FurrBall::CreateBall("BenchDB_BL", config);
+        FB* fb_fresh = FB::CreateBall("BenchDB_BL", config);
         if (!fb_fresh) fb_fresh = fb;
 
         BaselineCache baseline(4096, 4096);
 
         auto benchBaselineST = [&](bool doSet, size_t numOps, size_t valueSize) -> IterationResult {
-            return runIterations(fb_fresh, [&](FurrBall*) -> BenchResult {
+            return runIterations(fb_fresh, [&](FB*) -> BenchResult {
                 BenchResult r;
                 r.name = doSet ? "Set" : "Get";
                 r.ops = numOps;
@@ -711,9 +713,9 @@ int main() {
         };
 
         {
-            auto fSet = runIterations(fb_fresh, [&](FurrBall* b){ return benchSingleThread(b, "bl64", 10000, 64, true); }, iterations);
+            auto fSet = runIterations(fb_fresh, [&](FB* b){ return benchSingleThread(b, "bl64", 10000, 64, true); }, iterations);
             auto bSet = benchBaselineST(true, 10000, 64);
-            auto fGet = runIterations(fb_fresh, [&](FurrBall* b){ return benchSingleThread(b, "bl64", 10000, 64, false); }, iterations);
+            auto fGet = runIterations(fb_fresh, [&](FB* b){ return benchSingleThread(b, "bl64", 10000, 64, false); }, iterations);
             auto bGet = benchBaselineST(false, 10000, 64);
 
             std::cout << std::endl;
@@ -866,7 +868,7 @@ int main() {
         size_t zipfKeysPerThread = 5000;
         size_t zipfReadOps = 10000;
 
-        auto benchZipfian = [&](FurrBall* fball, const std::string& name, int nNodes) -> void {
+        auto benchZipfian = [&](FB* fball, const std::string& name, int nNodes) -> void {
             std::cout << std::endl;
             std::cout << "--- " << name << " ---" << std::endl;
 
@@ -974,7 +976,7 @@ int main() {
         configTL.InitialPageCount = 2048;
         configTL.numaConfig = &numaTL;
 
-        FurrBall* fb_tl = FurrBall::CreateBall("BenchDB_ZF", configTL);
+        FB* fb_tl = FB::CreateBall("BenchDB_ZF", configTL);
         if (fb_tl) {
             benchZipfian(fb, "Round-robin", numNodes);
             benchZipfian(fb_tl, "Thread-local", numNodes);
@@ -1121,7 +1123,7 @@ int main() {
             cfgSM.InitialPageCount = 2048;
             cfgSM.numaConfig = &numaSM;
 
-            FurrBall* fb_sm = FurrBall::CreateBall("BenchDB_SM_FB", cfgSM);
+            FB* fb_sm = FB::CreateBall("BenchDB_SM_FB", cfgSM);
             if (fb_sm) {
                 benchVariant(*fb_sm, "Furrballs (shared+SeqLock)", "smfb", false);
                 delete fb_sm;
@@ -1253,7 +1255,7 @@ int main() {
         cfgRR.PageSize = 4096;
         cfgRR.InitialPageCount = 2048;
         cfgRR.numaConfig = &numaRR;
-        FurrBall* fb_rr = FurrBall::CreateBall("BenchDB_AB_C", cfgRR);
+        FB* fb_rr = FB::CreateBall("BenchDB_AB_C", cfgRR);
         if (fb_rr) {
             benchAblation(*fb_rr, "C: + Per-node sharding", "abC");
 
@@ -1267,7 +1269,7 @@ int main() {
             cfgTL2.PageSize = 4096;
             cfgTL2.InitialPageCount = 2048;
             cfgTL2.numaConfig = &numaTL2;
-            FurrBall* fb_tl2 = FurrBall::CreateBall("BenchDB_AB_D", cfgTL2);
+            FB* fb_tl2 = FB::CreateBall("BenchDB_AB_D", cfgTL2);
             if (fb_tl2) {
                 benchAblation(*fb_tl2, "D: + Thread-local routing", "abD");
                 delete fb_tl2;
@@ -1295,6 +1297,6 @@ int main() {
     std::cout << "  BytesRead: " << fb->Stats.GetBytesRead() << std::endl;
 
     delete fb;
-    FurrBall::Shutdown();
+    FB::Shutdown();
     return 0;
 }

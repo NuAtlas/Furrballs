@@ -10,6 +10,7 @@ namespace NuAtlas
 {
     struct HashPair {
         uint64_t h1, h2;
+        bool operator==(const HashPair& o) const noexcept { return h1 == o.h1 && h2 == o.h2; }
     };
 
     class SpinLock {
@@ -225,6 +226,24 @@ namespace NuAtlas
         Cold = 1,
         Empty = 2,
         Freeze = 3
+    };
+
+    // --- REMARC Atom Framework ---
+    // Each atom is one dimension of per-key state in the decomposition E = P(A₁, ..., Aₙ).
+    // Stateless: behavior only. State lives in Page::TempCtrl, interpreted by the Policy.
+
+    struct AtomSLocal {
+        static constexpr uint8_t Initial = REMARC_MAX;
+        static uint8_t Promote(uint8_t s, uint8_t alpha) noexcept { return RemarcBoost(s, alpha); }
+        static uint8_t Demote(uint8_t s, uint8_t alpha) noexcept { return RemarcDecay(s, alpha); }
+        static uint8_t TimeDecay(uint8_t s, uint8_t num, uint8_t den) noexcept { return RemarcTimeDecay(s, num, den); }
+    };
+
+    struct AtomSRemote {
+        static constexpr uint8_t Initial = 0;
+        static uint8_t Promote(uint8_t s, uint8_t alpha) noexcept { return RemarcBoost(s, alpha); }
+        static uint8_t Demote(uint8_t s, uint8_t alpha) noexcept { return RemarcDecay(s, alpha); }
+        static uint8_t TimeDecay(uint8_t s, uint8_t num, uint8_t den) noexcept { return RemarcTimeDecay(s, num, den); }
     };
 
 } // namespace NuAtlas

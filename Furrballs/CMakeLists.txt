@@ -15,6 +15,7 @@ set(HEADERS
     include/WaitGroup.h
     include/CMap.h
     include/Remarc.h
+    include/Policy.h
 )
 
 add_library(Furrballs STATIC ${SOURCES} ${HEADERS})

@@ -1,9 +1,9 @@
 ---
 title: "Furrballs: A NUMA-Aware, High-Performance Caching Library"
-subtitle: "Technical Report v1.9.4"
+subtitle: "Technical Report v1.11.0"
 author: "Hamza Jamil Saied (The Sphynx)"
 date: last-modified
-doi: "10.5281/zenodo.19669984"
+doi: "10.5281/zenodo.19794753"
 lang: en
 babel-lang: none
 format:
@@ -1155,6 +1155,54 @@ This eliminates the last piece of ARC's machinery that might have been needed. R
 8. **Adam-style adaptive smoothing (future optimization):** Instead of fixed α_l, α_r, track a second moment (variance) per score: `V = β × V + (1-β) × (ΔS)²`, then adapt `α = α_base / (√V + ε)`. Keys with stable access patterns converge faster; keys with volatile patterns converge slower — resisting premature migration from noisy bursts. Adds ~2 bytes per key for variance tracking. Noted for post-validation optimization if fixed α proves insufficient.
 9. **ML parallels for thesis framing:** REMARC's update rule is mathematically equivalent to gradient descent (`S += α × (target - S)`, where (target-S) is the gradient), with L2 regularization via time decay (`S *= λ`). The probabilistic HotNode sampling is ε-greedy exploration. The adaptation loop is online learning with outcome feedback. These analogies strengthen the theoretical grounding but do not change the implementation.
 
+### 3.30 REMARC Algorithm Paper and Policy Framework
+
+During Phase 2b development, the REMARC algorithm evolved from the initial 2D formulation (§3.29) into a general policy framework documented in a companion paper [Sphynx2025]. The framework formalizes cache policies as compositions:
+
+```
+E = P(A₁, ..., Aₙ)
+```
+
+where `A_i` are **atoms** (access signal extractors like recency, frequency, period) and `P` is a **projection** that maps atom values to a discrimination function for cache decisions. REMARC's original formulation is the specific instance `E = P(recency, frequency)` with a linear projection and integer quantized state.
+
+**ARC as a special case.** The REMARC framework subsumes ARC as a strict subset. The augmentation investigation [Sphynx2025, §8] demonstrates that adding REMARC's richer state (inter-arrival period, confidence) to ARC's quota structure produces AUG-TS4 (timestamp-based demotion), which matches or exceeds ARC on three of four workloads. Setting the demotion threshold to minimum reproduces ARC exactly (the strict subset property).
+
+**Variant taxonomy.** 23 policy variants were evaluated in PolicyBench, classified by projection mechanism:
+
+| Projection class | Variants | Key idea |
+|---|---|---|
+| Score (continuous) | REMARC, OPT, LazyInc, LFU, TinyLFU | P maps atoms to scalar eviction score |
+| Gate (binary) | S3, BloomGate, GhostGate | P returns admit/reject decision |
+| Modulate | BloomMod | P adjusts initial state |
+| Factor | FACT, Dual, MS | P decomposes into sub-projections |
+| Step (threshold) | STEP, STEPK | P maps to discrete eviction set |
+| Augment (ARC + state) | TS, PRED, HEAP, BOTHEND, ADAPT | ARC quota + REMARC delivery |
+
+**Key findings relevant to Furrballs:**
+
+- ARC achieves 35.17% Zipfian hit rate at 10% capacity. Page-batch REMARC variants are bounded at ~24.5% (Finding 1). This ceiling is structural: page-level eviction discards per-key scoring.
+- AUG-ADAPT, a self-tuning variant with adaptive delivery selection, achieves 99.33% on adversarial looping workloads while matching ARC on Zipfian/ScanRes/Temporal (Finding 30). It uses a feedback controller (population CV + prediction regret) to switch between heap-based and LRU-based eviction.
+- The delivery--quota tension (Finding 27): more accurate eviction selection requires bypassing ARC's list structure, but this corrupts ARC's p-adaptation. AUG-ADAPT resolves this via self-tuning rather than architectural change.
+
+The companion paper [Sphynx2025] provides the full evaluation, theory, and algorithmic details. Furrballs serves as the implementation platform and target for real-NUMA deployment.
+
+### 3.31 Engineering Decisions (Phase 2b Development)
+
+The PolicyBench simulation harness and REMARC paper evaluation drove several engineering decisions that affect Furrballs' future policy integration:
+
+**Policy as a compile-time type parameter.** Furrballs uses `FurrBall<Policy>` where Policy is a template type (§2.8). This was extended to support REMARC variants during PolicyBench development. All 23 variants share a common `access(uint64_t key)` interface with `hits()`, `misses()`, `evictions()`, and `scans()` queries. No virtual dispatch, no runtime polymorphism. This design validated cleanly --- adding variants required only template instantiation, no interface changes.
+
+**Three hash structures evaluated.** The development progressed through three data structure strategies:
+1. **Triple-hash (AUG-TS):** Separate `unordered_set` (cached keys), `ArcList` (list position), and `unordered_map` (REMARC state). Three hash lookups per access. Simple but slow (3.5M ops/s).
+2. **Merged-hash (AUG-PRED):** Single `unordered_map<uint64_t, Entry>` combining all three. One lookup per access. 4.5M ops/s. The merged structure demonstrated that performance is a data structure problem, not an algorithmic one.
+3. **Heap-augmented (AUG-HEAP):** Merged hash plus `priority_queue` for eviction selection. Lazy deletion via version stamps. 7.0M ops/s on Zipfian (faster than ARC's 5.4M due to lower per-access overhead).
+
+**Ghost list management (Finding 18).** A critical bug was discovered during augmentation: ARC's `doEvict()` must DROP evicted keys, not move them to ghost lists. Moving evicted keys to ghost lists inflated the ghost lists, causing excessive p-adaptation and catastrophic Zipfian regression (17.82%). Fixing this bug produced byte-for-byte identical results to ARC (105,508 hits on identical trace), confirming that the implementation is correct. The bug was identified by tracing key 0 through both ARC and AUG side-by-side, finding the first divergence at operation 4000, and tracing back to the ghost management difference.
+
+**Timestamp-based decay (Finding 20).** Lazy per-key decay (run only on access) cannot demote idle keys because idle keys have frozen state. The frozen state problem blocks demotion for keys no longer being accessed. This motivated the timestamp-based decay approach (compute idle time on re-access), which enables evidence-based demotion.
+
+**Feedback controller for adaptive delivery (Finding 30).** AUG-ADAPT combines population-level workload characterization (CV of inter-arrival gaps) with per-eviction prediction regret to self-tune between LRU and heap-based eviction. The controller uses two signals: feedforward (population CV discriminates homogeneous from heterogeneous patterns) and feedback (regret from ghost hits measures prediction accuracy). The control law is `confidence = (1 - 3*CV) * (1 - regretEMA)`, with heap eviction when confidence > 0.5. This is a proper control loop with the workload as the plant, the delivery mechanism as the controller, and hit rate as the setpoint.
+
 ## 4. Related Work
 
 | System | NUMA Approach | Difference from Furrballs |
@@ -1167,9 +1215,10 @@ This eliminates the last piece of ARC's machinery that might have been needed. R
 | Redis | No NUMA awareness | Baseline comparison point |
 | Rayhan & Aref (2025) | Custom `move_pages2` kernel syscall | Kernel-level page migration optimization for DBMS; no cache placement policy |
 | US11561834B2 (Rambus) | ML-based metablock placement via RL | External optimizer using reinforcement learning; no per-page cache eviction |
+| Sphynx (2025) [Sphynx2025] | General cache policy framework (REMARC) | Algorithm-level policy framework; no NUMA awareness, no systems implementation |
 | Furrballs | Per-page placement + two-level ARC | Fine-grained, adaptive, page-level NUMA locality as policy input |
 
-To our knowledge, no published system implements page-level cache eviction policy informed by NUMA placement and cross-node access frequency. NUMA-aware allocators (TCMalloc, jemalloc) handle placement but not eviction; NUMA-aware caches (CacheLib) use static sharding without adaptive per-page locality decisions. Rayhan & Aref's `move_pages2` syscall improves kernel-level page migration efficiency for DBMS workloads (up to 1.84x query throughput improvement) but does not address user-space cache placement policy---it is complementary to Furrballs' approach, which avoids runtime page migration entirely via track-and-defer eviction. Rambus's US11561834B2 patent describes an ML-based reinforcement learning system for adaptive metablock placement across NUMA tiers, operating as an external optimizer above the OS rather than as a user-space caching library with integrated NUMA-aware eviction.
+To our knowledge, no published system implements page-level cache eviction policy informed by NUMA placement and cross-node access frequency. NUMA-aware allocators (TCMalloc, jemalloc) handle placement but not eviction; NUMA-aware caches (CacheLib) use static sharding without adaptive per-page locality decisions. Rayhan & Aref's `move_pages2` syscall improves kernel-level page migration efficiency for DBMS workloads (up to 1.84x query throughput improvement) but does not address user-space cache placement policy---it is complementary to Furrballs' approach, which avoids runtime page migration entirely via track-and-defer eviction. Rambus's US11561834B2 patent describes an ML-based reinforcement learning system for adaptive metablock placement across NUMA tiers, operating as an external optimizer above the OS rather than as a user-space caching library with integrated NUMA-aware eviction. The companion REMARC paper [Sphynx2025] (DOI: 10.5281/zenodo.19794758) formalizes the policy framework and evaluates 23 variants across 5 workloads; Furrballs provides the systems platform for NUMA-aware deployment of that framework.
 
 ## 5. Evaluation
 
@@ -1794,18 +1843,21 @@ The project is on the `numa-focus` branch. Licensed under MIT. Build and test ar
 - [x] Per-node `rwMutex`, `KeyShard`, `KeyMetaStore` removed
 
 #### Phase 2b: REMARC Unified Policy + Migration + Persistence
-- [ ] KeyMeta additions: `Dirty` flag (seqlock-protected), `HotNode` (uint8_t), `TempCtrlIdx` (uint8_t)
-- [ ] Page lifecycle: `PageTier` enum (HOT/COLD/EMPTY/FREEZE), `ActiveKeys`, `KeyIndex`, `TempCtrl`, `CompactLock`
-- [ ] REMARC scoring in `Get()`: update S_local/S_remote on every hit, update HotNode probabilistically on remote Get()
-- [ ] REMARC scanner: SSE2 batch scoring of TempCtrl → Evict/Migrate candidates, migration-first execution ordering
-- [ ] Cross-node migration: insert-before-erase for M > θ_m candidates, HotNode as target
-- [ ] Page eviction: E_page aggregation from per-key scores, page flush to RocksDB for E_page > θ_e
-- [ ] Outcome-based adaptation: track eviction/migration reversal rates, adjust θ_e/θ_m
-- [ ] Ghost-less reload protection: S_local=MAX on page reload from persistent storage
-- [ ] Page recycling: HOT → EMPTY → COLD → FREEZE → EMPTY transitions, `ResetBump()`
-- [ ] Cold page eviction → whole-page RocksDB persistence (PageBlob format)
-- [ ] Ghost hit recovery → whole-page RocksDB reload (speculative, full page)
-- [ ] `evictedKeyIndex_` (H2 → PageId) for ghost hit lookup
+- [x] KeyMeta additions: `Dirty` flag (seqlock-protected), `HotNode` (uint8_t), `TempCtrlIdx` (uint8_t)
+- [x] Page lifecycle: `PageTier` enum (HOT/COLD/EMPTY/FREEZE), `ActiveKeys`, `KeyIndex`, `TempCtrl`, `CompactLock`
+- [x] REMARC scoring in `Get()`: update S_local/S_remote on every hit, update HotNode probabilistically on remote Get()
+- [x] REMARC scanner: SSE2 batch scoring of TempCtrl to Evict/Migrate candidates, migration-first execution ordering
+- [x] Cross-node migration: insert-before-erase for M > theta_m candidates, HotNode as target
+- [x] Outcome-based adaptation: track eviction/migration reversal rates, adjust theta_e/theta_m
+- [x] Ghost-less reload protection: S_local=MAX on page reload from persistent storage
+- [x] Page recycling: HOT -> EMPTY -> COLD -> FREEZE -> EMPTY transitions, `ResetBump()`
+- [x] Policy framework validation: 23 variants evaluated in PolicyBench, compile-time template type parameter
+- [x] AUG-ADAPT self-tuning policy: feedback controller achieving 99.33% looping + ARC-equivalent Zipf/ScanRes/Temporal
+- [ ] Page eviction: E_page aggregation from per-key scores, page flush to RocksDB for E_page > theta_e
+- [ ] Cold page eviction to whole-page RocksDB persistence (PageBlob format)
+- [ ] Ghost hit recovery to whole-page RocksDB reload (speculative, full page)
+- [ ] `evictedKeyIndex_` (H2 to PageId) for ghost hit lookup
+- [ ] Multi-node simulation validation in PolicyBench (desire encoding, 2-node AUG-ADAPT)
 
 ### Phase 3: Adaptive Memory Pooling (AMP)
 - [ ] Dynamic page pool expansion under eviction pressure
@@ -1890,13 +1942,15 @@ The critical Phase 1 finding is that synchronization overhead masks the true NUM
 
 Phase 2a replaces the Phase 1 data structures with a concurrent Swiss table (CMap) and ARC policy (ConcurrentARC). The results reveal a tradeoff: single-threaded latency increases by 6--41% (architectural cost of CAS-based concurrency and ARC list management), but concurrent Set throughput improves by 58% (per-slot CAS eliminates shared_mutex serialization). CMap resolves the Phase 1 data race on `unordered_map::find()` during concurrent reads, making the system safe under mixed read/write workloads. PromoteBuf recovers concurrent Get from 0.56x to 0.80x vs baseline by deferring ARC promotions out of the critical read path. Hash-keyed ArcList eliminates all string copies from ARC tracking, and a `thread_local` cache in `GetCurrentNode()` eliminates ~1000ns VM exit per routing decision.
 
-Phase 2b introduces REMARC (Reduction-Modeled Adaptive Replacement Cache), which replaces the planned two-level ARC hierarchy with a single unified policy. REMARC reduces three access dimensions (recency, frequency, locality) into a 2D state space (S_local, S_remote) stored per-key in TempCtrl bytes. Per-key Evict and Migrate scores are computed via precomputed 256-entry lookup tables scored with SSE2 SIMD arithmetic in O(1) per page. Per-key Evict scores aggregate to per-page eviction decisions, eliminating the need for a separate page-level ARC. Adaptation is outcome-based (eviction reversal and migration reversal rates adjust thresholds θ_e and θ_m), providing ARC's self-tuning principle without ghost lists. The probabilistic HotNode mechanism (biased sampling) provides migration targets with built-in anti-ping-pong protection. The three-mechanism model (key-level ARC, page-level ARC, cross-node migration policy) collapses to one: REMARC.
+Phase 2b implements REMARC (Reduction-Modeled Adaptive Replacement Cache), replacing the planned two-level ARC hierarchy with a single unified policy. REMARC reduces three access dimensions (recency, frequency, locality) into a 2D state space (S_local, S_remote) stored per-key in TempCtrl bytes. Per-key Evict and Migrate scores are computed via precomputed 256-entry lookup tables scored with SSE2 SIMD arithmetic in O(1) per page. Per-key Evict scores aggregate to per-page eviction decisions, eliminating the need for a separate page-level ARC. Adaptation is outcome-based (eviction reversal and migration reversal rates adjust thresholds theta_e and theta_m), providing ARC's self-tuning principle without ghost lists. The probabilistic HotNode mechanism (biased sampling) provides migration targets with built-in anti-ping-pong protection. The three-mechanism model (key-level ARC, page-level ARC, cross-node migration policy) collapses to one: REMARC.
+
+During Phase 2b development, REMARC evolved into a general policy framework formalized in a companion paper [Sphynx2025] (DOI: 10.5281/zenodo.19794758). The framework expresses cache policies as compositions `E = P(A1, ..., An)` where atoms extract access signals and projections map them to eviction decisions. Twenty-three variants were evaluated across five workloads (Zipfian, ScanResistant, Temporal, Looping, Uniform). Key results: (1) page-level eviction imposes a structural ~24.5% Zipfian ceiling absent per-key scoring, (2) ARC is a strict subset of the framework (setting demote threshold to minimum reproduces ARC exactly), and (3) AUG-ADAPT, a self-tuning variant combining heap-based eviction with ARC's quota structure via a feedback controller (population CV + prediction regret), achieves 99.33% hit rate on adversarial looping workloads while matching ARC on Zipfian/ScanRes/Temporal. The delivery--quota tension---where accurate eviction selection corrupts ARC's self-tuning---is resolved by the controller's conservative default (LRU) with workload-driven activation of heap eviction.
 
 The five-step ablation study (§5.10, §5.17) isolates the contribution of each architectural decision across both phases. The Phase 2a ablation reveals that the `thread_local` cache fundamentally changed the routing dynamics: thread-local routing is now *faster* than round-robin (ablation D < C), unlike Phase 1 where the `GetCurrentNode()` syscall made it 34% slower. This has a methodological implication: Phase 1's routing overhead findings (26--41% improvement from thread-local routing, ablation C→D +34% Set increase) are **environment-specific** rather than architectural. They reflect QEMU's VM exit cost on `sched_getcpu()`, not an inherent property of NUMA-aware routing. On real hardware where `GetCurrentNode()` costs ~1--10ns via VDSO, the Phase 1 routing story would resemble Phase 2a's.
 
 Real hardware validation on AWS c6i.metal (Intel Xeon Platinum 8375C, 2 sockets, 128 vCPUs) confirms the architecture's NUMA benefit: a genuine 4.5--7.0% p50 cross-node overhead (§5.18), thread-local routing providing +60--65% improvement over round-robin, and ablation step D (thread-local routing) as the primary driver of the cross-node signal (+21.0--38.9% Cross-OH). Get throughput scales +72% from 4→64 threads (§5.19), validating the lock partitioning thesis for reads. Set throughput degrades -79% at 64 threads due to per-node SpinLock contention, identifying striped SpinLocks or per-bucket ARC locks as the next optimization target. The QEMU results validated the methodology and architecture; the real hardware results validate the performance claims.
 
-Phase 2b will implement REMARC as the unified eviction and migration policy, with cross-node key migration and RocksDB-backed page persistence. The broadcast-race dispatch model (Phase 4) provides O(N) aggregate work with O(1)-round parallel latency.
+Phase 2b continues with RocksDB-backed page persistence and multi-node validation of AUG-ADAPT via desire-encoded migration. The broadcast-race dispatch model (Phase 4) provides O(N) aggregate work with O(1)-round parallel latency.
 
 ## Appendix A: Repository Structure
 ```
@@ -1905,7 +1959,9 @@ Furrballs/
     include/
       Furrballs.h     # Public API, ARC, configs, KeyMeta
       CMap.h          # Concurrent Swiss table (CMap), ArcList, PromoteBuf, ConcurrentARC, SpinLock
-      Page.h          # Page struct with bump allocator
+      Page.h          # Page struct with bump allocator, TempCtrl, KeyIndex, HotNodes
+      Policy.h        # RemarcPolicy template, ArcPolicy, StandardRemarc alias
+      Remarc.h        # REMARC lookup tables, RemarcConfig, SIMD scanner
       Logger.h        # Thread-safe logging
       Error.h         # Categorized error enum
       NodeJob.h       # Per-node worker threading

@@ -81,10 +81,10 @@ namespace NuAtlas
         size_t GetDataSize() const noexcept { return UsedBytes.load(std::memory_order_relaxed) - DataWastedByPadding.load(std::memory_order_relaxed); }
         size_t GetTotalPaddingBytes() const noexcept { return DataWastedByPadding.load(std::memory_order_relaxed); }
 
-        void AddKeyEntry(const HashPair& hp, uint8_t hotNode = 0) {
+        void AddKeyEntry(const HashPair& hp, uint8_t initialTC = PackTempCtrl(REMARC_MAX, 0), uint8_t hotNode = 0) {
             CompactLock.lock();
             KeyIndex.push_back(hp);
-            TempCtrl.push_back(PackTempCtrl(REMARC_MAX, 0));
+            TempCtrl.push_back(initialTC);
             HotNodes.push_back(hotNode);
             CompactLock.unlock();
             ActiveKeys.fetch_add(1, std::memory_order_relaxed);

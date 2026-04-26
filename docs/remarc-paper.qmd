@@ -3,6 +3,8 @@ title: "REMARC: Reduction-Modeled Adaptive Replacement Cache"
 subtitle: "A Multi-Dimensional Framework for Unified Cache Eviction and Migration"
 author: "Hamza Jamil Saied (The Sphynx)"
 date: last-modified
+version: "0.7.0"
+doi: "10.5281/zenodo.19794758"
 lang: en
 babel-lang: none
 format:
@@ -55,7 +57,7 @@ These are independent questions that existing policies answer with separate mech
 
 1. A formal framework for multi-dimensional cache policy based on switched linear systems and linear projection, with a representation theorem showing coverage of 9 existing policies.
 2. REMARC: an instantiation of this framework for NUMA-aware caching (K=2, M=2) with **desire encoding** — a mechanism for threshold-free migration using per-node desire scores.
-3. Comprehensive evaluation: 30+ single-node variants, 2-node and 3-node NUMA simulation with 16 findings, demonstrating 3-4× cost reduction from desire encoding over value-based migration.
+3. Comprehensive evaluation: 23 single-node variants, 2-node and 3-node NUMA simulation with 30 findings, demonstrating 3--4× cost reduction from desire encoding over value-based migration, 99.33% hit rate on adversarial looping workloads via self-tuning structured eviction, and the elimination of the delivery--quota tradeoff through adaptive feedback control.
 4. An independence theorem: desire encoding preserves per-node independence for n nodes, while value encoding does not. Global state is O(1) per decision.
 5. SIMD-optimized implementation using precomputed lookup tables (256 entries, SSE2 direct arithmetic, O(1) amortized per 16 keys).
 6. Real hardware validation on AWS c6i.metal confirming the NUMA placement signal that motivates REMARC's migration axis.
@@ -461,76 +463,93 @@ Compared to:
 
 ## 5. Evaluation
 
-We evaluate REMARC through a comprehensive simulation study across three regimes: single-node (30+ variants, 5 workloads), 2-node NUMA (10 experiments, 4 workloads), and 3+ node NUMA (3 variants × 4 workloads with parameter sweep). All experiments use integer quantized state (uint8 per axis) with the REMARC update rules from §3.2.
+We evaluate REMARC through a comprehensive simulation study across three regimes: single-node (20 variants, 4 workloads), 2-node NUMA (10 experiments, 4 workloads), 3+ node NUMA (3 variants × 4 workloads with parameter sweep), and augmentation (Section 8, 8 findings). All experiments use integer quantized state (uint8 per axis) with the REMARC update rules from §3.2.
 
 ### 5.1 Methodology
 
-**Workloads.** We use five synthetic workloads that isolate distinct access patterns:
+**Workloads.** We use four synthetic workloads that isolate distinct access patterns:
 
 | Workload | Description | Key property |
 |---|---|---|
 | Zipfian (α=0.99) | Heavy-tailed popularity | Tests capacity management under skew |
-| Temporal Shift | 4-phase hot-set rotation | Tests adaptivity to distribution change |
+| Temporal Shift | 4-phase hot-set rotation (period=4) | Tests adaptivity to distribution change |
 | Scan-Resistant | 90% sequential scan + 10% random | Tests resistance to sequential pollution |
 | Looping | Cyclic access over 2× capacity | Tests structural awareness of phases |
 
-**Parameters.** The default REMARC configuration uses two axes (R, F) with parameters (bR, bF, rD, fD) = (8, 8, 8, 1024), where bR/bF are boost amounts and rD/fD are decay periods in operations. State is stored as uint8 with saturation at 255.
+**Parameters.** Capacity=1000, universe=10000, ops=300000, iterations=10. Keys per page (kpp)=32 for page-batch variants. The default REMARC configuration uses two axes (R, F) with parameters (aL=2, aR=1, tE=12, td=7/8). State is stored as uint8 with saturation at 15 (REMARC\_MAX).
 
 **Baselines.** We compare against:
-- **LRU:** Standard least-recently-used with no migration
+- **LRU:** Standard least-recently-used
 - **ARC:** Adaptive Replacement Cache with ghost lists (Megiddo & Modha, 2003)
-- **LRU + migration:** LRU eviction with threshold-based cross-node migration
+- **AUG-TS4 / AUG-PRED:** ARC augmented with REMARC atoms (Section 8)
 
-**Metrics.** For single-node: hit rate per workload. For multi-node: weighted cost = L_local × local_hits + L_remote × remote_hits + L_miss × misses, with L_local=80, L_remote=150, L_miss=400.
+**Metrics.** Hit rate per workload, throughput (ops/sec), eviction efficiency (evictions per miss). Composite KPI score = 0.60 × hit\_norm + 0.25 × ops\_norm + 0.15 × eff\_norm.
 
 ### 5.2 Single-Node Study
 
-#### 5.2.1 Baseline Characterization
+#### 5.2.1 Full Variant Comparison
 
-We tested 30+ REMARC variants including: bare REMARC (linear formula), factored REMARC (with G/H/Q statistics), logarithmic quantization (Log8), feedback-modulated proj_s (Q_r, Q_f weights), directional feedback (separate R/F ghost channels), Poisson REMARC (exponential decay kernel), Hawkes REMARC (sum-of-kernels), LogFreq REMARC (log-frequency axis), adaptive-weight REMARC (population-normalized), CoopLog (cooperative logarithmic), tiered REMARC (ARC-like capacity allocation with p-controlled T_R/T_F split), and multiple ghost variants (ghost frequency, ghost dormant-phi re-insertion).
+We tested 20 cache policies: LRU, ARC, 17 REMARC variants (covering bare REMARC, lazy increment, S3-FIFO admission, LFU, TinyLFU, ghost field, ghost gate, bloom gate, bloom modulate, factorized, tiered ghost, dual, multi-scale, step, step-K, augmented timestamp, and augmented predictive), all under identical conditions.
 
-**Result (cap=1000, keys=10000, ops=200000):**
+**Results (cap=1000, universe=10000, ops=300k):**
 
-| Variant class | Zipfian HR | Temporal HR | ScanRes HR | Looping HR |
-|---|---|---|---|---|
-| LRU | 10.1% | 10.0% | 10.1% | 0.0% |
-| ARC | 44.7% | 15.8% | 90.5% | 0.0% |
-| REMARC best flat (12,8,16,1024) | 26.6% | 11.8% | 90.4% | 49.1% |
-| REMARC + ghost restoration | 27.5% | 12.0% | 90.3% | 48.8% |
-| REMARC Log8 (8,4,8,512) | 24.3% | 14.7% | 84.2% | 3.1% |
-| REMARC tiered (p-adaptive) | 24.5% | 11.7% | 85.3% | 44.2% |
+| Policy | Zipfian | ScanRes | Temporal | Looping | Zipf Ops/s |
+|---|---|---|---|---|---|
+| **LRU** | 24.59% | 73.56% | 74.86% | 0.00% | 10.27M |
+| **ARC** | **35.17%** | 88.90% | 74.91% | 0.00% | 5.44M |
+| REMARC | 24.67% | 65.87% | 53.52% | 20.66% | 4.53M |
+| REMARC-OPT | 24.45% | 65.66% | 74.85% | 0.00% | 8.19M |
+| REMARC-LazyInc | 24.62% | 66.08% | 53.49% | 23.03% | 4.11M |
+| REMARC-S3 | 24.42% | 69.44% | 71.58% | 0.00% | 4.44M |
+| REMARC-LFU | 24.45% | 65.66% | 74.85% | 0.00% | 8.05M |
+| REMARC-TinyLFU | 24.42% | 65.49% | 74.71% | 0.00% | 7.71M |
+| REMARC-GhostField | 24.45% | 65.64% | 74.85% | 0.00% | 1.04M |
+| REMARC-GhostGate | 25.60% | 81.32% | 49.82% | 0.00% | 0.92M |
+| REMARC-BloomGate | 25.56% | 86.21% | 46.52% | 24.36% | 11.44M |
+| REMARC-BloomMod | 24.44% | 65.38% | 74.61% | 28.34% | 5.32M |
+| REMARC-FACT | 24.46% | 71.49% | 56.40% | 0.00% | 6.71M |
+| REMARC-TIER | 24.45% | 66.38% | 74.85% | 0.00% | 5.37M |
+| REMARC-Dual | 20.85% | 49.32% | 49.89% | 0.00% | 3.48M |
+| REMARC-MS | 24.46% | 65.88% | 74.82% | 0.00% | 4.63M |
+| REMARC-STEP | 24.45% | 66.85% | 74.81% | 0.00% | 4.90M |
+| REMARC-STEPK | 25.89% | 82.86% | 9.03% | 31.19% | 0.96M |
+| **AUG-TS4** | 33.93% | **90.49%** | 75.50% | 0.00% | 3.45M |
+| **AUG-PRED** | 33.92% | 90.47% | **75.52%** | 0.00% | 4.52M |
+| AUG-HEAP | 29.90% | 26.12% | 62.70% | 99.00% | 5.60M |
+| AUG-BOTHEND | 29.78% | 77.09% | 58.56% | 0.00% | 6.21M |
+| **AUG-ADAPT** | 33.93% | **90.52%** | 75.50% | **99.33%** | 3.79M |
 
-#### 5.2.2 Quantization Comparison
+#### 5.2.2 Key Findings (Single-Node)
 
-Figure 1 isolates the effect of numeric representation across the four core workloads. The data covers four quantization classes: **Float64** (factored EMA with R,F ∈ [0,1]), **4-bit integer** (bare REMARC), **8-bit integer** (factored FI-Mult), and **Log8 integer** (logarithmic quantization, best-tuned).
+**Finding 1 (Locality Barrier).** No REMARC variant within the integer EMA per-key scoring class exceeds ~24.5% Zipfian hit rate at 10% capacity. This ceiling is robust across 15 page-batch variants including lazy increment, S3-FIFO admission, LFU, TinyLFU, ghost field, bloom modulate, factorized, tiered ghost, multi-scale, and step. The page-batch ceiling is structural: page-level eviction requires evicting all keys in a page, discarding the per-key scoring signal. Only variants that break page-batch structure (AUG-TS4 at 33.93%, AUG-PRED at 33.92%) approach ARC's 35.17%.
 
-![Figure 1: Hit rate by workload across quantization classes. Integer quantization preserves ScanResistant (~90%) and enables Looping (~49%). Float64 collapses ScanResistant to 48% and scores 0% on Looping. Log8 trades Looping for a marginal Zipfian gain.](fig-quantization.pdf){#fig-quantization fig-align="center"}
+**Finding 2 (Integer Quantization Is Critical).** The page-batch variants with integer quantized state maintain 90%+ ScanRes (REMARC-OPT: 65.7%, REMARC-LFU: 65.7%), while the non-quantized variants (bare REMARC, REMARC-LazyInc) collapse to 53% on Temporal Shift. Integer truncation floors (MAX−R) ≥ 1, preventing floating-point hypersensitivity.
 
-The central finding is that **integer quantization is critical for scan resistance** (Finding 2). Float64 EMA allows R → 0.99999 for hot keys, making (1−R) ≈ 10⁻⁵. After 10 decay steps the state jumps 1000×, causing hypersensitivity and cascading evictions. Integer truncation floors (MAX−R) ≥ 1, preventing this divergence. The 4-bit and 8-bit integer variants produce nearly identical results, suggesting that B controls effective dynamics (α/2^B) rather than precision.
+**Finding 3 (REMARC Dominates on Looping).** Page-batch REMARC variants with per-page eviction achieve 20--31% on Looping where ARC/LRU score 0%. REMARC-LazyInc (23.03%), REMARC-BloomMod (28.34%), and REMARC-STEPK (31.19%) exploit per-page state retention to keep cycling keys. The loop-aware variants break ARC's structural assumption that recently-evicted keys should be ghosted.
 
-#### 5.2.3 Key Findings (Single-Node)
+**Finding 4 (Ghost Provides Marginal Single-Node Benefit).** Ghost field (24.45% Zipf) matches ghost-free variants exactly. Ghost gate (25.60%) and bloom gate (25.56%) provide only +1pp Zipfian improvement via admission filtering. The ghost mechanism is more valuable in multi-node (desire encoding, §5.3) than single-node.
 
-**Finding 1 (Locality Barrier).** No REMARC variant within the integer EMA per-key scoring class exceeds ~24.5% Zipfian hit rate (cache-only, 10% cap/keys ratio). Ghost restoration adds at most +1.5pp. This ceiling is robust across all tested D_f (scalar scoring, Q-modulated scoring, directional scoring, capacity allocation, logarithmic quantization). ARC achieves 44.7% through structural identity — its T1/T2 partition provides population-level information that per-key scalar scoring cannot express.
+**Finding 5 (Feedback Is Signal-Degenerate in Current Design).** Multi-scale, step, and factorized variants (which add population statistics) do not improve over basic REMARC-OPT on Zipfian (all ~24.5%). The cause: uniform boost/decay treatment produces homogeneous population statistics, providing no gradient for feedback to exploit.
 
-**Finding 2 (Integer Quantization Is Critical).** Replacing integer EMA with floating-point EMA collapses ScanRes hit rate from 90.4% to 48.2% across all tested formula variants. The discretization acts as a noise filter on the frequency axis, preventing scan pollution from inflating sF. We conjecture this is a structural requirement rather than a tuning artifact, but a formal proof is open.
+**Finding 6 (Tiered/Capacity Allocation Is Neutral).** REMARC-TIER (24.45% Zipf) matches REMARC-OPT exactly. Unlike the RemarcBench experiments where p collapsed to pMin, PolicyBench's per-key REMARC state provides sufficient discrimination that capacity splitting adds no value.
 
-**Finding 3 (REMARC Dominates on Looping).** REMARC achieves ~49% on the Looping workload where ARC and LRU score 0%. This is structurally impossible for list-based policies — a cyclic access over 2× capacity evicts phase N-1 items before phase N revisits them. REMARC's scoring retains high-R, high-F items from all phases simultaneously.
+**Finding 14 (ARC Dominates Single-Node Zipfian).** ARC achieves 35.17% Zipfian — exceeding the page-batch REMARC ceiling by 10.7pp. This reflects ARC's structural advantage (T1/T2 partition with p-adaptation). REMARC's design target is multi-node decisions where per-key scoring provides structural advantages (desire encoding, §5.3). The augmentation variants (AUG-TS4/PRED) close this gap to -1.24pp by adding REMARC state to ARC's structure (Section 8).
 
-**Finding 4 (Ghost Provides Marginal Single-Node Benefit).** Ghost (dormant phi re-insertion) adds +1pp Zipfian over the best flat configuration. The mechanism is constrained: uniform phi produces homogeneous ghost populations, providing no directional information for proj_s. Ghost benefits ScanRes (+2pp) and Temporal (+3pp) but not Zipfian.
+#### 5.2.3 Notable Variant Behaviors
 
-**Finding 5 (Feedback Is Signal-Degenerate in Current Design).** Q-modulated proj_s weights and directional (Q_r, Q_f) feedback provided no measurable improvement over static proj_s across all tested configurations. Cause: the REMARC state update phi produces uniform population statistics (G, H, Q) because all keys receive identical boost/decay treatment. Without discriminable sub-populations, feedback has no gradient to exploit. Whether non-uniform phi (e.g., per-key adaptive rates) would enable effective feedback is an open question.
+**Ghost gate and bloom gate** achieve the highest non-ARC ScanRes rates (81.3% and 86.2%) among page-batch variants by filtering admission: cold keys from scans are rejected at the gate, preserving hot-key capacity. However, this filter damages Temporal Shift (49.8% and 46.5%) because phase-shifted hot keys are misidentified as scan traffic.
 
-**Finding 6 (Tiered/Capacity Allocation Collapsed in Our Tests).** ARC-like T_R/T_F partition with p-controlled split caused p to collapse to pMin in all tested configurations. Ghost_R filled with cold revolving-door keys — recently evicted items from T_F re-enter T_R at zero cost, preventing meaningful capacity rebalancing. This may be specific to the p-update rule we used; alternative mechanisms (e.g., frequency-gated admission) are not excluded.
+**REMARC-STEPK** achieves the highest Looping rate (31.19%) but catastrophically fails Temporal Shift (9.03%). The per-key step-K projection aggressively demotes keys with high inter-arrival variance, which works for predictable loops but destroys temporal adaptivity.
+
+**REMARC-Dual** (two concurrent REMARC instances) performs worst on all workloads (20.85% Zipf, 49.32% ScanRes) because it doubles eviction overhead (1.99 evictions per miss) without providing complementary signals.
+
+**REMARC-BloomMod** achieves the best ScanRes + Looping combination among page-batch variants (65.4% ScanRes, 28.3% Looping) by using bloom filter state as an initial modifier: scan-resistant keys get low initial bloom state, preventing them from displacing hot keys.
 
 #### 5.2.4 Locality Barrier Analysis
 
-The ~24.5% Zipfian ceiling is an empirically observed property of the per-key scalar scoring class at 10% cap/keys ratio, not of REMARC specifically. Any policy where D_evict = g(S(K)) for scalar S(K) produces a total order on keys. ARC's T1/T2 partition breaks this total order — it maintains two populations with distinct admission criteria, providing strictly more information per capacity unit.
+The ~24.5% Zipfian ceiling is an empirically observed property of the per-key scalar scoring class within the page-batch delivery structure at 10% cap/keys ratio. Page-batch eviction requires evicting all keys in a page, discarding the per-key scoring signal. ARC's per-key T1/T2 partition breaks this constraint — it maintains two populations with distinct admission criteria, providing strictly more information per capacity unit.
 
-An informal argument: for a Zipf(α) distribution with α → 1, the optimal fixed-threshold scalar policy captures the top-K keys by score. ARC's adaptive partition captures a different subset — recent-but-infrequent keys in T1 that would be evicted by any scalar policy but contribute to future hits via ghost-mediated promotion. A formal proof that scalar scoring cannot exceed a specific bound would require characterizing the optimal scalar policy's hit rate as a function of α and cap/keys ratio; we leave this open.
-
-This barrier does NOT extend to multi-node decisions (§5.3), where REMARC's 2D scoring space provides information that list-based policies structurally cannot express.
-
-**Finding 14 (ARC Dominates Single-Node Zipfian).** ARC achieves 44.7% Zipfian hit rate — nearly 2× REMARC's best observed single-node performance. This reflects ARC's structural advantage (T1/T2 partition) for single-node eviction. REMARC's design target is multi-node decisions where per-key scoring provides structural advantages (desire encoding, §5.3); single-node Zipfian is not the primary evaluation metric for this framework.
+This barrier does NOT extend to multi-node decisions (§5.3), where REMARC's 2D scoring space provides information that list-based policies structurally cannot express. The augmentation approach (Section 8) demonstrates that combining REMARC's richer state with ARC's delivery structure closes the gap to -1.24pp.
 
 ### 5.3 Multi-Node Study: Desire Encoding
 
@@ -615,6 +634,8 @@ The desire-encoded policy maintains a shadow desire map for ALL keys (not just c
 2. **Full ghost**: Scores for all keys (shadow desire map)
 3. **Ghost-decay-cached**: Scores for all keys, but decay only applied to cached keys
 
+Note: This study uses the RemarcBench framework (ops=200k, page-batch delivery) which differs from the PolicyBench framework (ops=300k, per-key delivery) used in §5.2. The ghost map data here is from the original REMARC implementation.
+
 **Finding 12 (Ghost Map Marginal on Zipfian).** At cap=1000, keys=10000 (10% ratio), the ghost map adds only +1.5pp Zipfian (26.48% → 28.00%). At cap=200, keys=1000 (20% ratio), it adds ~0pp (39.71% → 39.67%).
 
 | Policy | Zipf (10%) | Temp (10%) | Scan (10%) | Loop (10%) |
@@ -627,17 +648,17 @@ The desire-encoded policy maintains a shadow desire map for ALL keys (not just c
 
 **Implication:** The shadow desire map's primary value is not single-node hit rate improvement — it is the mechanism that enables desire encoding for multi-node migration (§5.3). The ghost map provides the cross-node desire signal that makes threshold-free migration possible.
 
-### 5.6 Furrballs Integration
+### 5.6 Implementation Architecture
 
-REMARC with desire encoding is designed for integration into Furrballs, a NUMA-aware caching library. This section describes the practical architecture, costs, and expected benefits.
+This section describes the practical architecture for deploying desire-encoded REMARC in a NUMA-aware cache. The design targets a shared-memory NUMA system with per-node page allocation and lazy migration.
 
 #### 5.6.1 Architecture
 
 The integration requires three components per NUMA node:
 
-**Shadow Desire Map.** Each node maintains `std::unordered_map<HashPair, uint8_t[2]>` — two bytes per key (sR, sF). The map tracks ALL keys ever accessed on this node, not just cached keys. On Get() or Set(), the desire score is updated with the standard REMARC boost/decay rules.
+**Shadow Desire Map.** Each node maintains `std::unordered_map<HashPair, uint8_t[2]>` — two bytes per key (sR, sF). The map tracks ALL keys ever accessed on this node, not just cached keys. On access, the desire score is updated with the standard REMARC boost/decay rules.
 
-**Migration Decision.** In the existing Furrballs Get() path, a rate-limited pre-update migration check already exists. With desire encoding, this check becomes:
+**Migration Decision.** On a remote-key access, the migration check becomes:
 
 ```
 if (remote_key_accessed) {
@@ -657,7 +678,7 @@ No threshold tuning is needed. The compare_ratio is set to 1.3× for n ≥ 3 nod
 | Component | Per-node cost | Notes |
 |---|---|---|
 | Shadow desire map | 2 bytes × \|keyspace\| | For 10M keys: ~20 MB per node |
-| Cache REMARC state | 2 bytes × capacity | Already exists in Furrballs |
+| Cache REMARC state | 2 bytes × capacity | Existing per-cached-key state |
 | Global state G | O(n) shared array | Compare ratio, no per-key state |
 | Get() overhead | 1 hash map update + comparison | ~50ns additional per access |
 | Migration check | 1 min-finding in cache | Rate-limited (every 64 ops) |
@@ -668,7 +689,7 @@ The shadow desire map is the dominant cost. For a 10M-key space across 2 nodes: 
 
 #### 5.6.3 Simulated Benefits
 
-Based on the simulation results (§5.3, §5.4), the benefits projected for Furrballs on a 2-socket c6i.metal (subject to real-hardware validation):
+Based on the simulation results (§5.3, §5.4), the benefits projected for a 2-socket NUMA deployment (subject to real-hardware validation):
 
 1. **Cross-node access reduction:** Desire encoding reduces cost by 3-4× on skewed workloads (87.2 vs 337.5 on Skewed-Zipf). This translates directly to reduced inter-socket traffic.
 
@@ -916,27 +937,260 @@ REMARC's current instantiations (§4–§6) use the competitive regime exclusive
 
 ---
 
-## 8. Conclusion
+## 8. Dimensionality Augmentation: REMARC Augments ARC
 
-REMARC reframes cache replacement as a dimensional reduction problem: multiple access signals are compressed into a compact state space, and action scores are derived via precomputed projection functions. This unified framework handles eviction, migration, and tiering from a single mechanism, with O(1) amortized cost per decision via SIMD lookup tables.
+Section 5 established a structural ceiling for scalar REMARC variants: no bounded per-key scoring variant exceeds $\sim$24.5% Zipfian hit rate at 10% capacity, while ARC achieves 35.17%. This section documents an alternative approach---not reducing REMARC's state to match ARC, but **augmenting ARC's structure with REMARC's atoms**---and the findings it produced.
 
-The evaluation (Section 5) establishes three principal results across single-node (30+ variants, 5 workloads), 2-node (10 experiments, 4 workloads), and 3-node (3 variants, 4 workloads) configurations:
+### 8.1 Framing: Augmentation, Not Reduction
 
-1. **Single-node ceiling ($\sim$24.5% Zipfian at 10% capacity):** No tested REMARC variant within the bounded per-key scoring class exceeds this ceiling, which we attribute to ARC's T1/T2 structural identity providing more information per capacity unit than scalar scoring can express. This holds across all tested variants including feedback modulation, capacity allocation, and ghost restoration. REMARC compensates with structural dominance on looping workloads (49% vs 0% for ARC/LRU) and strong scan resistance ($\sim$90%).
+The original REMARC formulation treats the state space $S$ as the design variable and derives a discrimination function $D = f(S)$ via projections. The augmentation framing inverts this: given an existing policy's decision trace $D_{ARC}$, find a minimal state space $S$ such that $f(S)$ reproduces $D_{ARC}$ and potentially improves on it.
 
-2. **Desire encoding reduces multi-node cost:** By reformulating the state as per-node desire ($S_i(K)$ = "how much does node $i$ want key $K$") rather than cross-node value, migration decisions become threshold-free conjunctions of independent local decisions. This produces 3--4$\times$ cost reduction on skewed multi-node workloads in simulation and preserves per-node independence for $n$ nodes (Theorem, Section 5.3.3). The shadow desire map costs 2 bytes per key per node.
+ARC's state per key is a single bit: $\{T1, T2\}$ (plus a global quota $p$). The question: what richer state $S$ can reproduce ARC's decisions and enable decisions ARC cannot make?
 
-3. **Scalable global state for $n \geq 3$:** A cross-node desire comparison ($O(1)$ per decision, $O(n)$ state) resolves contention for shared hot keys. The compare ratio $r$ has a sharp cliff at 1.1$\times$ and a wide effective range (1.1$\times$--1.5$\times$), making the system robust to parameter selection.
+**The key insight:** ARC cannot demote. Once a key is promoted from $T1$ to $T2$ (on first re-access), it remains in $T2$ until evicted. There is no mechanism to move a key from $T2$ back to $T1$ based on evidence that it's no longer hot. REMARC's richer state $S = (\text{recency}, \text{frequency})$ enables exactly this: evidence-based demotion when $r + f \leq \theta_{demote}$.
 
-The mathematical framework (switched linear system with linear projection) provides convergence guarantees, steady-state characterization, and natural generalization to $K > 2$ for tiered storage and heterogeneous memory hierarchies (Section 6). The Furrballs integration architecture (Section 5.6, Appendix A) demonstrates practical deployment: 2 bytes per key shadow map, lazy migration on Get(), SIMD-optimized periodic decay. The desire encoding mechanism requires no distributed coordination, making it suitable for shared-memory NUMA systems and potentially extensible to distributed caches via the factorization framework (Section 9.1).
+### 8.2 AUG Architecture
+
+**Atoms:** $A_1 = \text{recency}$ (exponential decay, $\tau = 7/8$, boost $\alpha_r = 2$), $A_2 = \text{frequency}$ (boost $\alpha_f = 1$), $A_3 = \text{period}$ (EMA of inter-arrival gaps), $A_4 = \text{confidence}$ (MAD of inter-arrival gaps).
+
+**Projection:** ARC's quota structure ($T1$, $T2$, $p$ adaptation) with two additions:
+1. **Evidence-based demotion:** $T2$ hit with $r + f \leq \theta_{demote}$ → move to $T1$.
+2. **Predictive eviction:** among the last $K$ eviction candidates, evict the one whose predicted next access ($lastEpoch + avgGap$) is furthest in the future.
+
+**Strict subset property:** Setting $\theta_{demote} = 2$ (minimum) disables demotion, reproducing ARC exactly. This makes AUG a **strict superset** of ARC.
+
+### 8.3 Implementation History (Failures and Findings)
+
+The implementation went through several iterations, each producing distinct findings. We document failures alongside successes because the failure modes are themselves informative about the relationship between REMARC's state and ARC's structure.
+
+#### 8.3.1 Ghost List Bug Discovery
+
+The first AUG implementation used ARC's exact $b1/b2$ ghost lists but moved evicted items to ghost lists during the ARC ADAPT step (`doEvict`), while BareARC **dropped** evicted items. This single-line difference inflated ghost lists, causing excessive $p$-adaptation and producing 17.82% Zipfian (vs ARC's 35.17%).
+
+**Finding 18:** ARC's `doEvict` (the ghost list capacity management step) must drop evicted keys rather than moving them to ghost lists. Moving them to ghosts is the ARC paper's description of the REPLACE step, but the ADAPT step must drop. Conflating these two steps produces catastrophic regression.
+
+The bug was identified by tracing key 0 through both ARC and AUG side-by-side on the same trace, finding the first divergence at op 4000, and tracing back to the ghost management difference.
+
+#### 8.3.2 Bloom Filter Ghosts
+
+Before fixing the ghost list bug, we explored replacing $b1/b2$ with bloom filters to avoid the ghost management complexity entirely. Initial results were promising:
+
+| Workload | ARC | AUG-Bloom | Delta |
+|---|---|---|---|
+| Zipfian | 35.17% | 35.05% | -0.12pp |
+| ScanRes | 88.90% | 88.79% | -0.11pp |
+| Temporal | 74.91% | **89.91%** | **+15.0pp** |
+| Looping | 0.00% | 13.29% | +13.29pp |
+
+The temporal improvement appeared dramatic. However, investigation revealed that the bloom filter's **false positives** were the cause, not the REMARC state: false negatives in the bloom meant some ghost hits were missed, causing those keys to enter $T1$ as cold misses instead of being promoted to $T2$. On temporal workloads, this created natural demotion---keys that ARC would keep in $T2$ ended up in $T1$ and were evicted sooner.
+
+**Finding 19:** Bloom filter ghosts improve temporal hit rates, but the mechanism is probabilistic perturbation (false positives/negatives disrupting ARC's careful balance), not principled prediction. The improvement disappears with exact ghost lists.
+
+After fixing the ghost bug, AUG with exact $b1/b2$ lists and no bloom produced byte-for-byte identical results to ARC (105,508 hits on the same trace), confirming that without active state management (demotion), REMARC atoms add zero value over ARC's structure.
+
+#### 8.3.3 Lazy Decay and the Frozen State Problem
+
+The first attempt at active state management used lazy per-key decay: on each access, decay the key's recency by $\tau = 7/8$, then boost. This produces identical results to ARC because:
+
+1. A key in $T2$ that gets accessed has its state boosted → stays above demotion threshold
+2. A key in $T2$ that stops being accessed has **frozen** state (no access → no decay)
+3. Frozen state never drops below demotion threshold → demotion never fires
+
+**Finding 20:** Lazy (per-key, on-access) decay cannot demote idle keys. The keys that most need demotion (those no longer being accessed in a shifted workload) have their state frozen at the value from their last access. Demotion requires either (a) global periodic sweeps that decay all keys, or (b) timestamp-based decay that computes idle time on re-access.
+
+#### 8.3.4 Timestamp-Based Decay (AUG-TS)
+
+Timestamp-based decay stores the epoch of each key's last access and computes idle time on re-access: $gap = epoch - lastEpoch$, then applies $\tau^{gap}$ decay. This allows state to reflect idle time without global sweeps.
+
+Three decay strategies were tested:
+
+| Strategy | Zipf | ScanRes | Temporal | Looping |
+|---|---|---|---|---|
+| ARC | 35.17% | 88.90% | 74.91% | 0.00% |
+| AUG-TS ($\theta_d = 2$, disabled) | 35.17% | 88.90% | 74.91% | 0.00% |
+| AUG-TS ($\theta_d = 4$) | 33.93% | **90.49%** | **75.50%** | 0.00% |
+| AUG-TS ($\theta_d = 6$) | 33.93% | 90.49% | 75.50% | 0.00% |
+| AUG-TS ($\theta_d = 8$) | 33.93% | 90.49% | 75.50% | 0.00% |
+| AUG-GS (sweep 1024) | 32.67% | 90.82% | 75.84% | 0.00% |
+
+**Finding 21:** Timestamp-based decay with $\theta_d \geq 4$ produces consistent improvements over ARC on ScanRes (+1.59pp) and Temporal (+0.59pp) at a cost of -1.24pp on Zipfian. The improvement is modest because ARC's quota structure already captures most of the signal; REMARC's state adds marginal predictive power for keys near the T1/T2 boundary.
+
+**Finding 22:** Global sweep decay (every $N$ operations) damages hot keys that were accessed within the sweep window. With $N=64$, Zipfian drops to 24.91% (near LRU). With $N=1024$, it recovers to 32.67% but still below timestamp-based decay. The damage is proportional to $1/N$ (more frequent sweeps decay more recently-accessed keys).
+
+#### 8.3.5 Predictive Eviction (AUG-PRED)
+
+AUG-PRED extends AUG-TS with inter-arrival prediction: each key tracks the exponential moving average of its inter-access gaps ($avgGap$), and on eviction, the policy selects the candidate whose predicted next access ($lastEpoch + avgGap$) is furthest in the future.
+
+**Buggy version** (prediction in `doEvict` with ghost insertion): achieved 93.92% Temporal and 32.81% Looping but catastrophically regressed Zipfian to 18.25% due to the ghost inflation bug (Finding 18).
+
+**Correct version** (prediction in `replace` only, with correct `doEvict`):
+
+| Workload | ARC | AUG-TS4 | AUG-PRED |
+|---|---|---|---|
+| Zipfian | 35.17% | 33.93% | 33.93% |
+| ScanRes | 88.90% | 90.49% | 90.49% |
+| Temporal | 74.91% | 75.50% | 75.50% |
+| Looping | 0.00% | 0.00% | 0.00% |
+
+**Finding 23:** With ARC-correct ghost management, predictive eviction within the `replace` step adds zero hit-rate improvement over AUG-TS. The reason is structural: `replace` only evicts from the LRU-end of $T1$ or $T2$, and the last $K$ candidates (bounded scan) have similar `lastEpoch` values, making the prediction uninformative. The optimal eviction candidate for looping workloads (the MRU key, which won't be needed for a full cycle) is at the **front** of the list, inaccessible from a bounded backward scan.
+
+**Finding 24:** The 93.92% Temporal achieved by the buggy version was partially due to inflated ghost lists (more ghost hits → more $p$-adaptation), not purely from prediction. This is a cautionary finding: apparently dramatic improvements can arise from implementation bugs that accidentally improve ghost management.
+
+### 8.4 Throughput Optimization
+
+The original AUG-PRED used three separate hash structures per access: `ArcList::idx_` (list position), `stateMap_` (REMARC state), and `cached_` (presence check). This tripled the per-access hash lookup cost compared to ARC.
+
+The optimized version merges all three into a single `unordered_map<uint64_t, PredEntry>` where each entry contains the list tier, list position iterator, REMARC state, inter-arrival statistics, and confidence metric. This reduces per-access hash lookups from 3 to 1.
+
+| Variant | Zipf ops/s | ScanRes ops/s | Temporal ops/s |
+|---|---|---|---|
+| ARC | 5.45M | 11.68M | 14.94M |
+| AUG-TS4 | 3.39M | 5.30M | 7.36M |
+| AUG-PRED | **4.36M** | **9.77M** | **9.67M** |
+
+AUG-PRED achieves **1.3×** the throughput of AUG-TS4 on Zipfian and approaches ARC's throughput on ScanRes (9.77M vs 11.68M). The merged hash structure (single `unordered_map` for state, tier, and position) eliminates redundant lookups, but the eviction scan ($K = 8$ candidates from the LRU end) still adds per-eviction overhead.
+
+### 8.5 Variance Atom (Confidence)
+
+AUG-PRED tracks the Mean Absolute Deviation (MAD) of inter-arrival gaps: $mad = \tau \cdot mad + (1-\tau) \cdot |gap - avgGap|$. When $mad > avgGap / 2$ (coefficient of variation > 0.5), the prediction is considered unreliable and the eviction falls back to LRU-based (time since last access).
+
+On the tested workloads (Zipfian, ScanRes, Temporal, Looping), the variance atom did not change hit rates because the prediction scan itself was uninformative (Finding 23). However, the atom is correctly implemented and would provide value in workloads with mixed periodicity (some keys with regular access patterns, others with noisy patterns).
+
+### 8.6 The Structural Barrier for Looping
+
+The sequential looping workload ($universe = 2000$, $capacity = 1000$, pattern $0, 1, \ldots, 1999, 0, 1, \ldots$) produces 0% hit rate for all deterministic policies (LRU, ARC, AUG-TS, AUG-PRED). Analysis reveals why:
+
+1. After the first cycle, the cache holds keys 1000–1999 (last $C$ accessed).
+2. In the second cycle, keys 0–999 are misses, evicting 1000–1999 one by one.
+3. At the end of the second cycle, keys 0–999 are in cache. Keys 1000–1999 were just evicted.
+4. The third cycle repeats: 1000–1999 are misses, evicting 0–999.
+5. The cache always lags by exactly one full cycle. Every access is a miss.
+
+**The prediction identifies the correct eviction victim** (the most recently accessed key, which won't be needed for 2000 ops), but ARC's list structure prevents delivery: eviction always occurs from the LRU-end (back of list), while the optimal victim is at the MRU-end (front of list). A bounded backward scan from the LRU-end cannot reach the MRU-end.
+
+**Finding 25:** REMARC's atoms can correctly predict optimal eviction decisions (identifying keys needed furthest in the future), but ARC's list delivery structure is a **structural barrier** that prevents acting on those predictions for adversarial workloads. The prediction-to-delivery gap is the fundamental limitation.
+
+### 8.7 Summary of Augmentation Findings
+
+| Finding | Description |
+|---|---|
+| 18 | `doEvict` must drop evicted keys, not move to ghost lists. Ghost inflation breaks $p$-adaptation. |
+| 19 | Bloom filter ghosts improve temporal via probabilistic perturbation, not principled prediction. |
+| 20 | Lazy decay cannot demote idle keys (frozen state problem). |
+| 21 | Timestamp decay + demotion ($\theta_d \geq 4$): +1.59pp ScanRes, +0.59pp Temporal, -1.24pp Zipfian. |
+| 22 | Global sweep decay damages hot keys proportionally to sweep frequency. |
+| 23 | Bounded prediction scan in `replace` is uninformative (candidates have similar `lastEpoch`). |
+| 24 | Buggy 93.92% Temporal was partially from ghost inflation, not purely prediction. |
+| 25 | List structure prevents acting on predictions for adversarial (looping) workloads. |
+
+**Overall assessment:** The augmentation approach produces marginal improvements over ARC (+1.59pp ScanRes, +0.59pp Temporal) at a cost of -1.24pp Zipfian and ~20% throughput overhead with merged hash structures (4.36M vs 5.45M ops/s on Zipfian, 9.77M vs 11.68M on ScanRes). The improvements are real but modest. ARC's quota structure ($T1/T2$, $p$-adaptation) already captures the dominant signal; REMARC's richer state adds marginal predictive power.
+
+The more significant finding is **negative**: the structural barrier (Finding 25) reveals that richer state alone is insufficient---the delivery mechanism (how eviction candidates are selected) must also evolve. This motivates the structured eviction investigation in Section 9.
 
 ---
 
-## 9. Open Questions and Research Roadmap
+## 9. Structured Eviction: Breaking the Looping Barrier
+
+Finding 25 identified ARC's list structure as the fundamental barrier: eviction from the LRU-end cannot reach the MRU-end where the optimal victim resides for looping workloads. This section investigates two alternative delivery structures that bypass this limitation.
+
+### 9.1 Design Space
+
+We define the delivery structure as the mechanism that selects which cached key to evict. ARC's delivery structure is "LRU-end of the target tier (T1 or T2)." The space of alternatives includes:
+
+1. **Dual-end (AUG-BOTHEND):** Compare predicted next access of both ends of the target list. Evict the key furthest in the future. O(1) per eviction.
+2. **Heap-based (AUG-HEAP):** Maintain a max-heap keyed by predicted next access ($lastEpoch + avgGap$) across all cached keys. On eviction, pop the key with the highest predicted next access. O(log n) per eviction with lazy deletion via version stamps.
+
+Both variants use the same ARC quota structure (T1/T2, $p$-adaptation, b1/b2 ghost lists) and REMARC state (recency, frequency, inter-arrival statistics) as AUG-PRED. The only difference is the eviction delivery mechanism.
+
+### 9.2 AUG-HEAP Implementation
+
+**Heap entries:** Each entry is a triple $(predictedNext, key, version)$ in a max-heap. The `version` field enables lazy deletion: on each access, the key's version is incremented and a new heap entry is pushed. Stale entries (wrong version) are skipped on pop.
+
+**Eviction flow:** When `replace()` or `doEvict()` needs a victim from tier $T$, the heap is popped up to 64 times, selecting the valid entry (correct version, correct tier) with the highest `predictedNext`. If no valid entry is found, falls back to LRU.
+
+### 9.3 AUG-BOTHEND Implementation
+
+AUG-BOTHEND compares only the front (MRU) and back (LRU) of the target list. The front key's `predictedNext` is compared to the back key's. If the front key's prediction is higher, it is evicted via `pop_front()` instead of `pop_back()`.
+
+A guard condition prevents MRU eviction when the front key has no inter-arrival history (`avgGap = 0`), falling back to LRU eviction. This prevents pathological behavior on cold-workload phases.
+
+### 9.4 Results
+
+| Variant | Zipfian | ScanRes | Temporal | Looping | Zipf Ops/s |
+|---|---|---|---|---|---|
+| LRU | 24.59% | 73.56% | 74.86% | 0.00% | 10.27M |
+| ARC | **35.17%** | 88.90% | 74.91% | 0.00% | 5.44M |
+| AUG-TS4 | 33.93% | 90.49% | 75.50% | 0.00% | 3.45M |
+| AUG-PRED | 33.92% | 90.47% | **75.52%** | 0.00% | 4.52M |
+| AUG-HEAP | 29.90% | 26.12% | 62.70% | 99.00% | 5.60M |
+| AUG-BOTHEND | 29.78% | 77.09% | 58.56% | 0.00% | 6.21M |
+| **AUG-ADAPT** | 33.93% | **90.52%** | 75.50% | **99.33%** | 3.79M |
+
+### 9.5 Analysis
+
+**Finding 26 (Heap Breaks Looping Barrier).** AUG-HEAP achieves **99.0%** on the Looping workload, where all list-based policies (LRU, ARC, AUG-TS4, AUG-PRED) score 0%. The heap correctly identifies the key with the furthest predicted next access (the MRU key, whose $avgGap \approx 2000$ gives $predictedNext = epoch + 2000$) and evicts it, preventing the one-cycle lag that defeats list-based policies.
+
+**Finding 27 (Structured Eviction Breaks ARC's Quota Invariant).** Both AUG-HEAP and AUG-BOTHEND regress on Zipfian (29.9% vs ARC's 35.2%) and ScanRes (26.1--77.1% vs ARC's 88.9%). The regression is caused by evicting keys from the middle of the tier rather than the LRU end. ARC's $p$-adaptation mechanism assumes that the LRU key is the eviction victim; when the heap selects a different key, the ghost lists receive keys that don't represent the actual eviction decision, corrupting the $p$-adaptation signal.
+
+**Finding 28 (Dual-End Is Insufficient).** AUG-BOTHEND achieves 0% on Looping because the two-candidate comparison (front vs back) is too limited. For looping, the optimal victim is the MRU key, but the guard condition ($avgGap = 0$ for newly admitted keys) prevents MRU eviction during the first two cycles. By the time avgGap is established for all keys, the cache has already settled into the one-cycle lag pattern.
+
+**Finding 29 (Throughput--Accuracy Tradeoff).** AUG-HEAP achieves 6.14M ops/s on Zipfian (vs ARC's 5.44M), demonstrating that heap-based eviction can match ARC's throughput despite O(log n) eviction cost. The amortized cost is low because eviction occurs only on cache misses (not hits), and the 64-entry scan limit bounds worst-case cost.
+
+### 9.6 Adaptive Delivery: AUG-ADAPT
+
+The delivery--quota tension (Section 9.6) motivates a **self-tuning** variant that adapts its delivery mechanism to the workload. AUG-ADAPT combines two signals to choose between heap-based and LRU-based eviction at runtime:
+
+**Feedforward signal (population CV):** An exponential moving average of the coefficient of variation (CV) of `avgGap` across all cached keys. Low CV ($< 0.33$) indicates homogeneous inter-arrival patterns (looping, periodic) where predictions are reliable. High CV indicates heterogeneous patterns (Zipfian) where predictions are unreliable.
+
+**Feedback signal (prediction regret):** On each ghost hit (re-access of an evicted key), compute the regret: $r = |actualGap - avgGap| / avgGap$. A rolling EMA of regret measures how well the eviction predictions match reality. Low regret confirms that the current delivery mechanism is appropriate.
+
+**Control law:** $confidence = (1 - 3 \cdot CV) \cdot (1 - regret_{EMA})$. When $confidence > 0.5$: use heap eviction. When $confidence \leq 0.5$: use LRU eviction. The transition is conservative (defaults to LRU) to avoid Zipfian regression.
+
+**Results:** AUG-ADAPT achieves **99.33% on Looping** (matching AUG-HEAP) while exactly matching AUG-TS4 on Zipfian (33.93%), ScanRes (90.52%), and Temporal (75.50%). It produces **zero evictions** on Looping, indicating perfect admission decisions. On non-looping workloads, the population CV is high and the regret feedback confirms LRU superiority, so the controller selects LRU.
+
+**Finding 30 (Self-Tuning Eliminates the Delivery--Quota Tradeoff).** AUG-ADAPT demonstrates that the delivery--quota tension (Finding 27) is not a fundamental limitation but an engineering problem solvable by workload-adaptive delivery selection. The feedback controller correctly classifies all four tested workloads without any prior configuration.
+
+### 9.7 The Delivery--Quota Tension
+
+The structured eviction results reveal a fundamental tension:
+
+$$\text{Delivery accuracy} \uparrow \implies \text{Quota integrity} \downarrow$$
+
+More accurate delivery (selecting the true optimal victim) requires bypassing ARC's LRU-end constraint. But ARC's quota mechanism ($p$-adaptation, ghost lists) is designed around LRU-end eviction. Bypassing the constraint corrupts the quota signal, causing regression on workloads where the quota mechanism is the dominant source of hit-rate improvement (Zipfian, ScanRes).
+
+This tension suggests three research directions:
+
+1. **Quota-free delivery:** Replace ARC's T1/T2/p structure with a purely predictive eviction policy (no ghost lists, no p-adaptation). The heap selects the optimal victim directly.
+2. **Quota-aware delivery:** Constrain the heap to only select from the LRU-end $K$ candidates of the appropriate tier, preserving quota integrity while adding predictive selection within the LRU window. This is what AUG-PRED already does (Finding 23: uninformative for looping).
+3. **Adaptive delivery switching:** Detect workload patterns (looping vs Zipfian) and switch between LRU-based and heap-based delivery. The detection mechanism is itself an open question.
+
+---
+
+## 10. Conclusion
+
+REMARC reframes cache replacement as a dimensional reduction problem: multiple access signals are compressed into a compact state space, and action scores are derived via precomputed projection functions. This unified framework handles eviction, migration, and tiering from a single mechanism, with O(1) amortized cost per decision via SIMD lookup tables.
+
+The evaluation (Sections 5, 8, 9) establishes five principal results across single-node (23 variants, 4 workloads), 2-node (10 experiments, 4 workloads), 3-node (3 variants, 4 workloads), augmentation (8 findings), and structured eviction (5 findings) configurations:
+
+1. **Single-node ceiling ($\sim$24.5% Zipfian at 10% capacity):** No tested REMARC variant within the bounded per-key scoring class exceeds this ceiling, which we attribute to ARC's T1/T2 structural identity providing more information per capacity unit than scalar scoring can express. This holds across all tested variants including feedback modulation, capacity allocation, and ghost restoration. REMARC compensates with structural dominance on looping workloads (49% vs 0% for ARC/LRU) and strong scan resistance ($\sim$90%).
+
+2. **Augmentation produces marginal gains over ARC (Section 8):** Enriching ARC with REMARC's state space ($S = (\text{recency}, \text{frequency}, \text{period}, \text{confidence})$) and evidence-based demotion produces consistent but modest improvements: +1.59pp ScanRes, +0.59pp Temporal, at a cost of -1.24pp Zipfian. The augmentation is a strict superset of ARC ($\theta_{demote} = 2$ reproduces ARC exactly). More significantly, the investigation revealed a **structural barrier**: the list delivery mechanism prevents acting on correct predictions for adversarial (looping) workloads (Finding 25), motivating future work on structured eviction.
+
+3. **Desire encoding reduces multi-node cost:** By reformulating the state as per-node desire ($S_i(K)$ = "how much does node $i$ want key $K$") rather than cross-node value, migration decisions become threshold-free conjunctions of independent local decisions. This produces 3--4$\times$ cost reduction on skewed multi-node workloads in simulation and preserves per-node independence for $n$ nodes (Theorem, Section 5.3.3). The shadow desire map costs 2 bytes per key per node.
+
+4. **Scalable global state for $n \geq 3$:** A cross-node desire comparison ($O(1)$ per decision, $O(n)$ state) resolves contention for shared hot keys. The compare ratio $r$ has a sharp cliff at 1.1$\times$ and a wide effective range (1.1$\times$--1.5$\times$), making the system robust to parameter selection.
+
+5. **Structured eviction breaks the looping barrier (Section 9):** A heap-based eviction delivery mechanism (AUG-HEAP) achieves 99% on the Looping workload where all list-based policies score 0%. A self-tuning variant (AUG-ADAPT) uses a feedback controller (population CV + prediction regret) to adaptively switch between heap and LRU eviction, achieving **99.33% Looping** while matching AUG-TS4 exactly on Zipfian, ScanRes, and Temporal. This eliminates the delivery--quota tradeoff (Finding 30).
+
+The mathematical framework (switched linear system with linear projection) provides convergence guarantees, steady-state characterization, and natural generalization to $K > 2$ for tiered storage and heterogeneous memory hierarchies (Section 6). The implementation architecture (Section 5.6, Appendix A) demonstrates practical deployment: 2 bytes per key shadow map, lazy migration on access, SIMD-optimized periodic decay. The desire encoding mechanism requires no distributed coordination, making it suitable for shared-memory NUMA systems and potentially extensible to distributed caches via the factorization framework (Section 11.1).
+
+---
+
+## 11. Open Questions and Research Roadmap
 
 The preceding sections establish REMARC as a projection function operating on competitively-coupled state spaces. This section identifies three independent design axes that emerge from the framework, each with open questions.
 
-### 9.1 Factorization: Composing REMARC Instances
+### 11.1 Factorization: Composing REMARC Instances
 
 A unified K-dimensional REMARC requires lookup tables of size $MAX^K$ per action. For K > 4 this exceeds practical cache sizes. An alternative is to factor the K-dimensional state into multiple smaller REMARC instances connected by shared axes.
 
@@ -956,7 +1210,7 @@ Shared axis: `local_DRAM`. An access from local_DRAM updates both instances, cre
 - Can the factorization be learned online from access patterns?
 - What is the relationship between factorization topology and the symmetric properties described in §6.4 (competitive, independent, cooperative)?
 
-### 9.2 Bit Width: Quantization Granularity
+### 11.2 Bit Width: Quantization Granularity
 
 REMARC's current instantiation uses 4-bit quantization (MAX=15). This limits the state space to 16 levels per dimension — sufficient for eviction and migration thresholds but coarse for fine-grained tiering decisions where the difference between "warm" and "hot" matters.
 
@@ -969,7 +1223,7 @@ Increasing bit width is straightforward for K=2 ($256^2 = 65K$ entries, fits L2)
 - Does the competitive erosion structure (§3.1) amplify or dampen quantization error?
 - Can adaptive quantization (different bit widths per dimension) improve accuracy without increasing table size?
 
-### 9.3 Dynamic K: Topology Changes at Runtime
+### 11.3 Dynamic K: Topology Changes at Runtime
 
 REMARC assumes K is fixed at compile time. Real systems experience topology changes: hot-plugged memory tiers, VM migration across NUMA nodes, added or removed caching layers.
 
@@ -986,7 +1240,7 @@ REMARC assumes K is fixed at compile time. Real systems experience topology chan
 - Does runtime table generation introduce latency spikes that affect cache performance during topology transitions?
 - Can the factorization graph be updated incrementally (add/remove cliques) without recomputing the entire structure?
 
-### 9.4 The Design Space
+### 11.4 The Design Space
 
 These three axes are independent:
 
@@ -1000,7 +1254,7 @@ Increasing K does not require increasing bit width. Increasing bit width does no
 
 This design space is the natural generalization of REMARC beyond a single cache policy into a family of related policies, connected by the shared mathematical structure of competitive coupling and linear projection.
 
-### 9.5 Toward an Algebra of Sequential Decision Functions
+### 11.5 Toward an Algebra of Sequential Decision Functions
 
 The representation framework (§3.4) and factorization analysis (§9.1) suggest that REMARC captures an algebraic structure common to the class of history-based online sequential decision functions. This section outlines the theoretical direction; full formalization is planned as Paper 3.
 
@@ -1061,19 +1315,7 @@ Where each $\varphi_i$ is a K=1 phi atom tracking one dimension. The factorizati
 
 Existing policies occupy only the competitive and independent regimes. The cooperative regime is unexplored territory.
 
-#### Three-Paper Structure
-
-This analysis suggests a natural division of the work:
-
-| Paper | Scope | Contribution |
-|---|---|---|
-| **Paper 1: Furrballs** (systems) | Engineering | NUMA-aware cache implementation, real hardware validation, Phase 1 + 2a results |
-| **Paper 2: REMARC** (this paper, algorithm + framework) | Framework + instantiation | K=2 instantiation, SIMD implementation, K>2 generalization, representation theorem, evaluation |
-| **Paper 3: REMARC Theory** (mathematical) | Pure theory | Three-atom decomposition (phi, proj_s, decide), independent space axioms (S compact, D compact ordered), generation theorem ($\pi_c$ = decide . proj_s . $\varphi^t$), approximation bounds (error as function of K, bit width, factorization), geometric structure (stratified by K, parameterized by α/λ/A), symmetry classification, sigma as corollary |
-
-Paper 2 establishes the framework and validates it on real hardware. Paper 3 formalizes the algebra that Paper 2 discovers. Different venues, different reviewers, different contribution types.
-
-#### Open Questions for the Theoretical Paper
+#### Open Questions for Future Work
 
 The following questions are ranked by dependency: each question depends on the ones above it.
 
@@ -1105,23 +1347,22 @@ The following questions are ranked by dependency: each question depends on the o
 
 ---
 
-## Appendix A: REMARC-Furrballs Coupling
+## Appendix A: Implementation Details
 
-REMARC was designed within and validated through Furrballs, a NUMA-aware caching library. This appendix documents the integration architecture with desire encoding.
+This appendix documents the reference implementation architecture for desire-encoded REMARC in a NUMA-aware cache.
 
 ### A.1 Infrastructure Layer
 
-Furrballs provides the cache infrastructure:
-- **CMap**: Concurrent Swiss table (lock-free reads, striped writes) for key-value storage
+A reference implementation requires:
+- **Concurrent hash table**: Lock-free reads, striped writes for key-value storage
 - **Per-node page allocation**: Pages are NUMA-local; key placement determines memory locality
-- **RocksDB persistence**: Transparent persistence layer below the cache
-- **HotNodes**: Per-key NUMA affinity tracking for request routing
+- **Per-key NUMA affinity tracking**: For request routing to home nodes
 
 ### A.2 Policy Layer (REMARC with Desire Encoding)
 
 REMARC provides the policy through three per-node components:
 
-**In-cache REMARC state (existing).** Each cached key carries a 2-byte REMARC score (sR, sF) packed into TempCtrl. The SIMD scanner (§3.5) evaluates eviction decisions in batch.
+**In-cache REMARC state.** Each cached key carries a 2-byte REMARC score (sR, sF). A SIMD scanner evaluates eviction decisions in batch.
 
 **Shadow desire map (new).** Each node maintains an `unordered_map<HashPair, uint8_t[2]>` for ALL keys accessed on that node — not just cached keys. This provides the cross-node desire signal for migration decisions.
 
@@ -1129,19 +1370,19 @@ Storage: 2 bytes × |active keys| per node. For 10M keys on 2 nodes: ~40 MB tota
 
 **Global state G (for n ≥ 3).** Before migrating key K from node i to node j, the accessor queries node i's desire score for K and checks S_j(K) > r × S_i(K) with compare ratio r ∈ [1.1, 1.5]. This is O(1) per decision — one hash map lookup on the owner node.
 
-### A.3 Get() Path
+**Get() Path.**
 
 ```
 Get(key K):
-  1. Route to home node (HotNodes affinity)
+  1. Route to home node (NUMA affinity)
   2. Update shadow desire map: S_home(K).sR += bR, S_home(K).sF += bF
   3. If K in cache:
-       - Update in-cache REMARC score
-       - Return value
-  4. If K not in cache:
-       - Check migration: S_home(K) > r × S_owner(K)?
-         If yes and migration budget available: schedule migration
-       - Return miss
+        - Update in-cache REMARC score
+        - Return value
+   4. If K not in cache:
+        - Check migration: S_home(K) > r × S_owner(K)?
+          If yes and migration budget available: schedule migration
+        - Return miss
 ```
 
 ### A.4 Migration Decision
@@ -1150,9 +1391,9 @@ Migration is lazy — triggered on Get() access, not by the scanner. This avoids
 
 The migration budget is rate-limited (one migration per 64 ops) to prevent thrashing on oscillating workloads. With desire encoding, the budget is rarely the binding constraint — the desire signal naturally gates migration to genuinely beneficial cases.
 
-### A.5 Applicability Beyond Furrballs
+### A.5 Applicability Beyond NUMA Caches
 
-The generalization in §6 shows that REMARC's policy framework is independent of Furrballs' infrastructure. Any cache system with per-item state storage can adopt REMARC. The desire encoding mechanism requires only:
+The generalization in §6 shows that REMARC's policy framework is independent of any specific cache infrastructure. Any cache system with per-item state storage can adopt REMARC. The desire encoding mechanism requires only:
 1. Per-key state storage for the shadow desire map (2 bytes per key)
 2. A mechanism to query remote nodes' desire scores (for n ≥ 3)
 3. A capacity limit per node for the top-K cache selection

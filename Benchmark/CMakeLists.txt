@@ -14,3 +14,7 @@ target_link_libraries(IsolatedBench PRIVATE Furrballs Numatic Threads::Threads)
 add_executable(RemarcBench "RemarcBench.cpp")
 target_include_directories(RemarcBench PRIVATE "${CMAKE_SOURCE_DIR}/Furrballs/include")
 target_compile_options(RemarcBench PRIVATE -mssse3 -mavx2 -mbmi2)
+
+add_executable(PolicyBench "PolicyBench.cpp")
+target_include_directories(PolicyBench PRIVATE "${CMAKE_SOURCE_DIR}/Furrballs/include")
+target_compile_options(PolicyBench PRIVATE -mssse3 -mavx2 -mbmi2)

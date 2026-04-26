@@ -1,12 +1,12 @@
-/*****************************************************************//**
+/*********************************************************************\
  * \file   Furrballs.h
  * \brief Primary interface for the Furrball library.
  *
- * NUMA-aware caching and database management using RocksDB with ARC eviction.
+ * NUMA-aware caching with pluggable eviction policies.
  *
  * \author The Sphynx
  * \date   July 2024
- *********************************************************************/
+\*********************************************************************/
 #pragma once
 #include "Error.h"
 #include "Page.h"
@@ -15,6 +15,7 @@
 #include "Numatic.h"
 #include "WaitGroup.h"
 #include "SeqLock.h"
+#include "Policy.h"
 #include <memory>
 #include <string>
 #include <thread>
@@ -40,6 +41,65 @@
 #endif
 
 namespace NuAtlas {
+
+    // --- Forward declarations ---
+
+    template<typename Policy> class FurrBall;
+
+    // --- Shared NUMA state (not per-policy) ---
+
+    namespace Detail {
+        struct GlobalNumaState {
+            NodeJob* Workers = nullptr;
+            size_t SysNumaPageSize = 0;
+            int NumaNodeCount = 0;
+            bool Initialized = false;
+        };
+        extern GlobalNumaState globalNumaState;
+    }
+
+    // --- Per-key metadata (policy-independent) ---
+
+    struct KeyMeta {
+        size_t PageIndex, DataSize;
+        void* DataOffset;
+        int NodeID;
+        uint8_t HotNode;
+        uint8_t TempCtrlIdx;
+    };
+
+    // --- Statistics (policy-independent) ---
+
+    class Statistics {
+        template<typename> friend class FurrBall;
+        alignas(64) std::atomic<size_t> UsedMemory{0};
+        alignas(64) std::atomic<size_t> TotalAllocated{0};
+        alignas(64) std::atomic<unsigned int> EvictionCount{0};
+        alignas(64) std::atomic<unsigned int> HitCount{0};
+        alignas(64) std::atomic<unsigned int> MissCount{0};
+        alignas(64) std::atomic<size_t> BytesWritten{0};
+        alignas(64) std::atomic<size_t> BytesRead{0};
+        alignas(64) std::atomic<unsigned int> LocalHitCount{0};
+        alignas(64) std::atomic<unsigned int> MigrationCount{0};
+        alignas(64) std::atomic<unsigned int> MigrationReversalCount{0};
+        Statistics() noexcept = default;
+        Statistics& operator=(const Statistics&) = delete;
+        Statistics& operator=(Statistics&&) = delete;
+    public:
+        size_t GetUsedMemory() const noexcept { return UsedMemory.load(); }
+        size_t GetTotalAllocated() const noexcept { return TotalAllocated.load(); }
+        unsigned int GetEvictionCount() const noexcept { return EvictionCount.load(); }
+        unsigned int GetHitCount() const noexcept { return HitCount.load(); }
+        unsigned int GetMissCount() const noexcept { return MissCount.load(); }
+        size_t GetBytesWritten() const noexcept { return BytesWritten.load(); }
+        size_t GetBytesRead() const noexcept { return BytesRead.load(); }
+        unsigned int GetLocalHitCount() const noexcept { return LocalHitCount.load(); }
+        unsigned int GetMigrationCount() const noexcept { return MigrationCount.load(); }
+        unsigned int GetMigrationReversalCount() const noexcept { return MigrationReversalCount.load(); }
+    };
+
+    // --- Non-templated cache base (page-level ARC for void* API) ---
+
     template<class Key, class Value>
     class Cache {
     protected:
@@ -181,7 +241,7 @@ namespace NuAtlas {
 
     template<bool use_atomic = true>
     struct RoundRobin{
-private:
+    private:
         int n = 1;
         std::conditional_t<use_atomic, std::atomic_uint, unsigned int> counter = 0;
     public:
@@ -200,14 +260,12 @@ private:
         }
     };
     typedef RoundRobin<true> AtomicRoundRobin;
-    //All default values are arbitrary for now.
 
     struct NumaConfig{
         short PerNodePageLimit = 2;
-        bool AllocateUsingNodePageSize = true; //< allocates with NUMA page sizes (or multiples of page sizes) instead of PageSize.
-        bool AllowNodeFallback = false; //< For now, Keep this false.
+        bool AllocateUsingNodePageSize = true;
+        bool AllowNodeFallback = false;
         bool UseThreadLocalRouting = false;
-        //Add priority later, Add Home Node + Perferred Nodes.
     };
 
     struct FurrConfig final {
@@ -229,7 +287,12 @@ private:
         NumaConfig* numaConfig = nullptr;
     };
 
-    class FurrBall final {
+    // --- FurrBall: NUMA-aware cache with pluggable policy ---
+    // Policy controls: per-key state, eviction scoring, migration, scanning.
+    // E = P(A₁, ..., Aₙ) at the code level.
+
+    template<typename Policy = StandardRemarc>
+    class FurrBall {
     private:
         struct ImplDetail;
         ImplDetail* DataMembers;
@@ -241,85 +304,43 @@ private:
         bool Volatile;
         bool UseNUMA;
         bool ThreadLocalRoute;
-        RemarcConfig remarcConfig;
+        typename Policy::Config policyConfig;
 
         std::vector<void*> AllocatedPages;
 
         inline static std::list<FurrBall*> OpenBalls = std::list<FurrBall*>();
 
-        struct GlobalNumaState {
-            NodeJob* Workers = nullptr;
-            size_t SysNumaPageSize = 0;
-            int NumaNodeCount = 0;
-        };
-        static GlobalNumaState globalNumaState;
+        FurrBall(const FurrConfig& config, size_t numPages) noexcept;
 
-        FurrBall(const FurrConfig& config, size_t numPages)noexcept;
-
-        void OnEvict(const size_t& key, Page*& page)noexcept;
+        void OnEvict(const size_t& key, Page*& page) noexcept;
 
         size_t PageIndexForAddress(size_t address)const noexcept {
             return address & ~(PageSize - 1);
         }
 
-        Page* AllocatePage(size_t pageIndex)noexcept;
-        void FlushPage(Page* page)noexcept;
-        bool MigrateKey(const std::string& key, const HashPair& hp, int sourceNode, int destNode)noexcept;
-        void ScanAndExecute(int nodeID)noexcept;
+        Page* AllocatePage(size_t pageIndex) noexcept;
+        void FlushPage(Page* page) noexcept;
+        bool MigrateKey(const std::string& key, const HashPair& hp, int sourceNode, int destNode) noexcept;
+        void ScanAndExecute(int nodeID) noexcept;
 
     public:
-        struct KeyMeta{
-            size_t PageIndex, DataSize;
-            void* DataOffset;
-            int NodeID;
-            uint8_t HotNode;
-            uint8_t TempCtrlIdx;
-        };
+        Statistics Stats;
 
-        class Statistics {
-            friend FurrBall;
-        private:
-            alignas(64) std::atomic<size_t> UsedMemory{0};
-            alignas(64) std::atomic<size_t> TotalAllocated{0};
-            alignas(64) std::atomic<unsigned int> EvictionCount{0};
-            alignas(64) std::atomic<unsigned int> HitCount{0};
-            alignas(64) std::atomic<unsigned int> MissCount{0};
-            alignas(64) std::atomic<size_t> BytesWritten{0};
-            alignas(64) std::atomic<size_t> BytesRead{0};
-            alignas(64) std::atomic<unsigned int> LocalHitCount{0};
-            alignas(64) std::atomic<unsigned int> MigrationCount{0};
-            alignas(64) std::atomic<unsigned int> MigrationReversalCount{0};
-            Statistics()noexcept = default;
-            Statistics& operator=(const Statistics&) = delete;
-            Statistics& operator=(Statistics&&) = delete;
-        public:
-            size_t GetUsedMemory()const noexcept { return UsedMemory.load(); }
-            size_t GetTotalAllocated()const noexcept { return TotalAllocated.load(); }
-            unsigned int GetEvictionCount()const noexcept { return EvictionCount.load(); }
-            unsigned int GetHitCount()const noexcept { return HitCount.load(); }
-            unsigned int GetMissCount()const noexcept { return MissCount.load(); }
-            size_t GetBytesWritten()const noexcept { return BytesWritten.load(); }
-            size_t GetBytesRead()const noexcept { return BytesRead.load(); }
-            unsigned int GetLocalHitCount()const noexcept { return LocalHitCount.load(); }
-            unsigned int GetMigrationCount()const noexcept { return MigrationCount.load(); }
-            unsigned int GetMigrationReversalCount()const noexcept { return MigrationReversalCount.load(); }
-        } Stats;
-
-        FurrBall(const FurrBall& cpy) = delete;
+        FurrBall(const FurrBall&) = delete;
         static void Bootstrap();
         static void Shutdown();
-        static FurrBall* CreateBall(const std::string& DBpath, const FurrConfig& config = FurrConfig(), bool overwrite = false)noexcept;
+        static FurrBall* CreateBall(const std::string& DBpath, const FurrConfig& config = FurrConfig(), bool overwrite = false) noexcept;
 
-        void* Get(void* vAddress)noexcept;
-        bool Set(void* data, size_t size, size_t vAddress)noexcept;
-        //New API-style
+        void* Get(void* vAddress) noexcept;
+        bool Set(void* data, size_t size, size_t vAddress) noexcept;
         Error Get(const std::string& key, void* outBuf, size_t BufSize, size_t& outSize) noexcept;
-        Error Set(const std::string& key, void* data, size_t size)noexcept;
+        Error Set(const std::string& key, void* data, size_t size) noexcept;
 
         const Cache<size_t, Page*>& GetBackingCache()const noexcept {
             return cache;
         }
 
-        ~FurrBall()noexcept;
+        ~FurrBall() noexcept;
     };
-}
+
+} // namespace NuAtlas

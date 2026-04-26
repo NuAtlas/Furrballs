@@ -15,8 +15,10 @@ using namespace NuAtlas;
 using Clock = std::chrono::high_resolution_clock;
 using ns = std::chrono::nanoseconds;
 
+using FB = FurrBall<StandardRemarc>;
+
 int main() {
-    FurrBall::Bootstrap();
+    FB::Bootstrap();
     int numNodes = Numatic::GetNodeCount();
 
     NumaConfig numaConfig;
@@ -29,8 +31,8 @@ int main() {
     config.InitialPageCount = 2048;
     config.numaConfig = &numaConfig;
 
-    FurrBall* fb = FurrBall::CreateBall("BenchDB_ISO", config);
-    if (!fb) { std::cerr << "Cannot create FurrBall\n"; FurrBall::Shutdown(); return -1; }
+    FB* fb = FB::CreateBall("BenchDB_ISO", config);
+    if (!fb) { std::cerr << "Cannot create FurrBall\n"; FB::Shutdown(); return -1; }
 
     BaselineCache baseline(4096, 4096);
     size_t numOps = 10000;
@@ -120,6 +122,6 @@ int main() {
     std::cout << "Get delta: " << std::setprecision(1) << ((bGetP50 - fGetP50) / bGetP50 * 100.0) << "% vs baseline" << std::endl;
 
     delete fb;
-    FurrBall::Shutdown();
+    FB::Shutdown();
     return 0;
 }
