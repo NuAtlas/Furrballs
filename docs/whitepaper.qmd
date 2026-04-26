@@ -643,6 +643,8 @@ Evicted pages accumulate in RocksDB. For the thesis, cleanup strategies:
 
 The `evictedKeyIndex_` (H2 → PageId) is in-memory only. If the process restarts, the index is lost --- but this is a cache, not a database. Cold restart warms up from scratch, which is the expected behavior for a caching layer.
 
+## 3. Design Decisions
+
 ### 3.1 Per-Node Physical Block with Subdivision
 **Decision:** One `Numatic::AllocateOnNode()` call per NUMA node at init, manually partitioned into logical pages.
 
