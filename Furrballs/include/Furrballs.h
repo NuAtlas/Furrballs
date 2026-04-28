@@ -280,6 +280,7 @@ namespace NuAtlas {
                 bool IsVolatile : 1;
                 bool EnableLogging : 1;
                 bool EnableNUMA : 1;
+                bool DisableMigration : 1;
             };
             uint8_t flags = 0;
         };
@@ -304,6 +305,7 @@ namespace NuAtlas {
         bool Volatile;
         bool UseNUMA;
         bool ThreadLocalRoute;
+        bool DisableMigration = false;
         typename Policy::Config policyConfig;
 
         std::vector<void*> AllocatedPages;
@@ -321,7 +323,6 @@ namespace NuAtlas {
         Page* AllocatePage(size_t pageIndex) noexcept;
         void FlushPage(Page* page) noexcept;
         bool MigrateKey(const std::string& key, const HashPair& hp, int sourceNode, int destNode) noexcept;
-        void ScanAndExecute(int nodeID) noexcept;
 
     public:
         Statistics Stats;
@@ -330,6 +331,17 @@ namespace NuAtlas {
         static void Bootstrap();
         static void Shutdown();
         static FurrBall* CreateBall(const std::string& DBpath, const FurrConfig& config = FurrConfig(), bool overwrite = false) noexcept;
+
+        void ScanAndExecute(int nodeID) noexcept;
+
+        struct PageManageResult {
+            size_t pagesEvicted = 0;
+            size_t keysEvicted = 0;
+            size_t keysMigrated = 0;
+            double scanNs = 0;
+        };
+
+        PageManageResult ManagePages(int nodeID, bool simulateIO = true) noexcept;
 
         void* Get(void* vAddress) noexcept;
         bool Set(void* data, size_t size, size_t vAddress) noexcept;

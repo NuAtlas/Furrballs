@@ -14,6 +14,8 @@
 #include <algorithm>
 #include <functional>
 #include <unordered_map>
+#include <queue>
+#include <cmath>
 
 namespace NuAtlas {
 
@@ -509,6 +511,8 @@ namespace NuAtlas {
 
         void SetEvictionCallback(EvictionCallback cb) { evictionCallback_ = cb; }
 
+        uint8_t GetDesire(uint64_t) const { return 0; }
+
         std::optional<Value> Find(const std::string& key) {
             auto val = store_.Find(key);
             if (!val) return std::nullopt;
@@ -597,6 +601,476 @@ namespace NuAtlas {
             if (!evictLocked()) return ABANDONED_SET;
             t1_.push_front(hashes);
             return NO_ERR;
+        }
+    };
+
+    static constexpr uint8_t AUG_REMARC_MAX = 15;
+    static constexpr uint8_t AUG_DECAY_NUM = 7;
+    static constexpr uint8_t AUG_DECAY_DEN = 8;
+
+    static inline uint8_t augDecayR(uint8_t r) {
+        return (uint8_t)((uint16_t)r * AUG_DECAY_NUM / AUG_DECAY_DEN);
+    }
+    static inline uint8_t augBoostR(uint8_t r) {
+        uint16_t boosted = (uint16_t)r + (uint16_t)(AUG_REMARC_MAX - r) * 2 / 15;
+        return boosted < AUG_REMARC_MAX ? (uint8_t)boosted : AUG_REMARC_MAX;
+    }
+    static inline uint8_t augBoostF(uint8_t f) {
+        uint16_t boosted = (uint16_t)f + (uint16_t)(AUG_REMARC_MAX - f) * 1 / 15;
+        return boosted < AUG_REMARC_MAX ? (uint8_t)boosted : AUG_REMARC_MAX;
+    }
+    static inline uint8_t augGetR(uint8_t s) { return s & 0xF; }
+    static inline uint8_t augGetF(uint8_t s) { return (s >> 4) & 0xF; }
+    static inline uint8_t augPack(uint8_t r, uint8_t f) { return (f << 4) | r; }
+
+    // =================================================================
+    //  AugAdaptScorer: value-agnostic prediction + adaptive switching
+    // =================================================================
+    //
+    //  Tracks per-key prediction state (epoch, avgGap, r/f state) and
+    //  provides eviction victim selection via adaptive heap/LRU switching.
+    //  Operates purely on uint64_t h2 + HashPair — no Value dependency.
+    //
+    //  The cache calls:
+    //    touchKey()      — on every access (hit or miss)
+    //    selectVictim()  — during eviction, returns HashPair of best victim
+    //    setTier()       — when moving keys between ARC lists
+    //    onGhostHit()    — when a key is found in a ghost list
+    //    eraseKey()      — permanent removal
+
+    class AugAdaptScorer {
+        static constexpr uint64_t TOMBSTONE = UINT64_MAX;
+        static constexpr double STATS_ALPHA = 0.002;
+        static constexpr double REGRET_ALPHA = 0.001;
+
+        struct Slot {
+            uint64_t h2 = 0;
+            HashPair hashes;
+            uint32_t lastEpoch = 0;
+            uint32_t avgGap = 0;
+            uint8_t state = 0;
+            uint8_t tier = 0;
+            uint64_t version = 0;
+        };
+
+        struct HeapEntry {
+            uint64_t predictedNext;
+            uint64_t h2;
+            uint64_t version;
+            bool operator<(const HeapEntry& o) const {
+                if (predictedNext != o.predictedNext) return predictedNext < o.predictedNext;
+                return version < o.version;
+            }
+        };
+
+        std::vector<Slot> slots_;
+        size_t mask_;
+        std::priority_queue<HeapEntry> heap_;
+        uint32_t epoch_ = 0;
+        double popMeanGap_ = 0.0;
+        double popM2Gap_ = 0.0;
+        double regretEMA_ = 0.5;
+        bool adaptive_ = false;
+
+        Slot* probe(uint64_t h2) {
+            size_t idx = h2 & mask_;
+            while (true) {
+                Slot& s = slots_[idx];
+                if (s.h2 == h2) return &s;
+                if (s.h2 == 0) return nullptr;
+                idx = (idx + 1) & mask_;
+            }
+        }
+
+        Slot* probeOrInsert(uint64_t h2) {
+            size_t idx = h2 & mask_;
+            size_t tomb = SIZE_MAX;
+            while (true) {
+                Slot& s = slots_[idx];
+                if (s.h2 == h2) return &s;
+                if (s.h2 == TOMBSTONE && tomb == SIZE_MAX) tomb = idx;
+                if (s.h2 == 0) {
+                    if (tomb != SIZE_MAX) idx = tomb;
+                    slots_[idx] = {};
+                    slots_[idx].h2 = h2;
+                    return &slots_[idx];
+                }
+                idx = (idx + 1) & mask_;
+            }
+        }
+
+        void pushToHeap(uint64_t h2) {
+            if (!adaptive_) return;
+            Slot* s = probe(h2);
+            if (!s) return;
+            s->version++;
+            uint64_t pred = (s->avgGap > 0)
+                ? (uint64_t)s->lastEpoch + s->avgGap
+                : (uint64_t)epoch_;
+            heap_.push({pred, h2, s->version});
+        }
+
+        void updateAdaptiveFlag() {
+            double cv = (popMeanGap_ > 1.0)
+                ? std::sqrt(std::max(0.0, popM2Gap_)) / popMeanGap_
+                : 1.0;
+            adaptive_ = (std::max(0.0, 1.0 - cv * 3.0) *
+                         std::max(0.0, 1.0 - regretEMA_)) > 0.5;
+        }
+
+    public:
+        AugAdaptScorer(size_t capacity) {
+            size_t sz = 1;
+            while (sz < capacity * 2) sz <<= 1;
+            slots_.resize(sz);
+            mask_ = sz - 1;
+        }
+
+        void touchKey(uint64_t h2, HashPair hp, uint8_t tier) {
+            Slot* s = probeOrInsert(h2);
+            s->hashes = hp;
+            uint32_t gap = epoch_ - s->lastEpoch;
+            s->lastEpoch = epoch_;
+            if (gap > 0) s->avgGap = s->avgGap * 3 / 4 + gap / 4;
+
+            uint8_t r = augGetR(s->state), f = augGetF(s->state);
+            for (uint32_t i = 0; i < gap && r > 0; i++) r = augDecayR(r);
+            r = augBoostR(r);
+            f = augBoostF(f);
+            s->state = augPack(r, f);
+
+            if (tier <= 2) {
+                double g = (double)s->avgGap;
+                double delta = g - popMeanGap_;
+                popMeanGap_ += STATS_ALPHA * delta;
+                popM2Gap_ += STATS_ALPHA * delta * (g - popMeanGap_);
+                updateAdaptiveFlag();
+            }
+            pushToHeap(h2);
+        }
+
+        HashPair selectVictim(uint8_t targetTier) {
+            if (adaptive_) {
+                HashPair bestHashes{};
+                uint64_t bestPred = 0;
+                size_t attempts = 0;
+                while (!heap_.empty() && attempts < 64) {
+                    attempts++;
+                    HeapEntry top = heap_.top();
+                    Slot* s = probe(top.h2);
+                    if (!s || s->version != top.version || s->tier != targetTier) {
+                        heap_.pop(); continue;
+                    }
+                    if (top.predictedNext > bestPred) {
+                        bestPred = top.predictedNext;
+                        bestHashes = s->hashes;
+                    }
+                    heap_.pop();
+                }
+                if (bestHashes.h2 != 0) return bestHashes;
+            }
+            return {};
+        }
+
+        bool isAdaptive() const { return adaptive_; }
+
+        void onGhostHit(uint64_t h2) {
+            Slot* s = probe(h2);
+            if (!s || s->avgGap == 0 || s->lastEpoch == 0) return;
+            uint32_t actualGap = epoch_ - s->lastEpoch;
+            double regret = (double)((actualGap > s->avgGap)
+                ? (actualGap - s->avgGap) : (s->avgGap - actualGap))
+                / (double)s->avgGap;
+            regret = std::min(regret, 5.0);
+            regretEMA_ = (1.0 - REGRET_ALPHA) * regretEMA_ + REGRET_ALPHA * regret;
+            updateAdaptiveFlag();
+        }
+
+        void setTier(uint64_t h2, uint8_t tier) {
+            Slot* s = probe(h2);
+            if (s) s->tier = tier;
+        }
+
+        void eraseKey(uint64_t h2) {
+            size_t idx = h2 & mask_;
+            while (true) {
+                if (slots_[idx].h2 == h2) {
+                    size_t next = (idx + 1) & mask_;
+                    while (slots_[next].h2 != 0) {
+                        size_t ideal = slots_[next].h2 & mask_;
+                        size_t dist_next = (next - ideal) & mask_;
+                        size_t dist_idx = (next - idx) & mask_;
+                        if (dist_next >= dist_idx) {
+                            slots_[idx] = slots_[next];
+                            idx = next;
+                        }
+                        next = (next + 1) & mask_;
+                    }
+                    slots_[idx] = {};
+                    return;
+                }
+                if (slots_[idx].h2 == 0) return;
+                idx = (idx + 1) & mask_;
+            }
+        }
+
+        void initKey(uint64_t h2, HashPair hp, uint8_t tier) {
+            Slot* s = probeOrInsert(h2);
+            s->hashes = hp;
+            s->state = augPack(AUG_REMARC_MAX, 0);
+            s->lastEpoch = epoch_;
+            s->avgGap = 0;
+            s->tier = tier;
+            pushToHeap(h2);
+        }
+
+        uint32_t epoch() const { return epoch_; }
+        void advanceEpoch() { epoch_++; }
+
+        uint8_t demoteCheck(uint64_t h2, uint8_t demoteThresh) {
+            Slot* s = probe(h2);
+            if (!s) return 0;
+            uint32_t gap = epoch_ - s->lastEpoch;
+            uint8_t r = augGetR(s->state), f = augGetF(s->state);
+            for (uint32_t i = 0; i < gap && r > 0; i++) r = augDecayR(r);
+            if (demoteThresh > 0 && (uint16_t)r + f <= demoteThresh) {
+                s->lastEpoch = epoch_;
+                s->state = augPack(augDecayR(augGetR(s->state)), f);
+                return 1;
+            }
+            s->lastEpoch = epoch_;
+            pushToHeap(h2);
+            return 0;
+        }
+
+        double confidence() const {
+            double cv = (popMeanGap_ > 1.0)
+                ? std::sqrt(std::max(0.0, popM2Gap_)) / popMeanGap_
+                : 1.0;
+            return std::max(0.0, 1.0 - cv * 3.0) *
+                   std::max(0.0, 1.0 - regretEMA_);
+        }
+    };
+
+    // =================================================================
+    //  AugAdaptStore: ARC cache with AugAdaptScorer
+    // =================================================================
+    //
+    //  Uses CMap<Value> for storage + ArcList for ARC structure +
+    //  AugAdaptScorer for eviction decisions. Same public interface as
+    //  ConcurrentARC so it's a drop-in Store replacement.
+
+    template <class Value>
+        requires std::is_move_constructible_v<Value> && std::is_trivially_copyable_v<Value>
+    class AugAdaptStore {
+    public:
+        using EvictionCallback = std::function<void(const Value&)>;
+
+    private:
+        enum Tier : uint8_t { NONE = 0, T1 = 1, T2 = 2, B1 = 3, B2 = 4 };
+        static constexpr uint8_t demoteThresh_ = 4;
+
+        CMap<Value> store_;
+        ArcList t1_, t2_, b1_, b2_;
+        AugAdaptScorer scorer_;
+        SpinLock lock_;
+        PromoteBuf promoteBuf_;
+        size_t capacity_;
+        size_t p_;
+        EvictionCallback evictionCallback_ = [](const Value&) {};
+
+        bool evictAndGhost(Tier targetTier, Tier ghostTier) {
+            HashPair victimHashes = scorer_.selectVictim(targetTier);
+            uint64_t victimH2 = victimHashes.h2;
+            bool usedHeap = (victimH2 != 0);
+
+            if (!usedHeap) {
+                auto& l = (targetTier == T1) ? t1_ : t2_;
+                if (l.empty()) return false;
+                victimHashes = l.back();
+                victimH2 = victimHashes.h2;
+            }
+
+            auto result = store_.FindAndEraseByHash(victimHashes);
+            if (result.err != NO_ERR) return false;
+
+            if (targetTier == T1) t1_.erase(victimH2);
+            else t2_.erase(victimH2);
+
+            if (ghostTier != NONE) {
+                auto& gl = (ghostTier == B1) ? b1_ : b2_;
+                gl.push_front(victimHashes);
+                scorer_.setTier(victimH2, ghostTier);
+            } else {
+                scorer_.eraseKey(victimH2);
+            }
+            if (result.value) evictionCallback_(*result.value);
+            return true;
+        }
+
+        bool replaceLocked(HashPair hp) {
+            bool evictT1 = !t1_.empty() && (t1_.size() > p_ ||
+                (b2_.contains(hp.h2) && t1_.size() == p_));
+            if (evictT1 && !t1_.empty()) {
+                return evictAndGhost(T1, B1);
+            } else if (!t2_.empty()) {
+                return evictAndGhost(T2, B2);
+            }
+            return false;
+        }
+
+        bool evictLocked() {
+            if (t1_.size() + b1_.size() >= capacity_) {
+                if (t1_.size() < capacity_ && !b1_.empty()) {
+                    uint64_t h2 = b1_.back().h2;
+                    b1_.pop_back();
+                    scorer_.eraseKey(h2);
+                } else if (!t1_.empty()) {
+                    if (!evictAndGhost(T1, NONE)) return false;
+                }
+            }
+            if (t1_.size() + t2_.size() + b1_.size() + b2_.size() >= 2 * capacity_) {
+                if (!b2_.empty()) {
+                    uint64_t h2 = b2_.back().h2;
+                    b2_.pop_back();
+                    scorer_.eraseKey(h2);
+                } else if (!t2_.empty()) {
+                    if (!evictAndGhost(T2, NONE)) return false;
+                }
+            }
+            return true;
+        }
+
+    public:
+        AugAdaptStore(size_t cap, CMapAllocFn af = CMapDefaultAlloc, CMapFreeFn ff = CMapDefaultFree)
+            : store_(cap, af, ff), scorer_(cap), capacity_(cap), p_(0) {}
+
+        void SetEvictionCallback(EvictionCallback cb) { evictionCallback_ = cb; }
+
+        uint8_t GetDesire(uint64_t h2) const {
+            size_t idx = h2 & scorer_.mask_;
+            while (true) {
+                const auto& s = scorer_.slots_[idx];
+                if (s.h2 == h2) return augGetR(s.state);
+                if (s.h2 == 0) return 0;
+                idx = (idx + 1) & scorer_.mask_;
+            }
+        }
+
+        std::optional<Value> Find(const std::string& key) {
+            auto val = store_.Find(key);
+            if (!val) return std::nullopt;
+
+            HashPair hashes = HashKey(key);
+            if (!promoteBuf_.enqueue(hashes)) {
+                if (lock_.try_lock()) {
+                    promoteBuf_.drain(t1_, t2_);
+                    lock_.unlock();
+                }
+            }
+            return val;
+        }
+
+        template <typename Fn>
+        Error UpdateInPlace(const std::string& key, Fn&& fn) {
+            return store_.UpdateInPlace(key, std::forward<Fn>(fn));
+        }
+
+        template <typename Fn>
+        Error UpdateInPlaceByHash(const HashPair& hashes, Fn&& fn) {
+            return store_.UpdateInPlaceByHash(hashes, std::forward<Fn>(fn));
+        }
+
+        typename CMap<Value>::FindAndEraseResult Erase(const std::string& key) {
+            std::lock_guard<SpinLock> guard(lock_);
+            promoteBuf_.drain(t1_, t2_);
+            HashPair hashes = HashKey(key);
+            uint64_t h2 = hashes.h2;
+            t1_.erase(h2);
+            t2_.erase(h2);
+            b1_.erase(h2);
+            b2_.erase(h2);
+            scorer_.eraseKey(h2);
+            return store_.FindAndErase(key);
+        }
+
+        typename CMap<Value>::FindAndEraseResult EraseByHash(const HashPair& hashes) {
+            std::lock_guard<SpinLock> guard(lock_);
+            promoteBuf_.drain(t1_, t2_);
+            uint64_t h2 = hashes.h2;
+            t1_.erase(h2);
+            t2_.erase(h2);
+            b1_.erase(h2);
+            b2_.erase(h2);
+            scorer_.eraseKey(h2);
+            return store_.FindAndEraseByHash(hashes);
+        }
+
+        Error Set(const std::string& key, const Value& val) {
+            std::lock_guard<SpinLock> guard(lock_);
+            promoteBuf_.drain(t1_, t2_);
+            scorer_.advanceEpoch();
+
+            HashPair hashes = HashKey(key);
+            uint64_t h2 = hashes.h2;
+
+            AugAdaptScorer* sc = &scorer_;
+            (void)sc;
+
+            bool inT1 = t1_.contains(h2);
+            bool inT2 = t2_.contains(h2);
+            bool inB1 = b1_.contains(h2);
+            bool inB2 = b2_.contains(h2);
+
+            if (inT1 || inT2) {
+                uint8_t tier = inT1 ? T1 : T2;
+                scorer_.touchKey(h2, hashes, tier);
+
+                if (inT1) {
+                    t1_.erase(h2);
+                    t2_.push_front(hashes);
+                    scorer_.setTier(h2, T2);
+                } else {
+                    if (scorer_.demoteCheck(h2, demoteThresh_)) {
+                        t2_.erase(h2);
+                        t1_.push_front(hashes);
+                        scorer_.setTier(h2, T1);
+                    } else {
+                        t2_.splice_front(h2);
+                    }
+                }
+                return store_.Set(key, val).err;
+            }
+
+            Tier ghostTier = NONE;
+            if (inB1) {
+                scorer_.onGhostHit(h2);
+                size_t d = b1_.size() > 0 ? std::max(b2_.size() / b1_.size(), (size_t)1) : 1;
+                p_ = std::min(capacity_, p_ + d);
+                b1_.erase(h2);
+                ghostTier = B1;
+            } else if (inB2) {
+                scorer_.onGhostHit(h2);
+                size_t d = b2_.size() > 0 ? std::max(b1_.size() / b2_.size(), (size_t)1) : 1;
+                size_t dec = std::max(d, (size_t)1);
+                p_ = (p_ >= dec) ? p_ - dec : 0;
+                b2_.erase(h2);
+                ghostTier = B2;
+            }
+
+            if (ghostTier != NONE) {
+                if (!evictLocked()) return ABANDONED_SET;
+                if (!replaceLocked(hashes)) return ABANDONED_SET;
+                scorer_.touchKey(h2, hashes, T2);
+                t2_.push_front(hashes);
+                scorer_.setTier(h2, T2);
+            } else {
+                if (!evictLocked()) return ABANDONED_SET;
+                scorer_.initKey(h2, hashes, T1);
+                t1_.push_front(hashes);
+            }
+
+            return store_.Set(key, val).err;
         }
     };
 

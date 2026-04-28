@@ -7,6 +7,7 @@
 
 #include "Furrballs.h"
 #include "CMap.h"
+#include "NativeStore.h"
 #undef max
 #undef min
 #include <cstring>
@@ -79,23 +80,65 @@ namespace NuAtlas {
     }
 }
 
+struct FlatDesireMap {
+    struct Slot { uint64_t h2; uint8_t desire; };
+    static constexpr uint64_t EMPTY = ~0ULL;
+
+    Slot* slots_ = nullptr;
+    size_t mask_ = 0;
+
+    void init(size_t capacity) {
+        size_t sz = 64;
+        while (sz < capacity) sz <<= 1;
+        mask_ = sz - 1;
+        slots_ = new Slot[sz]();
+        for (size_t i = 0; i < sz; i++) slots_[i].h2 = EMPTY;
+    }
+
+    uint8_t get(uint64_t h2) const noexcept {
+        if (!slots_) return 0;
+        size_t idx = h2 & mask_;
+        for (size_t i = 0; i <= mask_; i++) {
+            Slot& s = slots_[idx];
+            if (s.h2 == h2) return s.desire;
+            if (s.h2 == EMPTY) return 0;
+            idx = (idx + 1) & mask_;
+        }
+        return 0;
+    }
+
+    void set(uint64_t h2, uint8_t desire) noexcept {
+        if (!slots_) return;
+        size_t idx = h2 & mask_;
+        for (size_t i = 0; i <= mask_; i++) {
+            Slot& s = slots_[idx];
+            if (s.h2 == h2 || s.h2 == EMPTY) {
+                s.h2 = h2;
+                s.desire = desire;
+                return;
+            }
+            idx = (idx + 1) & mask_;
+        }
+    }
+};
+
+template<typename Policy>
 struct PerNodeDetails{
     Numatic::NumaLocalMemoryResource nodeMR;
     std::pmr::vector<Page> NodePages;
-    ConcurrentARC<KeyMeta> KeyStore;
-    std::unordered_map<HashPair, uint8_t, decltype([](const HashPair& h) -> size_t {
-        return std::rotl(static_cast<size_t>(h.h1), 7) ^ h.h2;
-    })> ShadowDesire;
+    typename Policy::template Store<KeyMeta> KeyStore;
+    FlatDesireMap ShadowDesire;
     SpinLock DesireLock;
     std::atomic<uint8_t> MinDesire{0};
     std::atomic<size_t> CurrentPage{0};
     void* PhysicalPageInNode = nullptr;
     PerNodeDetails(size_t arcCap, CMapAllocFn af = CMapDefaultAlloc, CMapFreeFn ff = CMapDefaultFree)
-        : NodePages(&nodeMR), KeyStore(arcCap, af, ff) {}
+        : NodePages(&nodeMR), KeyStore(arcCap, af, ff) { ShadowDesire.init(arcCap * 2); }
 };
 
+template<typename Policy>
 struct PrivateNumaState{
-    PerNodeDetails** NodeDetails;
+    PerNodeDetails<Policy>** NodeDetails;
     AtomicRoundRobin rr;
     bool AllowNodeFallback = false;
 };
@@ -103,7 +146,7 @@ struct PrivateNumaState{
 template<typename Policy>
 struct FurrBall<Policy>::ImplDetail {
     rocksdb::DB* db = nullptr;
-    PrivateNumaState* privateNumaState = nullptr;
+    PrivateNumaState<Policy>* privateNumaState = nullptr;
 };
 
 // =====================================================================
@@ -118,6 +161,7 @@ NuAtlas::FurrBall<Policy>::FurrBall(const FurrConfig& config, size_t numPages) n
     Volatile(config.IsVolatile),
     UseNUMA(config.EnableNUMA),
     ThreadLocalRoute(config.numaConfig ? config.numaConfig->UseThreadLocalRouting : false),
+    DisableMigration(config.DisableMigration),
     policyConfig(Policy::MakeConfig(config.remarcConfig)),
     DataMembers(new ImplDetail())
 {
@@ -268,8 +312,8 @@ bool NuAtlas::FurrBall<Policy>::MigrateKey(const std::string& key, const HashPai
     if (sourceNode == destNode) return false;
     if (!DataMembers || !DataMembers->privateNumaState) return false;
 
-    PerNodeDetails* srcDetails = DataMembers->privateNumaState->NodeDetails[sourceNode];
-    PerNodeDetails* dstDetails = DataMembers->privateNumaState->NodeDetails[destNode];
+    auto* srcDetails = DataMembers->privateNumaState->NodeDetails[sourceNode];
+    auto* dstDetails = DataMembers->privateNumaState->NodeDetails[destNode];
 
     auto srcMeta = srcDetails->KeyStore.Find(key);
     if (!srcMeta.has_value()) return false;
@@ -349,7 +393,7 @@ void NuAtlas::FurrBall<Policy>::ScanAndExecute(int nodeID) noexcept {
     if (!DataMembers || !DataMembers->privateNumaState) return;
     if (nodeID < 0 || nodeID >= Detail::globalNumaState.NumaNodeCount) return;
 
-    PerNodeDetails* details = DataMembers->privateNumaState->NodeDetails[nodeID];
+    auto* details = DataMembers->privateNumaState->NodeDetails[nodeID];
 
     // Pass 1: Process frozen pages
     for (size_t p = 0; p < details->NodePages.size(); p++) {
@@ -398,7 +442,7 @@ void NuAtlas::FurrBall<Policy>::ScanAndExecute(int nodeID) noexcept {
             }
 
             float ePage = Policy::EPage(totalEnum, keyCount);
-            if (ePage > static_cast<float>(policyConfig.ThetaEvict)) {
+            if (ePage > static_cast<float>(policyConfig.ThetaEvict) / 30.0f) {
                 page.TryTransition(PageTier::Hot, PageTier::Freeze);
             }
         }
@@ -407,6 +451,271 @@ void NuAtlas::FurrBall<Policy>::ScanAndExecute(int nodeID) noexcept {
             details->MinDesire.store(maxEvictScore, std::memory_order_relaxed);
         }
     }
+}
+
+// =====================================================================
+//  ManagePages: REMARC-driven page eviction + key migration (simulated)
+// =====================================================================
+
+template<typename Policy>
+typename FurrBall<Policy>::PageManageResult
+FurrBall<Policy>::ManagePages(int nodeID, bool simulateIO) noexcept {
+    PageManageResult result;
+    if (!DataMembers || !DataMembers->privateNumaState) return result;
+    if (nodeID < 0 || nodeID >= Detail::globalNumaState.NumaNodeCount) return result;
+
+    auto* details = DataMembers->privateNumaState->NodeDetails[nodeID];
+    auto t0 = std::chrono::high_resolution_clock::now();
+
+    // Adaptive pressure gate: count free pages, skip scan if > 20% free
+    size_t totalPages = details->NodePages.size();
+    size_t freePages = 0;
+    for (size_t p = 0; p < totalPages; p++) {
+        PageTier tier = details->NodePages[p].Tier.load(std::memory_order_relaxed);
+        if (tier == PageTier::Empty || tier == PageTier::Freeze) freePages++;
+    }
+    float pressure = 1.0f - static_cast<float>(freePages) / static_cast<float>(totalPages > 0 ? totalPages : 1);
+    if (pressure < 0.2f) {
+        auto t1 = std::chrono::high_resolution_clock::now();
+        result.scanNs = std::chrono::duration<double, std::nano>(t1 - t0).count();
+        return result;
+    }
+
+    if constexpr (Policy::HasScanner || Policy::HasDesire) {
+        if constexpr (Policy::HasDesire) {
+            struct PageInfo {
+                size_t idx;
+                float coldFrac;
+                size_t keyCount;
+                uint64_t coldMask;
+            };
+
+            std::vector<PageInfo> scored;
+            uint8_t globalMinDesire = details->MinDesire.load(std::memory_order_relaxed);
+            (void)globalMinDesire;
+
+            details->DesireLock.lock();
+            for (size_t p = 0; p < details->NodePages.size(); p++) {
+                Page& page = details->NodePages[p];
+                PageTier tier = page.Tier.load(std::memory_order_relaxed);
+                if (tier == PageTier::Empty || tier == PageTier::Freeze) continue;
+
+                size_t keyCount = page.TempCtrl.size();
+                if (keyCount == 0) continue;
+
+                if constexpr (Policy::HasPerKeyState) {
+                    for (size_t off = 0; off < keyCount; off++) {
+                        uint8_t tc = page.TempCtrl[off];
+                        Policy::TimeDecayKey(tc, policyConfig);
+                        page.TempCtrl[off] = tc;
+                    }
+                }
+
+                uint64_t coldMask = 0;
+                if constexpr (Policy::HasPerKeyState) {
+                    for (size_t k = 0; k < keyCount && k < 64; k++) {
+                        uint8_t desire = details->ShadowDesire.get(page.KeyIndex[k].h2);
+                        if (Policy::EvictScore(desire) > 8) {
+                            coldMask |= (1ULL << k);
+                        }
+                    }
+                } else {
+                    for (size_t k = 0; k < keyCount && k < 64; k++) {
+                        uint8_t d = details->KeyStore.GetDesire(page.KeyIndex[k].h2);
+                        if (d < 3) {
+                            coldMask |= (1ULL << k);
+                        }
+                    }
+                }
+                size_t coldCount = __builtin_popcountll(coldMask);
+                float cf = (keyCount > 0) ? (float)coldCount / (float)keyCount : 0.0f;
+                scored.push_back({p, cf, keyCount, coldMask});
+            }
+            details->DesireLock.unlock();
+
+            std::sort(scored.begin(), scored.end(),
+                [](const PageInfo& a, const PageInfo& b) { return a.coldFrac > b.coldFrac; });
+
+            if (scored.empty()) goto done_scanner;
+
+            if (!DisableMigration) {
+            size_t maxMigrations = 1000;
+            size_t migrated = 0;
+
+            for (size_t ci = 0; ci < scored.size() && migrated < maxMigrations; ci++) {
+                PageInfo& coldPI = scored[ci];
+                uint64_t coldValid = (coldPI.keyCount >= 64) ? ~0ULL : ((1ULL << coldPI.keyCount) - 1);
+                uint64_t hotOnCold = (~coldPI.coldMask) & coldValid;
+                if (hotOnCold == 0) continue;
+
+                for (size_t wi = scored.size() - 1; wi > ci && migrated < maxMigrations; wi--) {
+                    PageInfo& warmPI = scored[wi];
+                    uint64_t warmValid = (warmPI.keyCount >= 64) ? ~0ULL : ((1ULL << warmPI.keyCount) - 1);
+                    uint64_t coldOnWarm = warmPI.coldMask & warmValid;
+                    if (coldOnWarm == 0) continue;
+
+                    int coldBit = __builtin_ctzll(coldOnWarm);
+                    int hotBit  = __builtin_ctzll(hotOnCold);
+
+                    Page& srcWarmPage = details->NodePages[warmPI.idx];
+                    Page& srcColdPage = details->NodePages[coldPI.idx];
+
+                    HashPair coldHp = srcWarmPage.KeyIndex[coldBit];
+                    uint8_t coldTc = srcWarmPage.TempCtrl[coldBit];
+                    HashPair hotHp = srcColdPage.KeyIndex[hotBit];
+                    uint8_t hotTc = srcColdPage.TempCtrl[hotBit];
+
+                    HashPair swappedWarm = srcWarmPage.RemoveKeyEntry(coldBit);
+                    if (swappedWarm.h2 != coldHp.h2) {
+                        details->KeyStore.UpdateInPlaceByHash(swappedWarm,
+                            [idx = coldBit](KeyMeta& m) {
+                                m.TempCtrlIdx = static_cast<uint8_t>(idx);
+                            });
+                    }
+
+                    HashPair swappedCold = srcColdPage.RemoveKeyEntry(hotBit);
+                    if (swappedCold.h2 != hotHp.h2) {
+                        details->KeyStore.UpdateInPlaceByHash(swappedCold,
+                            [idx = hotBit](KeyMeta& m) {
+                                m.TempCtrlIdx = static_cast<uint8_t>(idx);
+                            });
+                    }
+
+                    srcWarmPage.AddKeyEntry(hotHp, hotTc);
+                    details->KeyStore.UpdateInPlaceByHash(hotHp,
+                        [pi = warmPI.idx, d = details](KeyMeta& m) {
+                            m.PageIndex = pi;
+                            m.TempCtrlIdx = static_cast<uint8_t>(
+                                d->NodePages[pi].KeyIndex.size() - 1);
+                        });
+
+                    srcColdPage.AddKeyEntry(coldHp, coldTc);
+                    details->KeyStore.UpdateInPlaceByHash(coldHp,
+                        [pi = coldPI.idx, d = details](KeyMeta& m) {
+                            m.PageIndex = pi;
+                            m.TempCtrlIdx = static_cast<uint8_t>(
+                                d->NodePages[pi].KeyIndex.size() - 1);
+                        });
+
+                    coldPI.keyCount = srcColdPage.KeyIndex.size();
+                    warmPI.keyCount = srcWarmPage.KeyIndex.size();
+                    migrated++;
+                    result.keysMigrated++;
+                    break;
+                }
+            }
+            }
+
+            if constexpr (!Policy::HasStoreEviction) {
+                float evictThresh = (pressure > 0.8f) ? 0.1f : 0.5f;
+                size_t evictBudget = std::max(size_t(1),
+                    static_cast<size_t>(scored.size() * pressure * 0.25f));
+                for (size_t i = 0; i < evictBudget && i < scored.size(); i++) {
+                    if (scored[i].coldFrac < evictThresh) break;
+
+                    Page& page = details->NodePages[scored[i].idx];
+                    if (!simulateIO && page.Dirty) FlushPage(&page);
+
+                    page.CompactLock.lock();
+                    auto keys = page.KeyIndex;
+                    page.CompactLock.unlock();
+
+                    for (const auto& hp : keys) {
+                        details->KeyStore.EraseByHash(hp);
+                    }
+                    page.Recycle();
+                    result.pagesEvicted++;
+                    result.keysEvicted += keys.size();
+                }
+            }
+            } // !HasStoreEviction
+        done_scanner:;
+    }
+
+    if constexpr (Policy::HasScanner && !Policy::HasDesire) {
+            static constexpr uint8_t COLD_BIT_THRESHOLD = 5;
+
+            struct PageInfo {
+                size_t idx;
+                float coldFrac;
+                size_t keyCount;
+                uint64_t coldMask;
+            };
+
+            std::vector<PageInfo> scored;
+
+            for (size_t p = 0; p < details->NodePages.size(); p++) {
+                Page& page = details->NodePages[p];
+                PageTier tier = page.Tier.load(std::memory_order_relaxed);
+                if (tier == PageTier::Empty || tier == PageTier::Freeze) continue;
+
+                size_t keyCount = page.TempCtrl.size();
+                if (keyCount == 0) continue;
+
+                uint64_t coldMask = 0;
+                for (size_t k = 0; k < keyCount && k < 64; k++) {
+                    uint8_t tc = page.TempCtrl[k];
+                    Policy::TimeDecayKey(tc, policyConfig);
+                    page.TempCtrl[k] = tc;
+                    if (Policy::EvictScore(tc) > COLD_BIT_THRESHOLD) {
+                        coldMask |= (1ULL << k);
+                    }
+                }
+                size_t coldCount = __builtin_popcountll(coldMask);
+                float cf = (float)coldCount / (float)keyCount;
+                scored.push_back({p, cf, keyCount, coldMask});
+            }
+
+            std::sort(scored.begin(), scored.end(),
+                [](const PageInfo& a, const PageInfo& b) { return a.coldFrac > b.coldFrac; });
+
+            if (scored.empty()) return result;
+
+            {
+                size_t evictBudget = std::max(size_t(1), scored.size() / 20);
+                for (size_t i = 0; i < evictBudget && i < scored.size(); i++) {
+                    if (scored[i].coldFrac < 0.1f) break;
+
+                    Page& page = details->NodePages[scored[i].idx];
+                    if (!simulateIO && page.Dirty) FlushPage(&page);
+
+                    page.CompactLock.lock();
+                    auto keys = page.KeyIndex;
+                    page.CompactLock.unlock();
+
+                    for (const auto& hp : keys) {
+                        details->KeyStore.EraseByHash(hp);
+                    }
+                    page.Recycle();
+                    result.pagesEvicted++;
+                    result.keysEvicted += keys.size();
+                }
+            }
+    }
+
+    if constexpr (Policy::HasDesire && Policy::HasPerKeyState) {
+        uint8_t maxES = 0;
+        for (auto& page : details->NodePages) {
+            for (auto tc : page.TempCtrl) {
+                uint8_t es = Policy::EvictScore(tc);
+                if (es > maxES) maxES = es;
+            }
+        }
+        details->MinDesire.store(maxES, std::memory_order_relaxed);
+    } else if constexpr (Policy::HasDesire && !Policy::HasPerKeyState) {
+        uint8_t maxD = 0;
+        for (auto& page : details->NodePages) {
+            for (auto& hp : page.KeyIndex) {
+                uint8_t d = details->KeyStore.GetDesire(hp.h2);
+                if (d > maxD) maxD = d;
+            }
+        }
+        details->MinDesire.store(maxD, std::memory_order_relaxed);
+    }
+
+    auto t1 = std::chrono::high_resolution_clock::now();
+    result.scanNs = std::chrono::duration<double, std::nano>(t1 - t0).count();
+    return result;
 }
 
 // =====================================================================
@@ -426,7 +735,7 @@ Error NuAtlas::FurrBall<Policy>::Get(const std::string &key, void* outBuf, size_
     HashPair hp = HashKey(key);
 
     auto tryNode = [&](int n) -> Error {
-        PerNodeDetails* details = DataMembers->privateNumaState->NodeDetails[n];
+        auto* details = DataMembers->privateNumaState->NodeDetails[n];
         auto meta = details->KeyStore.Find(key);
         if(meta.has_value()){
 #ifdef SIMULATE_NUMA_LATENCY_NS
@@ -442,13 +751,10 @@ Error NuAtlas::FurrBall<Policy>::Get(const std::string &key, void* outBuf, size_
                         uint8_t tc = page.TempCtrl[meta->TempCtrlIdx];
 
                         if constexpr (Policy::HasDesire) {
-                            PerNodeDetails* localDetails = DataMembers->privateNumaState->NodeDetails[currentNode];
-                            uint8_t desire = localDetails->ShadowDesire.count(hp)
-                                ? localDetails->ShadowDesire[hp] : 0;
+                            auto* localDetails = DataMembers->privateNumaState->NodeDetails[currentNode];
+                            uint8_t desire = localDetails->ShadowDesire.get(hp.h2);
                             desire = Policy::OnLocalAccess(desire, policyConfig);
-                            localDetails->DesireLock.lock();
-                            localDetails->ShadowDesire[hp] = desire;
-                            localDetails->DesireLock.unlock();
+                            localDetails->ShadowDesire.set(hp.h2, desire);
 
                             if(isRemote) {
                                 uint8_t worstEvict = localDetails->MinDesire.load(std::memory_order_relaxed);
@@ -527,7 +833,7 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
     }
 
     int targetNode = ThreadLocalRoute ? Numatic::GetCurrentNode() : this->DataMembers->privateNumaState->rr.Get();
-    PerNodeDetails* details = DataMembers->privateNumaState->NodeDetails[targetNode];
+    auto* details = DataMembers->privateNumaState->NodeDetails[targetNode];
 
     auto existing = details->KeyStore.Find(key);
     if(existing.has_value() && size <= existing->DataSize){
@@ -585,14 +891,10 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
     Error err = details->KeyStore.Set(key, metadata);
     if (err == NO_ERR) {
         Stats.BytesWritten.fetch_add(size, std::memory_order_relaxed);
-        if constexpr (Policy::HasDesire) {
-            uint8_t desire = 0;
-            details->DesireLock.lock();
-            auto it = details->ShadowDesire.find(hp);
-            if (it != details->ShadowDesire.end()) desire = it->second;
+        if constexpr (Policy::HasDesire && Policy::HasPerKeyState) {
+            uint8_t desire = details->ShadowDesire.get(hp.h2);
             desire = Policy::OnLocalAccess(desire, policyConfig);
-            details->ShadowDesire[hp] = desire;
-            details->DesireLock.unlock();
+            details->ShadowDesire.set(hp.h2, desire);
         }
     } else {
         page.RemoveKeyEntry(page.TempCtrl.size() - 1);
@@ -649,7 +951,7 @@ FurrBall<Policy> *FurrBall<Policy>::CreateBall(const std::string &DBpath, const 
 {
     rocksdb::Options options;
     rocksdb::DB* db = nullptr;
-    PrivateNumaState* pNumaState = nullptr;
+    PrivateNumaState<Policy>* pNumaState = nullptr;
     FurrBall* fb = nullptr;
     size_t numPages = 0;
     size_t totalPhysicalPageSize = 0;
@@ -673,8 +975,8 @@ FurrBall<Policy> *FurrBall<Policy>::CreateBall(const std::string &DBpath, const 
         if(!config.numaConfig){
             goto Exit;
         }
-        pNumaState = new PrivateNumaState();
-        pNumaState->NodeDetails = (PerNodeDetails**)malloc(sizeof(PerNodeDetails*) * Detail::globalNumaState.NumaNodeCount);
+        pNumaState = new PrivateNumaState<Policy>();
+        pNumaState->NodeDetails = (PerNodeDetails<Policy>**)malloc(sizeof(PerNodeDetails<Policy>*) * Detail::globalNumaState.NumaNodeCount);
         pNumaState->rr.SetN(Detail::globalNumaState.NumaNodeCount);
         pNumaState->AllowNodeFallback = config.numaConfig->AllowNodeFallback;
         if(config.numaConfig->AllocateUsingNodePageSize){
@@ -697,9 +999,9 @@ FurrBall<Policy> *FurrBall<Policy>::CreateBall(const std::string &DBpath, const 
                 if(!ptr){
                     Logger::getInstance().info("NUMA Node page allocator failed.");
                 }
-                void* auxD = (void*)Numatic::AllocateLocal(sizeof(PerNodeDetails));
+                void* auxD = (void*)Numatic::AllocateLocal(sizeof(PerNodeDetails<Policy>));
                 Logger::getInstance().info(std::string("Per-node cache will have an inital capacity of ") + std::to_string(arcCap) + " Keys." );
-                PerNodeDetails* details = new(auxD)PerNodeDetails(arcCap, Numatic::AllocateLocal, Numatic::FreeNUMA);
+                auto* details = new(auxD) PerNodeDetails<Policy>(arcCap, Numatic::AllocateLocal, Numatic::FreeNUMA);
                 details->PhysicalPageInNode = ptr;
                 details->NodePages.reserve(numPages);
                 
@@ -750,13 +1052,13 @@ Exit:
     if (pNumaState) {
         if (pNumaState->NodeDetails) {
             for (int i = 0; i < Detail::globalNumaState.NumaNodeCount; i++) {
-                PerNodeDetails* details = pNumaState->NodeDetails[i];
+                auto* details = pNumaState->NodeDetails[i];
                 if (details) {
                     if (details->PhysicalPageInNode) {
                         Numatic::FreeNUMA(details->PhysicalPageInNode, totalPhysicalPageSize);
                     }
-                    details->~PerNodeDetails();
-                    Numatic::FreeNUMA(details, sizeof(PerNodeDetails));
+                    details->~PerNodeDetails<Policy>();
+                    Numatic::FreeNUMA(details, sizeof(PerNodeDetails<Policy>));
                 }
             }
             free(pNumaState->NodeDetails);
@@ -785,13 +1087,13 @@ NuAtlas::FurrBall<Policy>::~FurrBall() noexcept {
         }
 
         if (DataMembers->privateNumaState) {
-            PrivateNumaState* pns = DataMembers->privateNumaState;
+            auto* pns = DataMembers->privateNumaState;
             if (pns->NodeDetails) {
                 for (int i = 0; i < Detail::globalNumaState.NumaNodeCount; i++) {
-                    PerNodeDetails* details = pns->NodeDetails[i];
+                    auto* details = pns->NodeDetails[i];
                     if (details) {
-                        details->~PerNodeDetails();
-                        Numatic::FreeNUMA(details, sizeof(PerNodeDetails));
+                        details->~PerNodeDetails<Policy>();
+                        Numatic::FreeNUMA(details, sizeof(PerNodeDetails<Policy>));
                     }
                 }
                 free(pns->NodeDetails);
@@ -819,3 +1121,5 @@ NuAtlas::FurrBall<Policy>::~FurrBall() noexcept {
 
 template class FurrBall<StandardRemarc>;
 template class FurrBall<ArcPolicy>;
+template class FurrBall<AugAdaptPolicy>;
+template class FurrBall<NativeRemarcPolicy>;
