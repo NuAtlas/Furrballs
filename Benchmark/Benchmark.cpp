@@ -391,7 +391,8 @@ static PolicyResult<Policy> runMultiNodeWorkload(
     const std::string& dbName,
     const std::vector<uint64_t>& reads,
     int numNodes,
-    size_t pages = SMALL_PAGES)
+    size_t pages = SMALL_PAGES,
+    bool enableDesireScan = true)
 {
     using FB = FurrBall<Policy>;
     PolicyResult<Policy> result;
@@ -421,7 +422,9 @@ static PolicyResult<Policy> runMultiNodeWorkload(
     }
     for (auto& th : popThreads) th.join();
 
-    for (int n = 0; n < numNodes; n++) fb->UpdateMinDesire(n);
+    if (enableDesireScan) {
+        for (int n = 0; n < numNodes; n++) fb->UpdateMinDesire(n);
+    }
 
     unsigned int hitsBefore = fb->Stats.GetHitCount();
     unsigned int missesBefore = fb->Stats.GetMissCount();
@@ -448,10 +451,12 @@ static PolicyResult<Policy> runMultiNodeWorkload(
                 fb->Get(key, out.data(), out.size(), os);
                 nodeLats[n][i] = Clock::now() - t0;
 
-                nodeDesireCount[n]++;
-                if (nodeDesireCount[n] >= DESIRE_UPDATE_INTERVAL) {
-                    for (int nn = 0; nn < numNodes; nn++) fb->UpdateMinDesire(nn);
-                    nodeDesireCount[n] = 0;
+                if (enableDesireScan) {
+                    nodeDesireCount[n]++;
+                    if (nodeDesireCount[n] >= DESIRE_UPDATE_INTERVAL) {
+                        for (int nn = 0; nn < numNodes; nn++) fb->UpdateMinDesire(nn);
+                        nodeDesireCount[n] = 0;
+                    }
                 }
             }
         });
@@ -579,6 +584,111 @@ void runFullBenchmark(const char* n1, const char* n2, const char* n3, int numNod
             runSN("TEMP", wlTemp);
             runSN("SCAN", wlScan);
         }
+    }
+
+    // === LATENCY GAP INVESTIGATION ===
+    if (numNodes >= 2) {
+        static constexpr int INV_ITERS = 10;
+
+        std::cout << "\n" << std::string(100, '=') << std::endl;
+        std::cout << "LATENCY GAP INVESTIGATION (P1 Zipfian, 10% cap, "
+                  << INV_ITERS << " iters each)" << std::endl;
+        std::cout << "Hypothesis: ARC p50 is 2-5x slower than REMARC in multi-node" << std::endl;
+        std::cout << "  Run A: NoScan  — disable UpdateMinDesire for all policies" << std::endl;
+        std::cout << "  Run B: RevOrd  — reverse policy order (AUG first, ARC last)" << std::endl;
+        std::cout << "  Run C: EqScan  — ARC gets page-warming via UpdateMinDesire" << std::endl;
+        std::cout << std::string(100, '=') << std::endl;
+
+        auto printInvIter = [&](int it, const char* name, const auto& r) {
+            std::cout << "  [" << std::setw(2) << it << "] "
+                      << std::left << std::setw(12) << name << " | "
+                      << std::right << std::fixed << std::setprecision(1) << std::setw(6) << r.hitRate << "% HR | "
+                      << std::setw(6) << r.migrations << " mig | "
+                      << std::setw(6) << std::setprecision(0) << r.getP50 << " ns p50"
+                      << std::endl;
+        };
+
+        auto invAvg = [](const std::vector<double>& v) -> double {
+            if (v.empty()) return 0;
+            double s = 0; for (auto x : v) s += x; return s / v.size();
+        };
+
+        // --- Run A: NoScan ---
+        {
+            std::cout << "\n--- Run A: NoScan (UpdateMinDesire DISABLED for all) ---" << std::endl;
+            std::vector<double> a_p50, r_p50, u_p50;
+            for (int it = 0; it < INV_ITERS; it++) {
+                auto r1 = runMultiNodeWorkload<P1>("INV_A_" + std::to_string(it) + "_" + n1, wlZipf, numNodes, SMALL_PAGES, false);
+                auto r2 = runMultiNodeWorkload<P2>("INV_A_" + std::to_string(it) + "_" + n2, wlZipf, numNodes, SMALL_PAGES, false);
+                auto r3 = runMultiNodeWorkload<P3>("INV_A_" + std::to_string(it) + "_" + n3, wlZipf, numNodes, SMALL_PAGES, false);
+                printInvIter(it, n1, r1);
+                printInvIter(it, n2, r2);
+                printInvIter(it, n3, r3);
+                a_p50.push_back(r1.getP50);
+                r_p50.push_back(r2.getP50);
+                u_p50.push_back(r3.getP50);
+            }
+            std::cout << "  AVG  ";
+            std::cout << std::left << std::setw(14) << n1 << " " << std::setw(14) << n2 << " " << std::setw(14) << n3 << std::endl;
+            std::cout << "  p50  " << std::fixed << std::setprecision(0)
+                      << std::setw(10) << invAvg(a_p50) << "    "
+                      << std::setw(10) << invAvg(r_p50) << "    "
+                      << std::setw(10) << invAvg(u_p50) << " ns" << std::endl;
+        }
+
+        // --- Run B: ReverseOrder ---
+        {
+            std::cout << "\n--- Run B: ReverseOrder (AUG-ADAPT first, ARC last) ---" << std::endl;
+            std::vector<double> a_p50, r_p50, u_p50;
+            for (int it = 0; it < INV_ITERS; it++) {
+                auto r3 = runMultiNodeWorkload<P3>("INV_B_" + std::to_string(it) + "_" + n3, wlZipf, numNodes, SMALL_PAGES);
+                auto r2 = runMultiNodeWorkload<P2>("INV_B_" + std::to_string(it) + "_" + n2, wlZipf, numNodes, SMALL_PAGES);
+                auto r1 = runMultiNodeWorkload<P1>("INV_B_" + std::to_string(it) + "_" + n1, wlZipf, numNodes, SMALL_PAGES);
+                printInvIter(it, n3, r3);
+                printInvIter(it, n2, r2);
+                printInvIter(it, n1, r1);
+                a_p50.push_back(r1.getP50);
+                r_p50.push_back(r2.getP50);
+                u_p50.push_back(r3.getP50);
+            }
+            std::cout << "  AVG  ";
+            std::cout << std::left << std::setw(14) << n1 << " " << std::setw(14) << n2 << " " << std::setw(14) << n3 << std::endl;
+            std::cout << "  p50  " << std::fixed << std::setprecision(0)
+                      << std::setw(10) << invAvg(a_p50) << "    "
+                      << std::setw(10) << invAvg(r_p50) << "    "
+                      << std::setw(10) << invAvg(u_p50) << " ns" << std::endl;
+        }
+
+        // --- Run C: EqualScan (ARC gets same page-warming as REMARC) ---
+        {
+            std::cout << "\n--- Run C: EqualScan (ARC page-warming enabled in UpdateMinDesire) ---" << std::endl;
+            std::vector<double> a_p50, r_p50, u_p50;
+            for (int it = 0; it < INV_ITERS; it++) {
+                auto r1 = runMultiNodeWorkload<P1>("INV_C_" + std::to_string(it) + "_" + n1, wlZipf, numNodes, SMALL_PAGES);
+                auto r2 = runMultiNodeWorkload<P2>("INV_C_" + std::to_string(it) + "_" + n2, wlZipf, numNodes, SMALL_PAGES);
+                auto r3 = runMultiNodeWorkload<P3>("INV_C_" + std::to_string(it) + "_" + n3, wlZipf, numNodes, SMALL_PAGES);
+                printInvIter(it, n1, r1);
+                printInvIter(it, n2, r2);
+                printInvIter(it, n3, r3);
+                a_p50.push_back(r1.getP50);
+                r_p50.push_back(r2.getP50);
+                u_p50.push_back(r3.getP50);
+            }
+            std::cout << "  AVG  ";
+            std::cout << std::left << std::setw(14) << n1 << " " << std::setw(14) << n2 << " " << std::setw(14) << n3 << std::endl;
+            std::cout << "  p50  " << std::fixed << std::setprecision(0)
+                      << std::setw(10) << invAvg(a_p50) << "    "
+                      << std::setw(10) << invAvg(r_p50) << "    "
+                      << std::setw(10) << invAvg(u_p50) << " ns" << std::endl;
+        }
+
+        std::cout << "\n" << std::string(100, '-') << std::endl;
+        std::cout << "INTERPRETATION:" << std::endl;
+        std::cout << "  If gap disappears in A: latency gap is from UpdateMinDesire scan warming" << std::endl;
+        std::cout << "  If gap disappears in B: latency gap is from run order (cold-start penalty)" << std::endl;
+        std::cout << "  If gap disappears in C: page-header touch equalizes warming (confirms A)" << std::endl;
+        std::cout << "  If gap persists in A+B+C: real policy-driven latency difference" << std::endl;
+        std::cout << std::string(100, '-') << std::endl;
     }
 }
 

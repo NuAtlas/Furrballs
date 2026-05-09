@@ -507,6 +507,11 @@ void NuAtlas::FurrBall<Policy>::UpdateMinDesire(int nodeID) noexcept {
             }
         }
         details->MinDesire.store(maxD, std::memory_order_relaxed);
+    } else {
+        for (auto& page : details->NodePages) {
+            (void)page.Tier.load(std::memory_order_relaxed);
+            if (!page.TempCtrl.empty()) (void)page.TempCtrl[0];
+        }
     }
 }
 
