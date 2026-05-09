@@ -171,13 +171,6 @@ int main() {
             std::cout << "  WARNING: page pressure detected, results unreliable\n";
         }
 
-        if (isRemarc) {
-            for (int i = 0; i < 20; i++) {
-                fbR->ScanAndExecute(0);
-                fbR->ScanAndExecute(1);
-            }
-        }
-
         auto nodeWorker = [&](int nodeId) {
             Numatic::SetCurrentNodeOverride(nodeId);
             std::mt19937_64 rng(42 + nodeId * 9999);
