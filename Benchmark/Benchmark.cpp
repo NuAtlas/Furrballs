@@ -11,12 +11,14 @@
 #include <iomanip>
 #include <cmath>
 #include <random>
+#include <sstream>
+#include <functional>
 
 using namespace NuAtlas;
 using Clock = std::chrono::high_resolution_clock;
 using ns = std::chrono::nanoseconds;
 
-static constexpr int ITERATIONS = 3;
+static constexpr int ITERATIONS = 10;
 static constexpr size_t PAGE_SIZE = 4096;
 static constexpr size_t VAL_SIZE = 64;
 static constexpr size_t KEYS_PER_PAGE = PAGE_SIZE / VAL_SIZE;
@@ -36,10 +38,39 @@ static constexpr size_t SCAN_UNIVERSE = 10000;
 static constexpr size_t READ_OPS = 100000;
 static constexpr size_t DESIRE_UPDATE_INTERVAL = 500;
 
+// =====================================================================
+//  Helpers
+// =====================================================================
+
 static double computePercentile(std::vector<ns>& v, double pct) {
     if (v.empty()) return 0;
     std::sort(v.begin(), v.end());
     return v[static_cast<size_t>(pct * v.size() / 100.0)].count();
+}
+
+struct SampleStats {
+    double mean, stddev, min, max;
+};
+
+static SampleStats computeSampleStats(const std::vector<double>& v) {
+    SampleStats s{};
+    if (v.empty()) return s;
+    double sum = 0;
+    s.min = v[0]; s.max = v[0];
+    for (auto x : v) { sum += x; if (x < s.min) s.min = x; if (x > s.max) s.max = x; }
+    s.mean = sum / v.size();
+    double var = 0;
+    for (auto x : v) { double d = x - s.mean; var += d * d; }
+    s.stddev = (v.size() > 1) ? std::sqrt(var / (v.size() - 1)) : 0;
+    return s;
+}
+
+static std::string fmtStats(const SampleStats& s) {
+    std::ostringstream os;
+    os << std::fixed << std::setprecision(0)
+       << std::setw(6) << s.mean << " ns p50 (stddev " << std::setprecision(1) << s.stddev
+       << ", min " << std::setprecision(0) << s.min << ", max " << s.max << ")";
+    return os.str();
 }
 
 static std::vector<uint64_t> genZipfian(size_t n, size_t universe, double theta, std::mt19937_64& rng) {
@@ -125,53 +156,55 @@ static void runA1_PureNUMA(const char* name, int numNodes) {
     if (numNodes < 2) return;
     using FB = FurrBall<Policy>;
 
-    FB* fb = createLargeFB<Policy>(std::string("Bench_") + name + "_A1");
-    if (!fb) return;
-
     std::cout << std::string(100, '-') << std::endl;
-    std::cout << "A1: Pure NUMA Cross-Node Overhead (" << name << ")" << std::endl;
+    std::cout << "A1: Pure NUMA Cross-Node Overhead (" << name << ", thread-local, 500 keys)" << std::endl;
     std::cout << std::string(100, '-') << std::endl;
 
+    size_t numKeys = 500;
+    size_t ops = 10000;
     std::vector<char> val(VAL_SIZE, 'X');
     std::vector<char> out(VAL_SIZE + 64);
-    size_t ops = 10000;
 
-    fb->Set("numa_key", val.data(), VAL_SIZE);
+    for (int it = 0; it < ITERATIONS; it++) {
+        FB* fb = createLargeFB<Policy>(std::string("Bench_") + name + "_A1_" + std::to_string(it), true);
+        if (!fb) continue;
 
-    std::vector<ns> localLat, crossLat;
-    localLat.resize(ops);
-    crossLat.resize(ops);
+        for (size_t k = 0; k < numKeys; k++) {
+            Numatic::PinCurrentThreadToNode(0);
+            fb->Set("a1_" + std::to_string(k), val.data(), VAL_SIZE);
+        }
 
-    for (size_t i = 0; i < ops; i++) {
-        size_t os = 0;
-        auto t0 = Clock::now();
-        fb->Get("numa_key", out.data(), out.size(), os);
-        localLat[i] = Clock::now() - t0;
-    }
+        std::vector<ns> localLat(ops), crossLat(ops);
 
-    std::thread crossThread([&]() {
-        Numatic::PinCurrentThreadToNode(1);
         for (size_t i = 0; i < ops; i++) {
+            size_t k = i % numKeys;
             size_t os = 0;
             auto t0 = Clock::now();
-            fb->Get("numa_key", out.data(), out.size(), os);
-            crossLat[i] = Clock::now() - t0;
+            fb->Get("a1_" + std::to_string(k), out.data(), out.size(), os);
+            localLat[i] = Clock::now() - t0;
         }
-    });
-    crossThread.join();
 
-    double lp50 = computePercentile(localLat, 50);
-    double cp50 = computePercentile(crossLat, 50);
-    double lp99 = computePercentile(localLat, 99);
-    double cp99 = computePercentile(crossLat, 99);
-    double oh50 = (lp50 > 0) ? (cp50 - lp50) / lp50 * 100.0 : 0;
-    double oh99 = (lp99 > 0) ? (cp99 - lp99) / lp99 * 100.0 : 0;
+        std::thread crossThread([&]() {
+            Numatic::PinCurrentThreadToNode(1);
+            for (size_t i = 0; i < ops; i++) {
+                size_t k = i % numKeys;
+                size_t os = 0;
+                auto t0 = Clock::now();
+                fb->Get("a1_" + std::to_string(k), out.data(), out.size(), os);
+                crossLat[i] = Clock::now() - t0;
+            }
+        });
+        crossThread.join();
 
-    std::cout << "  Local  Get p50: " << std::fixed << std::setprecision(0) << lp50 << " ns  p99: " << lp99 << " ns" << std::endl;
-    std::cout << "  Cross  Get p50: " << std::fixed << std::setprecision(0) << cp50 << " ns  p99: " << cp99 << " ns" << std::endl;
-    std::cout << "  Cross-node overhead: p50 " << std::fixed << std::setprecision(1) << oh50 << "%  p99 " << oh99 << "%" << std::endl;
+        delete fb;
 
-    delete fb;
+        double lp50 = computePercentile(localLat, 50);
+        double cp50 = computePercentile(crossLat, 50);
+        double oh50 = (lp50 > 0) ? (cp50 - lp50) / lp50 * 100.0 : 0;
+        std::cout << "  [" << std::setw(2) << it << "] Local " << std::fixed << std::setprecision(0)
+                  << std::setw(5) << lp50 << " ns | Cross " << std::setw(5) << cp50
+                  << " ns | Cross-OH " << std::setprecision(1) << std::setw(5) << oh50 << "%" << std::endl;
+    }
 }
 
 template<typename Policy>
@@ -303,8 +336,17 @@ static void runA3_Scaling(const char* name, int numNodes) {
 }
 
 // =====================================================================
-//  Policy sections (eviction pressure)
+//  Policy result with latency breakdown
 // =====================================================================
+
+struct LatencyBreakdown {
+    double localHitP50 = 0;
+    double remoteHitP50 = 0;
+    double missP50 = 0;
+    size_t localHitCount = 0;
+    size_t remoteHitCount = 0;
+    size_t missCount = 0;
+};
 
 template<typename Policy>
 struct PolicyResult {
@@ -317,7 +359,12 @@ struct PolicyResult {
     size_t frozenHits = 0;
     double getP50 = 0;
     double getP99 = 0;
+    LatencyBreakdown breakdown;
 };
+
+// =====================================================================
+//  Policy workload runners
+// =====================================================================
 
 template<typename Policy>
 static PolicyResult<Policy> runEvictionWorkload(
@@ -352,6 +399,7 @@ static PolicyResult<Policy> runEvictionWorkload(
     unsigned int frozenBefore = fb->Stats.GetFrozenPageHits();
 
     std::vector<ns> getLats(reads.size());
+    std::vector<ns> hitLats, missLats;
     size_t desireCounter = 0;
 
     for (size_t i = 0; i < reads.size(); i++) {
@@ -360,6 +408,7 @@ static PolicyResult<Policy> runEvictionWorkload(
         auto t0 = Clock::now();
         fb->Get(key, out.data(), out.size(), os);
         getLats[i] = Clock::now() - t0;
+        if (os > 0) hitLats.push_back(getLats[i]); else missLats.push_back(getLats[i]);
 
         desireCounter++;
         if (desireCounter >= DESIRE_UPDATE_INTERVAL) {
@@ -377,10 +426,15 @@ static PolicyResult<Policy> runEvictionWorkload(
     size_t total = result.hits + result.misses;
     result.hitRate = (total > 0) ? 100.0 * result.hits / total : 0;
     result.localHitRate = (result.hits > 0)
-        ? 100.0 * (result.hits - result.frozenHits) * 
+        ? 100.0 * (result.hits - result.frozenHits) *
           (fb->Stats.GetLocalHitCount() > 0 ? 1.0 : 1.0) / result.hits : 0;
     result.getP50 = computePercentile(getLats, 50);
     result.getP99 = computePercentile(getLats, 99);
+
+    result.breakdown.localHitP50 = hitLats.empty() ? 0 : computePercentile(hitLats, 50);
+    result.breakdown.missP50 = missLats.empty() ? 0 : computePercentile(missLats, 50);
+    result.breakdown.localHitCount = hitLats.size();
+    result.breakdown.missCount = missLats.size();
 
     delete fb;
     return result;
@@ -434,28 +488,48 @@ static PolicyResult<Policy> runMultiNodeWorkload(
     unsigned int localHitsBefore = fb->Stats.GetLocalHitCount();
 
     size_t readsPerNode = reads.size() / numNodes;
-    std::vector<std::vector<ns>> nodeLats(numNodes);
-    std::vector<size_t> nodeDesireCount(numNodes, 0);
+
+    struct NodeResult {
+        std::vector<ns> all;
+        std::vector<ns> localHits;
+        std::vector<ns> remoteHits;
+        std::vector<ns> misses;
+        size_t desireCounter = 0;
+    };
+    std::vector<NodeResult> nodeResults(numNodes);
 
     std::vector<std::thread> readThreads(numNodes);
     for (int n = 0; n < numNodes; n++) {
         readThreads[n] = std::thread([&, n]() {
             Numatic::PinCurrentThreadToNode(n);
             std::mt19937_64 rng(n * 42 + 7);
-            nodeLats[n].resize(readsPerNode);
+            auto& nr = nodeResults[n];
+            nr.all.resize(readsPerNode);
             for (size_t i = 0; i < readsPerNode; i++) {
                 size_t idx = rng() % reads.size();
-                std::string key = "mn_" + std::to_string(reads[idx]);
+                size_t keyVal = reads[idx];
+                size_t ownerNode = keyVal / keysPerNode;
+                if (ownerNode >= (size_t)numNodes) ownerNode = numNodes - 1;
+                bool isLocal = (ownerNode == (size_t)n);
+
+                std::string key = "mn_" + std::to_string(keyVal);
                 size_t os = 0;
                 auto t0 = Clock::now();
                 fb->Get(key, out.data(), out.size(), os);
-                nodeLats[n][i] = Clock::now() - t0;
+                nr.all[i] = Clock::now() - t0;
+
+                if (os > 0) {
+                    if (isLocal) nr.localHits.push_back(nr.all[i]);
+                    else nr.remoteHits.push_back(nr.all[i]);
+                } else {
+                    nr.misses.push_back(nr.all[i]);
+                }
 
                 if (enableDesireScan) {
-                    nodeDesireCount[n]++;
-                    if (nodeDesireCount[n] >= DESIRE_UPDATE_INTERVAL) {
+                    nr.desireCounter++;
+                    if (nr.desireCounter >= DESIRE_UPDATE_INTERVAL) {
                         for (int nn = 0; nn < numNodes; nn++) fb->UpdateMinDesire(nn);
-                        nodeDesireCount[n] = 0;
+                        nr.desireCounter = 0;
                     }
                 }
             }
@@ -474,14 +548,30 @@ static PolicyResult<Policy> runMultiNodeWorkload(
     unsigned int localHits = fb->Stats.GetLocalHitCount() - localHitsBefore;
     result.localHitRate = (result.hits > 0) ? 100.0 * localHits / result.hits : 0;
 
-    std::vector<ns> allLats;
-    for (auto& v : nodeLats) allLats.insert(allLats.end(), v.begin(), v.end());
+    std::vector<ns> allLats, localHitLats, remoteHitLats, missLats;
+    for (auto& nr : nodeResults) {
+        allLats.insert(allLats.end(), nr.all.begin(), nr.all.end());
+        localHitLats.insert(localHitLats.end(), nr.localHits.begin(), nr.localHits.end());
+        remoteHitLats.insert(remoteHitLats.end(), nr.remoteHits.begin(), nr.remoteHits.end());
+        missLats.insert(missLats.end(), nr.misses.begin(), nr.misses.end());
+    }
     result.getP50 = computePercentile(allLats, 50);
     result.getP99 = computePercentile(allLats, 99);
+
+    result.breakdown.localHitP50 = localHitLats.empty() ? 0 : computePercentile(localHitLats, 50);
+    result.breakdown.remoteHitP50 = remoteHitLats.empty() ? 0 : computePercentile(remoteHitLats, 50);
+    result.breakdown.missP50 = missLats.empty() ? 0 : computePercentile(missLats, 50);
+    result.breakdown.localHitCount = localHitLats.size();
+    result.breakdown.remoteHitCount = remoteHitLats.size();
+    result.breakdown.missCount = missLats.size();
 
     delete fb;
     return result;
 }
+
+// =====================================================================
+//  Printers
+// =====================================================================
 
 static void printPolicyResult(const char* name, const auto& r) {
     std::cout << "  " << std::left << std::setw(12) << name << " | "
@@ -492,10 +582,72 @@ static void printPolicyResult(const char* name, const auto& r) {
               << std::setw(5) << r.frozenHits << " fz | "
               << std::setw(6) << std::setprecision(0) << r.getP50 << " ns p50"
               << std::endl;
+    std::cout << "               |   lh " << std::setw(3) << r.breakdown.localHitCount
+              << " rh " << std::setw(3) << r.breakdown.remoteHitCount
+              << " mi " << std::setw(3) << r.breakdown.missCount
+              << " | lh " << std::setw(5) << std::setprecision(0) << r.breakdown.localHitP50
+              << " rh " << std::setw(5) << r.breakdown.remoteHitP50
+              << " mi " << std::setw(5) << r.breakdown.missP50 << " ns"
+              << std::endl;
 }
 
 // =====================================================================
-//  Main
+//  Policy ablation: isolate each REMARC feature
+// =====================================================================
+
+template<typename P1, typename P2, typename P3>
+void runPolicyAblation(const char* n1, const char* n2, const char* n3,
+                       int numNodes, const std::vector<uint64_t>& reads) {
+    if (numNodes < 2) return;
+
+    std::cout << "\n" << std::string(100, '=') << std::endl;
+    std::cout << "POLICY ABLATION (P1 Zipfian, 10% cap, " << ITERATIONS << " iters)" << std::endl;
+    std::cout << "  Step A: ARC (baseline)" << std::endl;
+    std::cout << "  Step B: REMARC scoring only (no UpdateMinDesire)" << std::endl;
+    std::cout << "  Step C: REMARC + migration (UpdateMinDesire enabled)" << std::endl;
+    std::cout << "  Step D: AUG-ADAPT + migration (self-tuning)" << std::endl;
+    std::cout << std::string(100, '=') << std::endl;
+
+    auto runStep = [&](const char* stepName, auto policyTag, const char* pName,
+                       bool desireScan) -> std::vector<double> {
+        using P = decltype(policyTag);
+        std::vector<double> p50s;
+        for (int it = 0; it < ITERATIONS; it++) {
+            auto r = runMultiNodeWorkload<P>(
+                std::string("ABL_") + stepName + "_" + std::to_string(it) + "_" + pName,
+                reads, numNodes, SMALL_PAGES, desireScan);
+            p50s.push_back(r.getP50);
+            std::cout << "  [" << std::setw(2) << it << "] " << std::left << std::setw(6) << stepName
+                      << " " << std::setw(10) << pName << " | "
+                      << std::right << std::fixed << std::setprecision(1) << std::setw(6) << r.hitRate << "% HR | "
+                      << std::setw(4) << r.migrations << " mig | "
+                      << std::setw(6) << std::setprecision(0) << r.getP50 << " ns p50"
+                      << std::endl;
+        }
+        auto s = computeSampleStats(p50s);
+        std::cout << "  AVG  " << std::left << std::setw(6) << stepName
+                  << " " << std::setw(10) << pName << " | " << fmtStats(s) << std::endl;
+        return p50s;
+    };
+
+    auto a = runStep("A", P1{}, n1, false);
+    auto b = runStep("B", P2{}, n2, false);
+    auto c = runStep("C", P2{}, n2, true);
+    auto d = runStep("D", P3{}, n3, true);
+
+    auto sa = computeSampleStats(a);
+    auto sb = computeSampleStats(b);
+    auto sc = computeSampleStats(c);
+    auto sd = computeSampleStats(d);
+
+    std::cout << "\n  Delta B-A (TempCtrl scoring): " << std::fixed << std::setprecision(0)
+              << (sb.mean - sa.mean) << " ns" << std::endl;
+    std::cout << "  Delta C-B (Migration):         " << (sc.mean - sb.mean) << " ns" << std::endl;
+    std::cout << "  Delta D-C (Self-tuning):        " << (sd.mean - sc.mean) << " ns" << std::endl;
+}
+
+// =====================================================================
+//  Main benchmark orchestration
 // =====================================================================
 
 template<typename P1, typename P2, typename P3>
@@ -504,26 +656,29 @@ void runFullBenchmark(const char* n1, const char* n2, const char* n3, int numNod
 
     // === ARCHITECTURE ===
     std::cout << "\n" << std::string(100, '=') << std::endl;
-    std::cout << "ARCHITECTURE VALIDATION" << std::endl;
+    std::cout << "ARCHITECTURE VALIDATION (" << ITERATIONS << " iterations)" << std::endl;
     std::cout << std::string(100, '=') << std::endl;
 
     runA1_PureNUMA<P1>(n1, numNodes);
     runA2_Routing<P1>(n1, numNodes);
-    runA3_Scaling<P1>(n1, numNodes);
 
-    // === POLICY: Single-Node Eviction ===
     std::cout << "\n" << std::string(100, '=') << std::endl;
-    std::cout << "POLICY: Eviction Pressure (" << SMALL_PAGES << " pages, "
-              << SMALL_HOT_KEYS << " hot keys, " << ZIPF_UNIVERSE << " universe, ~"
-              << std::fixed << std::setprecision(0)
-              << 100.0 * SMALL_HOT_KEYS / ZIPF_UNIVERSE << "% cap)" << std::endl;
+    std::cout << "A3: Thread Scaling (all policies)" << std::endl;
     std::cout << std::string(100, '=') << std::endl;
+    runA3_Scaling<P1>(n1, numNodes);
+    runA3_Scaling<P2>(n2, numNodes);
+    runA3_Scaling<P3>(n3, numNodes);
 
+    // === POLICY COMPARISON ===
     auto wlZipf = genZipfian(READ_OPS, ZIPF_UNIVERSE, 0.99, rng);
     rng.seed(42);
     auto wlScan = genScanResistant(READ_OPS, SCAN_HOT, SCAN_UNIVERSE, rng);
     auto wlLoop = genLooping(READ_OPS, LOOP_UNIVERSE);
     auto wlTemp = genTemporalShift(READ_OPS, TEMPORAL_UNIVERSE, TEMPORAL_PERIOD);
+
+    std::cout << "\n" << std::string(100, '=') << std::endl;
+    std::cout << "POLICY COMPARISON: Eviction Pressure (VOLATILE mode, " << ITERATIONS << " iters)" << std::endl;
+    std::cout << std::string(100, '=') << std::endl;
 
     auto runWorkload = [&](const char* section, const std::vector<uint64_t>& reads, int nodes, size_t pages, const char* tag) {
         size_t hotKeys = (pages - 1) * KEYS_PER_PAGE;
@@ -550,10 +705,6 @@ void runFullBenchmark(const char* n1, const char* n2, const char* n3, int numNod
         }
     };
 
-    std::cout << "\n" << std::string(100, '=') << std::endl;
-    std::cout << "POLICY: Eviction Pressure (VOLATILE mode, no frozen tier)" << std::endl;
-    std::cout << std::string(100, '=') << std::endl;
-
     for (size_t pages : {SMALL_PAGES, TINY_PAGES}) {
         const char* tag = (pages == SMALL_PAGES) ? "10pct" : "3pct";
         runWorkload("P1_ZIPFIAN", wlZipf, numNodes, pages, tag);
@@ -562,7 +713,7 @@ void runFullBenchmark(const char* n1, const char* n2, const char* n3, int numNod
         runWorkload("P4_SCANRES", wlScan, numNodes, pages, tag);
     }
 
-    // Single-node control (no multi-node routing)
+    // Single-node control
     if (numNodes >= 2) {
         std::cout << "\n" << std::string(100, '-') << std::endl;
         std::cout << "SINGLE-NODE CONTROL (no thread-local routing)" << std::endl;
@@ -585,6 +736,9 @@ void runFullBenchmark(const char* n1, const char* n2, const char* n3, int numNod
             runSN("SCAN", wlScan);
         }
     }
+
+    // === POLICY ABLATION ===
+    runPolicyAblation<P1, P2, P3>(n1, n2, n3, numNodes, wlZipf);
 
     // === LATENCY GAP INVESTIGATION ===
     if (numNodes >= 2) {
@@ -628,8 +782,7 @@ void runFullBenchmark(const char* n1, const char* n2, const char* n3, int numNod
                 r_p50.push_back(r2.getP50);
                 u_p50.push_back(r3.getP50);
             }
-            std::cout << "  AVG  ";
-            std::cout << std::left << std::setw(14) << n1 << " " << std::setw(14) << n2 << " " << std::setw(14) << n3 << std::endl;
+            std::cout << "  AVG  " << std::left << std::setw(14) << n1 << " " << std::setw(14) << n2 << " " << std::setw(14) << n3 << std::endl;
             std::cout << "  p50  " << std::fixed << std::setprecision(0)
                       << std::setw(10) << invAvg(a_p50) << "    "
                       << std::setw(10) << invAvg(r_p50) << "    "
@@ -651,15 +804,14 @@ void runFullBenchmark(const char* n1, const char* n2, const char* n3, int numNod
                 r_p50.push_back(r2.getP50);
                 u_p50.push_back(r3.getP50);
             }
-            std::cout << "  AVG  ";
-            std::cout << std::left << std::setw(14) << n1 << " " << std::setw(14) << n2 << " " << std::setw(14) << n3 << std::endl;
+            std::cout << "  AVG  " << std::left << std::setw(14) << n1 << " " << std::setw(14) << n2 << " " << std::setw(14) << n3 << std::endl;
             std::cout << "  p50  " << std::fixed << std::setprecision(0)
                       << std::setw(10) << invAvg(a_p50) << "    "
                       << std::setw(10) << invAvg(r_p50) << "    "
                       << std::setw(10) << invAvg(u_p50) << " ns" << std::endl;
         }
 
-        // --- Run C: EqualScan (ARC gets same page-warming as REMARC) ---
+        // --- Run C: EqualScan ---
         {
             std::cout << "\n--- Run C: EqualScan (ARC page-warming enabled in UpdateMinDesire) ---" << std::endl;
             std::vector<double> a_p50, r_p50, u_p50;
@@ -674,8 +826,7 @@ void runFullBenchmark(const char* n1, const char* n2, const char* n3, int numNod
                 r_p50.push_back(r2.getP50);
                 u_p50.push_back(r3.getP50);
             }
-            std::cout << "  AVG  ";
-            std::cout << std::left << std::setw(14) << n1 << " " << std::setw(14) << n2 << " " << std::setw(14) << n3 << std::endl;
+            std::cout << "  AVG  " << std::left << std::setw(14) << n1 << " " << std::setw(14) << n2 << " " << std::setw(14) << n3 << std::endl;
             std::cout << "  p50  " << std::fixed << std::setprecision(0)
                       << std::setw(10) << invAvg(a_p50) << "    "
                       << std::setw(10) << invAvg(r_p50) << "    "
