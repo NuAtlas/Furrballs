@@ -354,6 +354,8 @@ namespace NuAtlas {
 
         PageManageResult ManagePages(int nodeID, bool simulateIO = true) noexcept;
 
+        void UpdateMinDesire(int nodeID) noexcept;
+
         void* Get(void* vAddress) noexcept;
         bool Set(void* data, size_t size, size_t vAddress) noexcept;
         Error Get(const std::string& key, void* outBuf, size_t BufSize, size_t& outSize) noexcept;

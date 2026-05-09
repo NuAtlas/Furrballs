@@ -475,6 +475,42 @@ void NuAtlas::FurrBall<Policy>::ScanAndExecute(int nodeID) noexcept {
 }
 
 // =====================================================================
+//  UpdateMinDesire: lightweight scan to enable migration gate
+// =====================================================================
+
+template<typename Policy>
+void NuAtlas::FurrBall<Policy>::UpdateMinDesire(int nodeID) noexcept {
+    if (!DataMembers || !DataMembers->privateNumaState) return;
+    if (nodeID < 0 || nodeID >= Detail::globalNumaState.NumaNodeCount) return;
+    auto* details = DataMembers->privateNumaState->NodeDetails[nodeID];
+    if (!details) return;
+
+    if constexpr (Policy::HasDesire && Policy::HasPerKeyState) {
+        uint8_t maxES = 0;
+        for (auto& page : details->NodePages) {
+            PageTier tier = page.Tier.load(std::memory_order_relaxed);
+            if (tier == PageTier::Empty || tier == PageTier::Freeze) continue;
+            for (size_t i = 0; i < page.TempCtrl.size(); i++) {
+                uint8_t es = Policy::EvictScore(page.TempCtrl[i]);
+                if (es > maxES) maxES = es;
+            }
+        }
+        details->MinDesire.store(maxES, std::memory_order_relaxed);
+    } else if constexpr (Policy::HasDesire && !Policy::HasPerKeyState) {
+        uint8_t maxD = 0;
+        for (auto& page : details->NodePages) {
+            PageTier tier = page.Tier.load(std::memory_order_relaxed);
+            if (tier == PageTier::Empty || tier == PageTier::Freeze) continue;
+            for (auto& hp : page.KeyIndex) {
+                uint8_t d = details->KeyStore.GetDesire(hp.h2);
+                if (d > maxD) maxD = d;
+            }
+        }
+        details->MinDesire.store(maxD, std::memory_order_relaxed);
+    }
+}
+
+// =====================================================================
 //  ManagePages: REMARC-driven page eviction + key migration (simulated)
 // =====================================================================
 
