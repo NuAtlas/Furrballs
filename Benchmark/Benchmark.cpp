@@ -16,13 +16,15 @@ using namespace NuAtlas;
 using Clock = std::chrono::high_resolution_clock;
 using ns = std::chrono::nanoseconds;
 
-static constexpr int ITERATIONS = 5;
+static constexpr int ITERATIONS = 3;
 static constexpr size_t PAGE_SIZE = 4096;
 static constexpr size_t VAL_SIZE = 64;
 static constexpr size_t KEYS_PER_PAGE = PAGE_SIZE / VAL_SIZE;
 
 static constexpr size_t SMALL_PAGES = 16;
 static constexpr size_t SMALL_HOT_KEYS = (SMALL_PAGES - 1) * KEYS_PER_PAGE;
+static constexpr size_t TINY_PAGES = 4;
+static constexpr size_t TINY_HOT_KEYS = (TINY_PAGES - 1) * KEYS_PER_PAGE;
 
 static constexpr size_t ZIPF_UNIVERSE = 10000;
 static constexpr size_t LOOP_UNIVERSE = 2000;
@@ -86,7 +88,7 @@ static std::vector<uint64_t> genScanResistant(size_t n, size_t hotSet, size_t un
 }
 
 template<typename Policy>
-static FurrBall<Policy>* createSmallFB(const std::string& dbPath, bool threadLocal = false) {
+static FurrBall<Policy>* createSmallFB(const std::string& dbPath, bool threadLocal = false, size_t pages = SMALL_PAGES) {
     NumaConfig nc;
     nc.AllocateUsingNodePageSize = false;
     nc.UseThreadLocalRouting = threadLocal;
@@ -94,7 +96,8 @@ static FurrBall<Policy>* createSmallFB(const std::string& dbPath, bool threadLoc
     fc.EnableLogging = false;
     fc.EnableNUMA = true;
     fc.PageSize = PAGE_SIZE;
-    fc.InitialPageCount = SMALL_PAGES;
+    fc.InitialPageCount = pages;
+    fc.IsVolatile = true;
     fc.numaConfig = &nc;
     return FurrBall<Policy>::CreateBall(dbPath, fc, true);
 }
@@ -321,12 +324,13 @@ static PolicyResult<Policy> runEvictionWorkload(
     const std::string& dbName,
     const std::vector<uint64_t>& reads,
     int numNodes,
-    bool threadLocal)
+    bool threadLocal,
+    size_t pages = SMALL_PAGES)
 {
     using FB = FurrBall<Policy>;
     PolicyResult<Policy> result;
 
-    FB* fb = createSmallFB<Policy>(dbName, threadLocal);
+    FB* fb = createSmallFB<Policy>(dbName, threadLocal, pages);
     if (!fb) return result;
 
     size_t maxKey = 0;
@@ -386,12 +390,13 @@ template<typename Policy>
 static PolicyResult<Policy> runMultiNodeWorkload(
     const std::string& dbName,
     const std::vector<uint64_t>& reads,
-    int numNodes)
+    int numNodes,
+    size_t pages = SMALL_PAGES)
 {
     using FB = FurrBall<Policy>;
     PolicyResult<Policy> result;
 
-    FB* fb = createSmallFB<Policy>(dbName, true);
+    FB* fb = createSmallFB<Policy>(dbName, true, pages);
     if (!fb) return result;
 
     size_t maxKey = 0;
@@ -515,39 +520,65 @@ void runFullBenchmark(const char* n1, const char* n2, const char* n3, int numNod
     auto wlLoop = genLooping(READ_OPS, LOOP_UNIVERSE);
     auto wlTemp = genTemporalShift(READ_OPS, TEMPORAL_UNIVERSE, TEMPORAL_PERIOD);
 
-    auto runWorkload = [&](const char* section, const std::vector<uint64_t>& reads, int nodes) {
-        std::cout << "\n--- " << section << " ---" << std::endl;
+    auto runWorkload = [&](const char* section, const std::vector<uint64_t>& reads, int nodes, size_t pages, const char* tag) {
+        size_t hotKeys = (pages - 1) * KEYS_PER_PAGE;
+        size_t universe = 0;
+        for (auto k : reads) if (k > universe) universe = k;
+        universe++;
+        std::cout << "\n--- " << section << " (" << tag << ": " << pages << " pg, "
+                  << hotKeys << " hot, " << universe << " univ, "
+                  << std::fixed << std::setprecision(0) << 100.0 * hotKeys / universe << "% cap) ---" << std::endl;
         if (nodes >= 2) {
-            auto r1 = runMultiNodeWorkload<P1>(std::string("BP_") + section + "_" + n1, reads, nodes);
-            auto r2 = runMultiNodeWorkload<P2>(std::string("BP_") + section + "_" + n2, reads, nodes);
-            auto r3 = runMultiNodeWorkload<P3>(std::string("BP_") + section + "_" + n3, reads, nodes);
+            auto r1 = runMultiNodeWorkload<P1>(std::string("BP_") + section + "_" + tag + "_" + n1, reads, nodes, pages);
+            auto r2 = runMultiNodeWorkload<P2>(std::string("BP_") + section + "_" + tag + "_" + n2, reads, nodes, pages);
+            auto r3 = runMultiNodeWorkload<P3>(std::string("BP_") + section + "_" + tag + "_" + n3, reads, nodes, pages);
             printPolicyResult(n1, r1);
             printPolicyResult(n2, r2);
             printPolicyResult(n3, r3);
         } else {
-            auto r1 = runEvictionWorkload<P1>(std::string("BP_") + section + "_" + n1, reads, nodes, false);
-            auto r2 = runEvictionWorkload<P2>(std::string("BP_") + section + "_" + n2, reads, nodes, false);
-            auto r3 = runEvictionWorkload<P3>(std::string("BP_") + section + "_" + n3, reads, nodes, false);
+            auto r1 = runEvictionWorkload<P1>(std::string("BP_") + section + "_" + tag + "_" + n1, reads, nodes, false, pages);
+            auto r2 = runEvictionWorkload<P2>(std::string("BP_") + section + "_" + tag + "_" + n2, reads, nodes, false, pages);
+            auto r3 = runEvictionWorkload<P3>(std::string("BP_") + section + "_" + tag + "_" + n3, reads, nodes, false, pages);
             printPolicyResult(n1, r1);
             printPolicyResult(n2, r2);
             printPolicyResult(n3, r3);
         }
     };
 
-    runWorkload("P1_ZIPFIAN", wlZipf, numNodes);
-    runWorkload("P2_LOOPING", wlLoop, numNodes);
-    runWorkload("P3_TEMPORAL", wlTemp, numNodes);
-    runWorkload("P4_SCANRES", wlScan, numNodes);
+    std::cout << "\n" << std::string(100, '=') << std::endl;
+    std::cout << "POLICY: Eviction Pressure (VOLATILE mode, no frozen tier)" << std::endl;
+    std::cout << std::string(100, '=') << std::endl;
 
-    // Single-node control (no NUMA routing)
+    for (size_t pages : {SMALL_PAGES, TINY_PAGES}) {
+        const char* tag = (pages == SMALL_PAGES) ? "10pct" : "3pct";
+        runWorkload("P1_ZIPFIAN", wlZipf, numNodes, pages, tag);
+        runWorkload("P2_LOOPING", wlLoop, numNodes, pages, tag);
+        runWorkload("P3_TEMPORAL", wlTemp, numNodes, pages, tag);
+        runWorkload("P4_SCANRES", wlScan, numNodes, pages, tag);
+    }
+
+    // Single-node control (no multi-node routing)
     if (numNodes >= 2) {
-        std::cout << "\n--- P1_ZIPFIAN (single-node control) ---" << std::endl;
-        auto r1 = runEvictionWorkload<P1>(std::string("BP_SN_Zipf_") + n1, wlZipf, 1, false);
-        auto r2 = runEvictionWorkload<P2>(std::string("BP_SN_Zipf_") + n2, wlZipf, 1, false);
-        auto r3 = runEvictionWorkload<P3>(std::string("BP_SN_Zipf_") + n3, wlZipf, 1, false);
-        printPolicyResult(n1, r1);
-        printPolicyResult(n2, r2);
-        printPolicyResult(n3, r3);
+        std::cout << "\n" << std::string(100, '-') << std::endl;
+        std::cout << "SINGLE-NODE CONTROL (no thread-local routing)" << std::endl;
+        std::cout << std::string(100, '-') << std::endl;
+        for (size_t pages : {SMALL_PAGES, TINY_PAGES}) {
+            const char* tag = (pages == SMALL_PAGES) ? "SN10" : "SN3";
+            auto runSN = [&](const char* section, const std::vector<uint64_t>& reads) {
+                size_t hotKeys = (pages - 1) * KEYS_PER_PAGE;
+                std::cout << "\n--- " << section << " (" << tag << ": " << hotKeys << " hot) ---" << std::endl;
+                auto r1 = runEvictionWorkload<P1>(std::string("BP_") + section + "_" + tag + "_" + n1, reads, 1, false, pages);
+                auto r2 = runEvictionWorkload<P2>(std::string("BP_") + section + "_" + tag + "_" + n2, reads, 1, false, pages);
+                auto r3 = runEvictionWorkload<P3>(std::string("BP_") + section + "_" + tag + "_" + n3, reads, 1, false, pages);
+                printPolicyResult(n1, r1);
+                printPolicyResult(n2, r2);
+                printPolicyResult(n3, r3);
+            };
+            runSN("ZIPF", wlZipf);
+            runSN("LOOP", wlLoop);
+            runSN("TEMP", wlTemp);
+            runSN("SCAN", wlScan);
+        }
     }
 }
 
