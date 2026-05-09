@@ -95,6 +95,8 @@ struct FlatDesireMap {
         for (size_t i = 0; i < sz; i++) slots_[i].h2 = EMPTY;
     }
 
+    ~FlatDesireMap() { delete[] slots_; }
+
     uint8_t get(uint64_t h2) const noexcept {
         if (!slots_) return 0;
         size_t idx = h2 & mask_;
@@ -1425,6 +1427,8 @@ NuAtlas::FurrBall<Policy>::~FurrBall() noexcept {
         if (!status.ok()) {
             Logger::getInstance().error("Failed to close RocksDB: " + status.ToString());
         }
+        delete DataMembers->db;
+        DataMembers->db = nullptr;
 
         if (DataMembers->privateNumaState) {
             auto* pns = DataMembers->privateNumaState;
@@ -1432,6 +1436,10 @@ NuAtlas::FurrBall<Policy>::~FurrBall() noexcept {
                 for (int i = 0; i < Detail::globalNumaState.NumaNodeCount; i++) {
                     auto* details = pns->NodeDetails[i];
                     if (details) {
+                        if (details->PhysicalPageInNode) {
+                            size_t physPageSize = details->NodePages.size() * PageSize;
+                            Numatic::FreeNUMA(details->PhysicalPageInNode, physPageSize);
+                        }
                         details->~PerNodeDetails<Policy>();
                         Numatic::FreeNUMA(details, sizeof(PerNodeDetails<Policy>));
                     }

@@ -52,10 +52,9 @@ static double computeStddev(const std::vector<ns>& sorted, double mean) {
     return std::sqrt(sum / sorted.size());
 }
 
-using FB = FurrBall<StandardRemarc>;
-
+template<typename Policy>
 struct ThreadArg {
-    FB* fb;
+    FurrBall<Policy>* fb;
     size_t startKey;
     size_t endKey;
     size_t valueSize;
@@ -64,7 +63,8 @@ struct ThreadArg {
     std::vector<ns>* latencies;
 };
 
-static void threadWorker(ThreadArg* arg) {
+template<typename Policy>
+static void threadWorker(ThreadArg<Policy>* arg) {
     if (arg->pinNode >= 0) {
         Numatic::PinCurrentThreadToNode(arg->pinNode);
     }
@@ -91,7 +91,8 @@ static void threadWorker(ThreadArg* arg) {
     }
 }
 
-static void warmupSet(FB* fb, const std::string& prefix, size_t numOps, size_t valueSize) {
+template<typename Policy>
+static void warmupSet(FurrBall<Policy>* fb, const std::string& prefix, size_t numOps, size_t valueSize) {
     std::vector<char> value(valueSize, 'X');
     for (size_t i = 0; i < numOps; i++) {
         std::string key = prefix + "_key_" + std::to_string(i);
@@ -99,8 +100,9 @@ static void warmupSet(FB* fb, const std::string& prefix, size_t numOps, size_t v
     }
 }
 
-static void warmupSetMT(FB* fb, int numThreads, size_t keysPerThread, size_t valueSize, bool crossNode, int numNodes) {
-    std::vector<ThreadArg> args(numThreads);
+template<typename Policy>
+static void warmupSetMT(FurrBall<Policy>* fb, int numThreads, size_t keysPerThread, size_t valueSize, bool crossNode, int numNodes) {
+    std::vector<ThreadArg<Policy>> args(numThreads);
     std::vector<std::thread> threads(numThreads);
     std::vector<std::vector<ns>> dummy(numThreads);
 
@@ -115,11 +117,12 @@ static void warmupSetMT(FB* fb, int numThreads, size_t keysPerThread, size_t val
     }
 
     for (int t = 0; t < numThreads; t++)
-        threads[t] = std::thread(threadWorker, &args[t]);
+        threads[t] = std::thread(threadWorker<Policy>, &args[t]);
     for (auto& th : threads) th.join();
 }
 
-static BenchResult benchSingleThread(FB* fb, const std::string& prefix, size_t numOps, size_t valueSize, bool doSet) {
+template<typename Policy>
+static BenchResult benchSingleThread(FurrBall<Policy>* fb, const std::string& prefix, size_t numOps, size_t valueSize, bool doSet) {
     BenchResult result;
     result.name = prefix + (doSet ? " Set" : " Get");
     result.ops = numOps;
@@ -165,11 +168,12 @@ static BenchResult benchSingleThread(FB* fb, const std::string& prefix, size_t n
     return result;
 }
 
-static BenchResult benchMultiThread(FB* fb, const std::string& name, int numThreads, int numNodes, size_t keysPerThread, size_t valueSize, bool doSet, bool crossNode) {
+template<typename Policy>
+static BenchResult benchMultiThread(FurrBall<Policy>* fb, const std::string& name, int numThreads, int numNodes, size_t keysPerThread, size_t valueSize, bool doSet, bool crossNode) {
     BenchResult result;
     result.name = name;
 
-    std::vector<ThreadArg> args(numThreads);
+    std::vector<ThreadArg<Policy>> args(numThreads);
     std::vector<std::thread> threads(numThreads);
     std::vector<std::vector<ns>> allLatencies(numThreads);
 
@@ -190,7 +194,7 @@ static BenchResult benchMultiThread(FB* fb, const std::string& name, int numThre
     auto start = Clock::now();
 
     for (int t = 0; t < numThreads; t++)
-        threads[t] = std::thread(threadWorker, &args[t]);
+        threads[t] = std::thread(threadWorker<Policy>, &args[t]);
     for (auto& th : threads) th.join();
 
     auto end = Clock::now();
@@ -224,7 +228,8 @@ struct IterationResult {
     double avgStddev = 0;
 };
 
-static IterationResult runIterations(FB* fb, const std::function<BenchResult(FB*)>& benchFn, int iterations) {
+template<typename Policy>
+static IterationResult runIterations(FurrBall<Policy>* fb, const std::function<BenchResult(FurrBall<Policy>*)>& benchFn, int iterations) {
     IterationResult ir;
     std::vector<double> opsPerSec(iterations);
     std::vector<double> p50s(iterations);
@@ -258,7 +263,8 @@ struct RoutingBenchResult {
     double crossGetP50 = 0, crossGetP99 = 0;
 };
 
-static RoutingBenchResult benchRoutingStrategy(FB* fb, const std::string& name, int numNodes, size_t keysPerThread, size_t valueSize) {
+template<typename Policy>
+static RoutingBenchResult benchRoutingStrategy(FurrBall<Policy>* fb, const std::string& name, int numNodes, size_t keysPerThread, size_t valueSize) {
     RoutingBenchResult result;
     result.name = name;
 
@@ -340,24 +346,25 @@ static RoutingBenchResult benchRoutingStrategy(FB* fb, const std::string& name, 
     return result;
 }
 
-int main() {
-    FB::Bootstrap();
+template<typename Policy>
+static void printStats(FurrBall<Policy>* fb) {
+    std::cout << "  HitCount: " << fb->Stats.GetHitCount() << std::endl;
+    std::cout << "  MissCount: " << fb->Stats.GetMissCount() << std::endl;
+    std::cout << "  BytesWritten: " << fb->Stats.GetBytesWritten() << std::endl;
+    std::cout << "  BytesRead: " << fb->Stats.GetBytesRead() << std::endl;
+    double hr = (fb->Stats.GetHitCount() + fb->Stats.GetMissCount() > 0)
+        ? 100.0 * fb->Stats.GetHitCount() / (fb->Stats.GetHitCount() + fb->Stats.GetMissCount()) : 0;
+    std::cout << "  HitRate: " << std::fixed << std::setprecision(2) << hr << "%" << std::endl;
+    double localRate = (fb->Stats.GetHitCount() > 0)
+        ? 100.0 * fb->Stats.GetLocalHitCount() / fb->Stats.GetHitCount() : 0;
+    std::cout << "  LocalHitRate: " << std::fixed << std::setprecision(2) << localRate << "%" << std::endl;
+}
 
-    int numNodes = Numatic::GetNodeCount();
-    int iterations = 10;
-    std::cout << "=== Furrballs Benchmark ===" << std::endl;
-    std::cout << "NUMA nodes: " << numNodes << std::endl;
-    std::cout << "NUMA page size: " << Numatic::GetNodePageSize() << std::endl;
-#ifdef SIMULATE_NUMA_LATENCY_NS
-    std::cout << "NUMA latency simulation: " << SIMULATE_NUMA_LATENCY_NS << " ns (cross-node)" << std::endl;
-#else
-    std::cout << "NUMA latency simulation: disabled" << std::endl;
-#endif
-    std::cout << "Iterations per test: " << iterations << std::endl;
-    std::cout << std::endl;
-
+template<typename Policy>
+static FurrBall<Policy>* createFB(const std::string& dbPath, bool threadLocal = false) {
     NumaConfig numaConfig;
     numaConfig.AllocateUsingNodePageSize = false;
+    numaConfig.UseThreadLocalRouting = threadLocal;
 
     FurrConfig config;
     config.EnableLogging = false;
@@ -366,66 +373,81 @@ int main() {
     config.InitialPageCount = 2048;
     config.numaConfig = &numaConfig;
 
-    FB* fb = FB::CreateBall("BenchDB", config);
+    auto* fb = FurrBall<Policy>::CreateBall(dbPath, config);
     if (!fb) {
         config.EnableNUMA = false;
         config.numaConfig = nullptr;
-        fb = FB::CreateBall("BenchDB", config);
-        numNodes = 1;
+        fb = FurrBall<Policy>::CreateBall(dbPath, config);
     }
+    return fb;
+}
+
+template<typename Policy>
+static void runPolicyBenchmarks(const char* policyName, int numNodes, int iterations) {
+    using FB = FurrBall<Policy>;
+
+    std::cout << std::string(120, '#') << std::endl;
+    std::cout << "POLICY: " << policyName << std::endl;
+    std::cout << std::string(120, '#') << std::endl;
+
+    std::string dbPrefix = std::string("BenchDB_") + policyName + "_";
+
+    FB* fb = createFB<Policy>(dbPrefix + "Main");
     if (!fb) {
-        std::cerr << "Cannot create FurrBall" << std::endl;
-        FB::Shutdown();
-        return -1;
+        std::cerr << "Cannot create FurrBall for " << policyName << std::endl;
+        return;
     }
+
+    int actualNodes = (fb && numNodes >= 2) ? numNodes : 1;
 
     // --- SINGLE-THREADED ---
-    std::cout << std::string(110, '=') << std::endl;
-    std::cout << "SINGLE-THREADED (" << iterations << " iterations, averaged)" << std::endl;
-    std::cout << std::string(110, '=') << std::endl;
-
-    std::cout << std::string(110, '-') << std::endl;
-    std::cout << "64-byte values, 10000 ops" << std::endl;
-    std::cout << std::string(110, '-') << std::endl;
     {
-        auto setI = runIterations(fb, [&](FB* b){ return benchSingleThread(b, "64B", 10000, 64, true); }, iterations);
-        auto getI = runIterations(fb, [&](FB* b){ return benchSingleThread(b, "64B", 10000, 64, false); }, iterations);
-        std::cout << "Set  | " << std::fixed << std::setprecision(0)
-                  << "avg " << setI.avgOpsPerSec << " ops/s | p50 " << setI.avgP50 << " ns | p99 " << setI.avgP99 << " ns | stddev " << setI.avgStddev << " ns" << std::endl;
-        std::cout << "Get  | " << std::fixed << std::setprecision(0)
-                  << "avg " << getI.avgOpsPerSec << " ops/s | p50 " << getI.avgP50 << " ns | p99 " << getI.avgP99 << " ns | stddev " << getI.avgStddev << " ns" << std::endl;
-    }
-    std::cout << std::endl;
+        std::cout << std::string(110, '=') << std::endl;
+        std::cout << "SINGLE-THREADED (" << iterations << " iterations, averaged)" << std::endl;
+        std::cout << std::string(110, '=') << std::endl;
 
-    std::cout << std::string(110, '-') << std::endl;
-    std::cout << "512-byte values, 5000 ops" << std::endl;
-    std::cout << std::string(110, '-') << std::endl;
-    {
-        auto setI = runIterations(fb, [&](FB* b){ return benchSingleThread(b, "512B", 5000, 512, true); }, iterations);
-        auto getI = runIterations(fb, [&](FB* b){ return benchSingleThread(b, "512B", 5000, 512, false); }, iterations);
-        std::cout << "Set  | " << std::fixed << std::setprecision(0)
-                  << "avg " << setI.avgOpsPerSec << " ops/s | p50 " << setI.avgP50 << " ns | p99 " << setI.avgP99 << " ns | stddev " << setI.avgStddev << " ns" << std::endl;
-        std::cout << "Get  | " << std::fixed << std::setprecision(0)
-                  << "avg " << getI.avgOpsPerSec << " ops/s | p50 " << getI.avgP50 << " ns | p99 " << getI.avgP99 << " ns | stddev " << getI.avgStddev << " ns" << std::endl;
-    }
-    std::cout << std::endl;
+        std::cout << std::string(110, '-') << std::endl;
+        std::cout << "64-byte values, 10000 ops" << std::endl;
+        std::cout << std::string(110, '-') << std::endl;
+        {
+            auto setI = runIterations<Policy>(fb, [&](FB* b){ return benchSingleThread<Policy>(b, "64B", 10000, 64, true); }, iterations);
+            auto getI = runIterations<Policy>(fb, [&](FB* b){ return benchSingleThread<Policy>(b, "64B", 10000, 64, false); }, iterations);
+            std::cout << "Set  | " << std::fixed << std::setprecision(0)
+                      << "avg " << setI.avgOpsPerSec << " ops/s | p50 " << setI.avgP50 << " ns | p99 " << setI.avgP99 << " ns | stddev " << setI.avgStddev << " ns" << std::endl;
+            std::cout << "Get  | " << std::fixed << std::setprecision(0)
+                      << "avg " << getI.avgOpsPerSec << " ops/s | p50 " << getI.avgP50 << " ns | p99 " << getI.avgP99 << " ns | stddev " << getI.avgStddev << " ns" << std::endl;
+        }
+        std::cout << std::endl;
 
-    std::cout << std::string(110, '-') << std::endl;
-    std::cout << "4KB values, 1000 ops" << std::endl;
-    std::cout << std::string(110, '-') << std::endl;
-    {
-        auto setI = runIterations(fb, [&](FB* b){ return benchSingleThread(b, "4KB", 1000, 4096, true); }, iterations);
-        auto getI = runIterations(fb, [&](FB* b){ return benchSingleThread(b, "4KB", 1000, 4096, false); }, iterations);
-        std::cout << "Set  | " << std::fixed << std::setprecision(0)
-                  << "avg " << setI.avgOpsPerSec << " ops/s | p50 " << setI.avgP50 << " ns | p99 " << setI.avgP99 << " ns | stddev " << setI.avgStddev << " ns" << std::endl;
-        std::cout << "Get  | " << std::fixed << std::setprecision(0)
-                  << "avg " << getI.avgOpsPerSec << " ops/s | p50 " << getI.avgP50 << " ns | p99 " << getI.avgP99 << " ns | stddev " << getI.avgStddev << " ns" << std::endl;
+        std::cout << std::string(110, '-') << std::endl;
+        std::cout << "512-byte values, 5000 ops" << std::endl;
+        std::cout << std::string(110, '-') << std::endl;
+        {
+            auto setI = runIterations<Policy>(fb, [&](FB* b){ return benchSingleThread<Policy>(b, "512B", 5000, 512, true); }, iterations);
+            auto getI = runIterations<Policy>(fb, [&](FB* b){ return benchSingleThread<Policy>(b, "512B", 5000, 512, false); }, iterations);
+            std::cout << "Set  | " << std::fixed << std::setprecision(0)
+                      << "avg " << setI.avgOpsPerSec << " ops/s | p50 " << setI.avgP50 << " ns | p99 " << setI.avgP99 << " ns | stddev " << setI.avgStddev << " ns" << std::endl;
+            std::cout << "Get  | " << std::fixed << std::setprecision(0)
+                      << "avg " << getI.avgOpsPerSec << " ops/s | p50 " << getI.avgP50 << " ns | p99 " << getI.avgP99 << " ns | stddev " << getI.avgStddev << " ns" << std::endl;
+        }
+        std::cout << std::endl;
+
+        std::cout << std::string(110, '-') << std::endl;
+        std::cout << "4KB values, 1000 ops" << std::endl;
+        std::cout << std::string(110, '-') << std::endl;
+        {
+            auto setI = runIterations<Policy>(fb, [&](FB* b){ return benchSingleThread<Policy>(b, "4KB", 1000, 4096, true); }, iterations);
+            auto getI = runIterations<Policy>(fb, [&](FB* b){ return benchSingleThread<Policy>(b, "4KB", 1000, 4096, false); }, iterations);
+            std::cout << "Set  | " << std::fixed << std::setprecision(0)
+                      << "avg " << setI.avgOpsPerSec << " ops/s | p50 " << setI.avgP50 << " ns | p99 " << setI.avgP99 << " ns | stddev " << setI.avgStddev << " ns" << std::endl;
+            std::cout << "Get  | " << std::fixed << std::setprecision(0)
+                      << "avg " << getI.avgOpsPerSec << " ops/s | p50 " << getI.avgP50 << " ns | p99 " << getI.avgP99 << " ns | stddev " << getI.avgStddev << " ns" << std::endl;
+        }
+        std::cout << std::endl;
     }
-    std::cout << std::endl;
 
     // --- MULTI-THREADED ---
-    if (numNodes >= 2) {
-        // 2 threads
+    if (actualNodes >= 2) {
         std::cout << std::string(110, '=') << std::endl;
         std::cout << "MULTI-THREADED NUMA EFFECT (" << iterations << " iterations, averaged)" << std::endl;
         std::cout << std::string(110, '=') << std::endl;
@@ -438,8 +460,8 @@ int main() {
             double localOpsSum = 0, crossOpsSum = 0;
 
             for (int i = 0; i < iterations; i++) {
-                auto getL = benchMultiThread(fb, "Get local", 2, numNodes, 5000, 64, false, false);
-                auto getX = benchMultiThread(fb, "Get cross", 2, numNodes, 5000, 64, false, true);
+                auto getL = benchMultiThread<Policy>(fb, "Get local", 2, actualNodes, 5000, 64, false, false);
+                auto getX = benchMultiThread<Policy>(fb, "Get cross", 2, actualNodes, 5000, 64, false, true);
                 localP50Sum += getL.p50Ns;
                 crossP50Sum += getX.p50Ns;
                 localP99Sum += getL.p99Ns;
@@ -472,8 +494,8 @@ int main() {
             double localOpsSum = 0, crossOpsSum = 0;
 
             for (int i = 0; i < iterations; i++) {
-                auto getL = benchMultiThread(fb, "Get local", 2, numNodes, 2000, 512, false, false);
-                auto getX = benchMultiThread(fb, "Get cross", 2, numNodes, 2000, 512, false, true);
+                auto getL = benchMultiThread<Policy>(fb, "Get local", 2, actualNodes, 2000, 512, false, false);
+                auto getX = benchMultiThread<Policy>(fb, "Get cross", 2, actualNodes, 2000, 512, false, true);
                 localP50Sum += getL.p50Ns;
                 crossP50Sum += getX.p50Ns;
                 localP99Sum += getL.p99Ns;
@@ -509,8 +531,8 @@ int main() {
         {
             double setOpsSum = 0, getOpsSum = 0;
             for (int i = 0; i < iterations; i++) {
-                auto setR = benchMultiThread(fb, "Set", 4, numNodes, 2500, 64, true, false);
-                auto getR = benchMultiThread(fb, "Get", 4, numNodes, 2500, 64, false, false);
+                auto setR = benchMultiThread<Policy>(fb, "Set", 4, actualNodes, 2500, 64, true, false);
+                auto getR = benchMultiThread<Policy>(fb, "Get", 4, actualNodes, 2500, 64, false, false);
                 setOpsSum += setR.opsPerSec;
                 getOpsSum += getR.opsPerSec;
             }
@@ -527,8 +549,8 @@ int main() {
         {
             double setOpsSum = 0, getOpsSum = 0;
             for (int i = 0; i < iterations; i++) {
-                auto setR = benchMultiThread(fb, "Set", 4, numNodes, 2500, 64, true, true);
-                auto getR = benchMultiThread(fb, "Get", 4, numNodes, 2500, 64, false, true);
+                auto setR = benchMultiThread<Policy>(fb, "Set", 4, actualNodes, 2500, 64, true, true);
+                auto getR = benchMultiThread<Policy>(fb, "Get", 4, actualNodes, 2500, 64, false, true);
                 setOpsSum += setR.opsPerSec;
                 getOpsSum += getR.opsPerSec;
             }
@@ -538,11 +560,11 @@ int main() {
                       << "avg " << getOpsSum / iterations << " ops/s" << std::endl;
         }
     } else {
-        std::cout << "Skipping multi-threaded NUMA benchmarks (1 node). Run in QEMU VM for NUMA results." << std::endl;
+        std::cout << "Skipping multi-threaded NUMA benchmarks (1 node)." << std::endl;
     }
 
     // --- THREAD SCALING ---
-    if (numNodes >= 2) {
+    if (actualNodes >= 2) {
         std::cout << std::string(110, '=') << std::endl;
         std::cout << "THREAD SCALING (" << iterations << " iterations, averaged)" << std::endl;
         std::cout << "64-byte values, thread-local routing, local Gets, per-thread-count fresh FurrBall" << std::endl;
@@ -552,6 +574,7 @@ int main() {
         for (int tc : {4, 8, 16, 32, 64}) {
             int kpt = (tc <= 16) ? 2500 : 1000;
             double sSum = 0, gSum = 0;
+            int validIter = 0;
             for (int i = 0; i < iterations; i++) {
                 NumaConfig sncfg;
                 sncfg.AllocateUsingNodePageSize = false;
@@ -562,20 +585,23 @@ int main() {
                 scfg.PageSize = 4096;
                 scfg.InitialPageCount = 2048;
                 scfg.numaConfig = &sncfg;
-                FB* sfb = FB::CreateBall("BenchDB_Scale_" + std::to_string(tc), scfg, true);
+                FB* sfb = FB::CreateBall(dbPrefix + "Scale_" + std::to_string(tc), scfg, true);
                 if (!sfb) continue;
-                auto sr = benchMultiThread(sfb, "Set", tc, numNodes, kpt, 64, true, false);
-                auto gr = benchMultiThread(sfb, "Get", tc, numNodes, kpt, 64, false, false);
+                validIter++;
+                auto sr = benchMultiThread<Policy>(sfb, "Set", tc, actualNodes, kpt, 64, true, false);
+                auto gr = benchMultiThread<Policy>(sfb, "Get", tc, actualNodes, kpt, 64, false, false);
                 sSum += sr.opsPerSec; gSum += gr.opsPerSec;
                 delete sfb;
             }
+            double avgS = (validIter > 0) ? sSum / validIter : 0;
+            double avgG = (validIter > 0) ? gSum / validIter : 0;
             std::cout << std::setw(7) << tc << " | " << std::fixed << std::setprecision(0)
-                      << std::setw(8) << sSum/iterations << " | " << std::setw(8) << gSum/iterations << std::endl;
+                      << std::setw(8) << avgS << " | " << std::setw(8) << avgG << std::endl;
         }
     }
 
     // --- ROUTING STRATEGY COMPARISON ---
-    if (numNodes >= 2) {
+    if (actualNodes >= 2) {
         std::cout << std::string(110, '=') << std::endl;
         std::cout << "ROUTING STRATEGY COMPARISON (" << iterations << " iterations, averaged)" << std::endl;
         std::cout << "64-byte values, 2 threads (one per node), 5000 keys/thread" << std::endl;
@@ -583,29 +609,18 @@ int main() {
 
         size_t routeKeys = 5000;
 
-        NumaConfig numaTL;
-        numaTL.AllocateUsingNodePageSize = false;
-        numaTL.UseThreadLocalRouting = true;
-
-        FurrConfig configTL;
-        configTL.EnableLogging = false;
-        configTL.EnableNUMA = true;
-        configTL.PageSize = 4096;
-        configTL.InitialPageCount = 2048;
-        configTL.numaConfig = &numaTL;
-
-        FB* fb_tl = FB::CreateBall("BenchDB_TL", configTL);
+        FB* fb_tl = createFB<Policy>(dbPrefix + "TL", true);
         if (fb_tl) {
             double rrSetP50 = 0, rrSetP99 = 0, rrSelfP50 = 0, rrSelfP99 = 0, rrCrossP50 = 0, rrCrossP99 = 0;
             double tlSetP50 = 0, tlSetP99 = 0, tlSelfP50 = 0, tlSelfP99 = 0, tlCrossP50 = 0, tlCrossP99 = 0;
 
             for (int i = 0; i < iterations; i++) {
-                auto rrR = benchRoutingStrategy(fb, "RoundRobin", numNodes, routeKeys, 64);
+                auto rrR = benchRoutingStrategy<Policy>(fb, "RoundRobin", actualNodes, routeKeys, 64);
                 rrSetP50 += rrR.setP50; rrSetP99 += rrR.setP99;
                 rrSelfP50 += rrR.selfGetP50; rrSelfP99 += rrR.selfGetP99;
                 rrCrossP50 += rrR.crossGetP50; rrCrossP99 += rrR.crossGetP99;
 
-                auto tlR = benchRoutingStrategy(fb_tl, "ThreadLocal", numNodes, routeKeys, 64);
+                auto tlR = benchRoutingStrategy<Policy>(fb_tl, "ThreadLocal", actualNodes, routeKeys, 64);
                 tlSetP50 += tlR.setP50; tlSetP99 += tlR.setP99;
                 tlSelfP50 += tlR.selfGetP50; tlSelfP99 += tlR.selfGetP99;
                 tlCrossP50 += tlR.crossGetP50; tlCrossP99 += tlR.crossGetP99;
@@ -659,192 +674,8 @@ int main() {
         }
     }
 
-    // --- BASELINE COMPARISON ---
-    if (numNodes >= 2) {
-        std::cout << std::string(110, '=') << std::endl;
-        std::cout << "BASELINE COMPARISON: Furrballs vs Non-NUMA Cache (" << iterations << " iterations)" << std::endl;
-        std::cout << "Same SeqLock reads, same bump allocator. Difference: per-node allocation + sharding." << std::endl;
-        std::cout << std::string(110, '=') << std::endl;
-
-        FB* fb_fresh = FB::CreateBall("BenchDB_BL", config);
-        if (!fb_fresh) fb_fresh = fb;
-
-        BaselineCache baseline(4096, 4096);
-
-        auto benchBaselineST = [&](bool doSet, size_t numOps, size_t valueSize) -> IterationResult {
-            return runIterations(fb_fresh, [&](FB*) -> BenchResult {
-                BenchResult r;
-                r.name = doSet ? "Set" : "Get";
-                r.ops = numOps;
-                std::vector<char> value(valueSize, 'X');
-                std::vector<char> outBuf(valueSize + 64);
-                std::vector<ns> latencies(numOps);
-
-                if (!doSet) {
-                    for (size_t i = 0; i < numOps; i++)
-                        baseline.Set("bl_" + std::to_string(i), value.data(), valueSize);
-                }
-
-                for (size_t i = 0; i < numOps; i++) {
-                    std::string key = "bl_" + std::to_string(i);
-                    if (doSet) {
-                        auto t0 = Clock::now();
-                        baseline.Set(key, value.data(), valueSize);
-                        latencies[i] = Clock::now() - t0;
-                    } else {
-                        size_t outSize = 0;
-                        auto t0 = Clock::now();
-                        baseline.Get(key, outBuf.data(), outBuf.size(), outSize);
-                        latencies[i] = Clock::now() - t0;
-                    }
-                }
-
-                std::sort(latencies.begin(), latencies.end());
-                double totalNs = 0;
-                for (auto& l : latencies) totalNs += l.count();
-                r.durationMs = totalNs / 1e6;
-                r.opsPerSec = (r.durationMs > 0) ? (numOps / (r.durationMs / 1000.0)) : 0;
-                r.avgLatencyNs = totalNs / numOps;
-                r.p50Ns = latencies[numOps / 2].count();
-                r.p99Ns = latencies[numOps * 99 / 100].count();
-                r.stddevNs = computeStddev(latencies, r.avgLatencyNs);
-                return r;
-            }, iterations);
-        };
-
-        {
-            auto fSet = runIterations(fb_fresh, [&](FB* b){ return benchSingleThread(b, "bl64", 10000, 64, true); }, iterations);
-            auto bSet = benchBaselineST(true, 10000, 64);
-            auto fGet = runIterations(fb_fresh, [&](FB* b){ return benchSingleThread(b, "bl64", 10000, 64, false); }, iterations);
-            auto bGet = benchBaselineST(false, 10000, 64);
-
-            std::cout << std::endl;
-            std::cout << "Single-threaded 64B (5 iterations averaged):" << std::endl;
-            std::cout << std::left << std::setw(20) << "Implementation" << " | "
-                      << std::right << std::setw(14) << "Set ops/s" << " | "
-                      << std::setw(10) << "Set p50" << " | "
-                      << std::setw(14) << "Get ops/s" << " | "
-                      << std::setw(10) << "Get p50" << " | "
-                      << std::setw(10) << "Get p99"
-                      << std::endl;
-            std::cout << std::string(110, '-') << std::endl;
-            std::cout << std::left << std::setw(20) << "Furrballs" << " | "
-                      << std::right << std::fixed << std::setprecision(0)
-                      << std::setw(14) << fSet.avgOpsPerSec << " | "
-                      << std::setw(8) << fSet.avgP50 << " ns | "
-                      << std::setw(14) << fGet.avgOpsPerSec << " | "
-                      << std::setw(8) << fGet.avgP50 << " ns | "
-                      << std::setw(8) << fGet.avgP99 << " ns"
-                      << std::endl;
-            std::cout << std::left << std::setw(20) << "Baseline (no NUMA)" << " | "
-                      << std::right << std::fixed << std::setprecision(0)
-                      << std::setw(14) << bSet.avgOpsPerSec << " | "
-                      << std::setw(8) << bSet.avgP50 << " ns | "
-                      << std::setw(14) << bGet.avgOpsPerSec << " | "
-                      << std::setw(8) << bGet.avgP50 << " ns | "
-                      << std::setw(8) << bGet.avgP99 << " ns"
-                      << std::endl;
-
-            double setDelta = (bSet.avgP50 > 0) ? ((bSet.avgP50 - fSet.avgP50) / bSet.avgP50 * 100.0) : 0;
-            double getDelta = (bGet.avgP50 > 0) ? ((bGet.avgP50 - fGet.avgP50) / bGet.avgP50 * 100.0) : 0;
-            std::cout << std::endl;
-            std::cout << "Furrballs Set delta: " << std::fixed << std::setprecision(1) << setDelta << "% vs baseline" << std::endl;
-            std::cout << "Furrballs Get delta: " << std::fixed << std::setprecision(1) << getDelta << "% vs baseline" << std::endl;
-        }
-
-        {
-            std::cout << std::endl;
-            std::cout << "Concurrent throughput (4 threads, 2500 keys/thread, 64B):" << std::endl;
-
-            double blSetOpsSum = 0, blGetOpsSum = 0;
-            double fSetOpsSum = 0, fGetOpsSum = 0;
-
-            for (int i = 0; i < iterations; i++) {
-                auto fSet = benchMultiThread(fb_fresh, "Set", 4, numNodes, 2500, 64, true, false);
-                auto fGet = benchMultiThread(fb_fresh, "Get", 4, numNodes, 2500, 64, false, false);
-                fSetOpsSum += fSet.opsPerSec;
-                fGetOpsSum += fGet.opsPerSec;
-
-                {
-                    std::vector<ThreadArg> args(4);
-                    std::vector<std::thread> threads(4);
-                    std::vector<std::vector<ns>> setLat(4);
-                    for (int t = 0; t < 4; t++) {
-                        args[t].fb = nullptr;
-                        args[t].startKey = t * 2500;
-                        args[t].endKey = args[t].startKey + 2500;
-                        args[t].valueSize = 64;
-                        args[t].doSet = true;
-                        args[t].latencies = &setLat[t];
-                        args[t].pinNode = t % numNodes;
-                    }
-                    auto t0 = Clock::now();
-                    for (int t = 0; t < 4; t++) {
-                        threads[t] = std::thread([&baseline, &args, t]() {
-                            if (args[t].pinNode >= 0) Numatic::PinCurrentThreadToNode(args[t].pinNode);
-                            std::vector<char> val(64, 'X');
-                            size_t n = args[t].endKey - args[t].startKey;
-                            args[t].latencies->resize(n);
-                            for (size_t i = 0; i < n; i++) {
-                                baseline.Set("bl_" + std::to_string(args[t].startKey + i), val.data(), 64);
-                            }
-                        });
-                    }
-                    for (auto& th : threads) th.join();
-                    auto t1 = Clock::now();
-                    blSetOpsSum += (4 * 2500) / std::chrono::duration<double, std::milli>(t1 - t0).count() * 1000.0;
-                }
-
-                {
-                    auto t0 = Clock::now();
-                    std::vector<std::thread> threads(4);
-                    for (int t = 0; t < 4; t++) {
-                        threads[t] = std::thread([&baseline, t, numNodes]() {
-                            Numatic::PinCurrentThreadToNode(t % numNodes);
-                            std::vector<char> outBuf(128);
-                            for (size_t i = 0; i < 2500; i++) {
-                                size_t outSize = 0;
-                                auto t0 = Clock::now();
-                                baseline.Get("bl_" + std::to_string(t * 2500 + i), outBuf.data(), outBuf.size(), outSize);
-                                volatile auto t1 = Clock::now();
-                                (void)t1;
-                            }
-                        });
-                    }
-                    for (auto& th : threads) th.join();
-                    auto t1 = Clock::now();
-                    blGetOpsSum += (4 * 2500) / std::chrono::duration<double, std::milli>(t1 - t0).count() * 1000.0;
-                }
-            }
-
-            std::cout << std::left << std::setw(20) << "Implementation" << " | "
-                      << std::right << std::setw(14) << "Set ops/s" << " | "
-                      << std::setw(14) << "Get ops/s"
-                      << std::endl;
-            std::cout << std::string(60, '-') << std::endl;
-            std::cout << std::left << std::setw(20) << "Furrballs" << " | "
-                      << std::right << std::fixed << std::setprecision(0)
-                      << std::setw(14) << fSetOpsSum / iterations << " | "
-                      << std::setw(14) << fGetOpsSum / iterations
-                      << std::endl;
-            std::cout << std::left << std::setw(20) << "Baseline (no NUMA)" << " | "
-                      << std::right << std::fixed << std::setprecision(0)
-                      << std::setw(14) << blSetOpsSum / iterations << " | "
-                      << std::setw(14) << blGetOpsSum / iterations
-                      << std::endl;
-
-            double setSpeedup = (blSetOpsSum > 0) ? ((fSetOpsSum / iterations) / (blSetOpsSum / iterations)) : 0;
-            double getSpeedup = (blGetOpsSum > 0) ? ((fGetOpsSum / iterations) / (blGetOpsSum / iterations)) : 0;
-            std::cout << std::endl;
-            std::cout << "Furrballs concurrent Set speedup: " << std::fixed << std::setprecision(2) << setSpeedup << "x vs baseline" << std::endl;
-            std::cout << "Furrballs concurrent Get speedup: " << std::fixed << std::setprecision(2) << getSpeedup << "x vs baseline" << std::endl;
-        }
-
-        if (fb_fresh != fb) delete fb_fresh;
-    }
-
     // --- ZIPFIAN WORKLOAD ---
-    if (numNodes >= 2) {
+    if (actualNodes >= 2) {
         std::cout << std::string(110, '=') << std::endl;
         std::cout << "ZIPFIAN WORKLOAD (theta=0.99, " << iterations << " iterations)" << std::endl;
         std::cout << "Each thread populates local keys, then reads using Zipfian selection." << std::endl;
@@ -895,7 +726,7 @@ int main() {
                     std::vector<char> outBuf(128);
 
                     for (size_t i = 0; i < zipfKeysPerThread; i++) {
-                        std::string key = "zipf_t" + std::to_string(nodeId) + "_" + std::to_string(i);
+                        std::string key = "zipf_" + std::string(policyName) + "_t" + std::to_string(nodeId) + "_" + std::to_string(i);
                         fball->Set(key, value.data(), 64);
                     }
 
@@ -908,7 +739,7 @@ int main() {
 
                     for (size_t i = 0; i < zipfReadOps; i++) {
                         size_t selfIdx = zipfianSample(zipfKeysPerThread, 0.99, rng);
-                        std::string selfKey = "zipf_t" + std::to_string(nodeId) + "_" + std::to_string(selfIdx);
+                        std::string selfKey = "zipf_" + std::string(policyName) + "_t" + std::to_string(nodeId) + "_" + std::to_string(selfIdx);
                         size_t outSize = 0;
                         auto t0 = Clock::now();
                         fball->Get(selfKey, outBuf.data(), outBuf.size(), outSize);
@@ -917,7 +748,7 @@ int main() {
 
                     for (size_t i = 0; i < zipfReadOps; i++) {
                         size_t crossIdx = zipfianSample(zipfKeysPerThread, 0.99, rng);
-                        std::string crossKey = "zipf_t" + std::to_string(otherNode) + "_" + std::to_string(crossIdx);
+                        std::string crossKey = "zipf_" + std::string(policyName) + "_t" + std::to_string(otherNode) + "_" + std::to_string(crossIdx);
                         size_t outSize = 0;
                         auto t0 = Clock::now();
                         fball->Get(crossKey, outBuf.data(), outBuf.size(), outSize);
@@ -965,24 +796,141 @@ int main() {
                       << std::endl;
         };
 
-        NumaConfig numaTL;
-        numaTL.AllocateUsingNodePageSize = false;
-        numaTL.UseThreadLocalRouting = true;
-
-        FurrConfig configTL;
-        configTL.EnableLogging = false;
-        configTL.EnableNUMA = true;
-        configTL.PageSize = 4096;
-        configTL.InitialPageCount = 2048;
-        configTL.numaConfig = &numaTL;
-
-        FB* fb_tl = FB::CreateBall("BenchDB_ZF", configTL);
+        FB* fb_tl = createFB<Policy>(dbPrefix + "ZF_TL", true);
         if (fb_tl) {
-            benchZipfian(fb, "Round-robin", numNodes);
-            benchZipfian(fb_tl, "Thread-local", numNodes);
+            benchZipfian(fb, "Round-robin", actualNodes);
+            benchZipfian(fb_tl, "Thread-local", actualNodes);
             delete fb_tl;
         } else {
             std::cout << "Failed to create thread-local FurrBall for Zipfian test" << std::endl;
+        }
+    }
+
+    std::cout << std::endl;
+    std::cout << "Cache Stats (" << policyName << "):" << std::endl;
+    printStats(fb);
+
+    delete fb;
+    std::cout << std::endl;
+}
+
+static void runArchBenchmarks(int numNodes, int iterations) {
+    using FB = FurrBall<StandardRemarc>;
+
+    // --- BASELINE COMPARISON ---
+    if (numNodes >= 2) {
+        std::cout << std::string(120, '#') << std::endl;
+        std::cout << "ARCHITECTURE: Baseline + Variant + Ablation (policy-independent)" << std::endl;
+        std::cout << std::string(120, '#') << std::endl;
+
+        std::cout << std::string(110, '=') << std::endl;
+        std::cout << "BASELINE COMPARISON: Furrballs vs Non-NUMA Cache (" << iterations << " iterations)" << std::endl;
+        std::cout << std::string(110, '=') << std::endl;
+
+        FB* fb_fresh = FB::CreateBall("BenchDB_BL", []{
+            NumaConfig nc; nc.AllocateUsingNodePageSize = false;
+            FurrConfig fc; fc.EnableLogging = false; fc.EnableNUMA = true;
+            fc.PageSize = 4096; fc.InitialPageCount = 2048; fc.numaConfig = &nc;
+            return fc;
+        }());
+
+        BaselineCache baseline(4096, 4096);
+
+        auto benchBaselineST = [&](bool doSet, size_t numOps, size_t valueSize) -> BenchResult {
+            BenchResult r;
+            r.name = doSet ? "BL Set" : "BL Get";
+            r.ops = numOps;
+            std::vector<char> val(valueSize, 'X');
+            std::vector<ns> lat(numOps);
+            auto start = Clock::now();
+            for (size_t i = 0; i < numOps; i++) {
+                std::string k = "bl_" + std::to_string(i);
+                if (doSet) { auto t0 = Clock::now(); baseline.Set(k, val.data(), valueSize); lat[i] = Clock::now()-t0; }
+                else { size_t os=0; auto t0 = Clock::now(); baseline.Get(k, val.data(), valueSize, os); lat[i] = Clock::now()-t0; }
+            }
+            auto end = Clock::now();
+            r.durationMs = std::chrono::duration<double,std::milli>(end-start).count();
+            r.opsPerSec = (r.durationMs>0) ? numOps/(r.durationMs/1000.0) : 0;
+            std::sort(lat.begin(), lat.end());
+            double tot=0; for(auto&l:lat) tot+=l.count();
+            r.avgLatencyNs = tot/numOps;
+            r.p50Ns = lat[numOps/2].count(); r.p99Ns = lat[numOps*99/100].count();
+            return r;
+        };
+
+        if (fb_fresh) {
+            auto bSet = benchBaselineST(true, 10000, 64);
+            auto bGet = benchBaselineST(false, 10000, 64);
+
+            auto fSet = runIterations<StandardRemarc>(fb_fresh, [&](FB*) -> BenchResult {
+                return benchSingleThread<StandardRemarc>(fb_fresh, "bl64", 10000, 64, true);
+            }, iterations);
+            auto fGet = runIterations<StandardRemarc>(fb_fresh, [&](FB* b){ return benchSingleThread<StandardRemarc>(b, "bl64", 10000, 64, false); }, iterations);
+
+            std::cout << std::left << std::setw(20) << "Baseline (no NUMA)" << " | "
+                      << std::right << std::fixed << std::setprecision(0)
+                      << "Set p50 " << std::setw(8) << bSet.p50Ns << " ns | "
+                      << "Get p50 " << std::setw(8) << bGet.p50Ns << " ns"
+                      << std::endl;
+            std::cout << std::left << std::setw(20) << "Furrballs" << " | "
+                      << std::right << std::fixed << std::setprecision(0)
+                      << "Set p50 " << std::setw(8) << fSet.avgP50 << " ns | "
+                      << "Get p50 " << std::setw(8) << fGet.avgP50 << " ns"
+                      << std::endl;
+
+            double setImprove = (bSet.p50Ns > 0) ? ((bSet.p50Ns - fSet.avgP50) / bSet.p50Ns * 100.0) : 0;
+            double getImprove = (bGet.p50Ns > 0) ? ((bGet.p50Ns - fGet.avgP50) / bGet.p50Ns * 100.0) : 0;
+            std::cout << "Furrballs improvement: Set " << std::fixed << std::setprecision(1) << setImprove
+                      << "%, Get " << getImprove << "%" << std::endl;
+
+            // Concurrent throughput
+            std::cout << std::endl;
+            std::cout << "Concurrent throughput (4 threads, 2500 keys/thread, 64B):" << std::endl;
+            {
+                size_t keysPT = 2500;
+                double blSetP50=0, blGetP50=0, fbSetP50=0, fbGetP50=0;
+                for (int it=0; it<iterations; it++) {
+                    std::vector<std::thread> thr(numNodes);
+                    std::vector<std::vector<ns>> sLats(numNodes), gLats(numNodes);
+                    std::vector<char> val(64,'X'), out(128);
+                    for (int t=0;t<numNodes;t++){
+                        thr[t]=std::thread([&,t](){
+                            Numatic::PinCurrentThreadToNode(t);
+                            for(size_t i=0;i<keysPT;i++){
+                                std::string k="blmt_t"+std::to_string(t)+"_"+std::to_string(i);
+                                auto t0=Clock::now(); baseline.Set(k,val.data(),64);
+                                sLats[t].push_back(Clock::now()-t0);
+                                size_t os=0;
+                                t0=Clock::now(); baseline.Get(k,out.data(),out.size(),os);
+                                gLats[t].push_back(Clock::now()-t0);
+                            }
+                        });
+                    }
+                    for(auto&th:thr) th.join();
+                    std::vector<ns> flatS, flatG;
+                    for(auto&v:sLats) flatS.insert(flatS.end(),v.begin(),v.end());
+                    for(auto&v:gLats) flatG.insert(flatG.end(),v.begin(),v.end());
+                    std::sort(flatS.begin(),flatS.end());
+                    std::sort(flatG.begin(),flatG.end());
+                    blSetP50+=flatS[flatS.size()/2].count();
+                    blGetP50+=flatG[flatG.size()/2].count();
+                }
+                auto fSetR = benchMultiThread<StandardRemarc>(fb_fresh,"Set",4,numNodes,keysPT,64,true,false);
+                auto fGetR = benchMultiThread<StandardRemarc>(fb_fresh,"Get",4,numNodes,keysPT,64,false,false);
+
+                std::cout << std::left << std::setw(20) << "Baseline (no NUMA)" << " | "
+                          << std::right << std::fixed << std::setprecision(0)
+                          << "Set p50 " << std::setw(8) << blSetP50/iterations << " ns | "
+                          << "Get p50 " << std::setw(8) << blGetP50/iterations << " ns"
+                          << std::endl;
+                std::cout << std::left << std::setw(20) << "Furrballs" << " | "
+                          << std::right << std::fixed << std::setprecision(0)
+                          << "Set p50 " << std::setw(8) << fSetR.p50Ns << " ns | "
+                          << "Get p50 " << std::setw(8) << fGetR.p50Ns << " ns"
+                          << std::endl;
+            }
+
+            delete fb_fresh;
         }
     }
 
@@ -1013,7 +961,6 @@ int main() {
                 double localHitRate = 0;
 
                 for (int iter = 0; iter < iterations; iter++) {
-                    // Single-threaded Set
                     {
                         std::vector<ns> lat(numOps);
                         for (size_t i = 0; i < numOps; i++) {
@@ -1025,7 +972,6 @@ int main() {
                         std::sort(lat.begin(), lat.end());
                         setP50 += lat[numOps / 2].count();
                     }
-                    // Single-threaded Get
                     {
                         std::vector<ns> lat(numOps);
                         for (size_t i = 0; i < numOps; i++) {
@@ -1042,7 +988,6 @@ int main() {
                 setP50 /= iterations;
                 getP50 /= iterations;
 
-                // Multi-threaded self/cross Get
                 {
                     size_t keysPerThread = 5000;
                     double sp50 = 0, cp50 = 0;
@@ -1093,7 +1038,6 @@ int main() {
                     crossGetP50 = cp50 / iterations;
                 }
 
-                // Counters
                 unsigned int hits = 0, localHits = 0;
                 if constexpr (std::is_same_v<std::decay_t<decltype(cache)>, SharedNothingCache>) {
                     hits = cache.Stats.GetHitCount();
@@ -1123,7 +1067,7 @@ int main() {
             cfgSM.InitialPageCount = 2048;
             cfgSM.numaConfig = &numaSM;
 
-            FB* fb_sm = FB::CreateBall("BenchDB_SM_FB", cfgSM);
+            FurrBall<StandardRemarc>* fb_sm = FurrBall<StandardRemarc>::CreateBall("BenchDB_SM_FB", cfgSM);
             if (fb_sm) {
                 benchVariant(*fb_sm, "Furrballs (shared+SeqLock)", "smfb", false);
                 delete fb_sm;
@@ -1151,7 +1095,7 @@ int main() {
             size_t keysPerThread = 5000;
 
             for (int iter = 0; iter < iterations; iter++) {
-                { // ST Set
+                {
                     std::vector<ns> lat(numOps);
                     for (size_t i = 0; i < numOps; i++) {
                         auto t0 = Clock::now();
@@ -1161,7 +1105,7 @@ int main() {
                     std::sort(lat.begin(), lat.end());
                     setP50 += lat[numOps / 2].count();
                 }
-                { // ST Get
+                {
                     std::vector<ns> lat(numOps);
                     for (size_t i = 0; i < numOps; i++) {
                         size_t os = 0;
@@ -1176,7 +1120,6 @@ int main() {
             setP50 /= iterations;
             getP50 /= iterations;
 
-            // MT self/cross
             {
                 double sp = 0, cp = 0;
 
@@ -1238,15 +1181,12 @@ int main() {
                   << std::right << "  ST Set  |    ST Get |   MT Self |  MT Cross | Cross-OH" << std::endl;
         std::cout << std::string(110, '-') << std::endl;
 
-        // A: Baseline (single malloc, single map)
         BaselineCache baseline(4096, 4096);
         benchAblation(baseline, "A: Baseline (malloc, 1 map)", "abA");
 
-        // B: + NUMA-aware allocation (per-node pages, single map, single mutex)
         NUMAAllocCache numaAlloc(4096, 4096, numNodes);
         benchAblation(numaAlloc, "B: + NUMA alloc (1 map)", "abB");
 
-        // C: + Per-node sharding (Furrballs round-robin)
         NumaConfig numaRR;
         numaRR.AllocateUsingNodePageSize = false;
         FurrConfig cfgRR;
@@ -1255,11 +1195,10 @@ int main() {
         cfgRR.PageSize = 4096;
         cfgRR.InitialPageCount = 2048;
         cfgRR.numaConfig = &numaRR;
-        FB* fb_rr = FB::CreateBall("BenchDB_AB_C", cfgRR);
+        FurrBall<StandardRemarc>* fb_rr = FurrBall<StandardRemarc>::CreateBall("BenchDB_AB_C", cfgRR);
         if (fb_rr) {
             benchAblation(*fb_rr, "C: + Per-node sharding", "abC");
 
-            // D: + Thread-local routing
             NumaConfig numaTL2;
             numaTL2.AllocateUsingNodePageSize = false;
             numaTL2.UseThreadLocalRouting = true;
@@ -1269,7 +1208,7 @@ int main() {
             cfgTL2.PageSize = 4096;
             cfgTL2.InitialPageCount = 2048;
             cfgTL2.numaConfig = &numaTL2;
-            FB* fb_tl2 = FB::CreateBall("BenchDB_AB_D", cfgTL2);
+            FurrBall<StandardRemarc>* fb_tl2 = FurrBall<StandardRemarc>::CreateBall("BenchDB_AB_D", cfgTL2);
             if (fb_tl2) {
                 benchAblation(*fb_tl2, "D: + Thread-local routing", "abD");
                 delete fb_tl2;
@@ -1277,7 +1216,6 @@ int main() {
             delete fb_rr;
         }
 
-        // E: + Shared-nothing (MPSC queue for cross-node)
         using namespace NuAtlas::SM;
         SM::SMConfig smCfg2;
         smCfg2.PageSize = 4096;
@@ -1288,15 +1226,30 @@ int main() {
             delete sm2;
         }
     }
+}
 
+int main() {
+    FurrBall<StandardRemarc>::Bootstrap();
+
+    int numNodes = Numatic::GetNodeCount();
+    int iterations = 10;
+    std::cout << "=== Furrballs Multi-Policy Benchmark ===" << std::endl;
+    std::cout << "NUMA nodes: " << numNodes << std::endl;
+    std::cout << "NUMA page size: " << Numatic::GetNodePageSize() << std::endl;
+#ifdef SIMULATE_NUMA_LATENCY_NS
+    std::cout << "NUMA latency simulation: " << SIMULATE_NUMA_LATENCY_NS << " ns (cross-node)" << std::endl;
+#else
+    std::cout << "NUMA latency simulation: disabled" << std::endl;
+#endif
+    std::cout << "Iterations per test: " << iterations << std::endl;
+    std::cout << "Policies: ARC, StandardRemarc, AugAdapt" << std::endl;
     std::cout << std::endl;
-    std::cout << "Cache Stats:" << std::endl;
-    std::cout << "  HitCount: " << fb->Stats.GetHitCount() << std::endl;
-    std::cout << "  MissCount: " << fb->Stats.GetMissCount() << std::endl;
-    std::cout << "  BytesWritten: " << fb->Stats.GetBytesWritten() << std::endl;
-    std::cout << "  BytesRead: " << fb->Stats.GetBytesRead() << std::endl;
 
-    delete fb;
-    FB::Shutdown();
+    runPolicyBenchmarks<ArcPolicy>("ARC", numNodes, iterations);
+    runPolicyBenchmarks<StandardRemarc>("REMARC", numNodes, iterations);
+    runPolicyBenchmarks<AugAdaptPolicy>("AUG-ADAPT", numNodes, iterations);
+    runArchBenchmarks(numNodes, iterations);
+
+    FurrBall<StandardRemarc>::Shutdown();
     return 0;
 }
