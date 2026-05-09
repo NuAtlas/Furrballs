@@ -132,6 +132,25 @@ struct PerNodeDetails{
     std::atomic<uint8_t> MinDesire{0};
     std::atomic<size_t> CurrentPage{0};
     void* PhysicalPageInNode = nullptr;
+    float EvictThresh = 0.5f;
+    size_t PrevMigrationCount = 0;
+    size_t PrevDeadKeys = 0;
+    float AdaptiveStep = 0.05f;
+    uint8_t MaxDeadAge = 8;
+    size_t SetFailsSinceMP = 0;
+    static constexpr size_t MPTriggerThreshold = 4096ULL;
+
+    struct FrozenEntry {
+        std::string key;
+        size_t pageIndex;
+        uint32_t generation;
+        size_t offset;
+        size_t size;
+    };
+    std::unordered_map<uint64_t, FrozenEntry> FrozenIndex;
+    std::unordered_map<uint64_t, std::string> KeyNames;
+    SpinLock FrozenLock;
+
     PerNodeDetails(size_t arcCap, CMapAllocFn af = CMapDefaultAlloc, CMapFreeFn ff = CMapDefaultFree)
         : NodePages(&nodeMR), KeyStore(arcCap, af, ff) { ShadowDesire.init(arcCap * 2); }
 };
@@ -472,9 +491,36 @@ FurrBall<Policy>::ManagePages(int nodeID, bool simulateIO) noexcept {
     size_t freePages = 0;
     for (size_t p = 0; p < totalPages; p++) {
         PageTier tier = details->NodePages[p].Tier.load(std::memory_order_relaxed);
-        if (tier == PageTier::Empty || tier == PageTier::Freeze) freePages++;
+        if (tier == PageTier::Empty || tier == PageTier::Freeze || tier == PageTier::Dead) freePages++;
     }
     float pressure = 1.0f - static_cast<float>(freePages) / static_cast<float>(totalPages > 0 ? totalPages : 1);
+
+    if constexpr (Policy::HasRemarcConfig) {
+        size_t hotPages = 0;
+        size_t deadPages = 0;
+        for (size_t p = 0; p < totalPages; p++) {
+            PageTier tier = details->NodePages[p].Tier.load(std::memory_order_relaxed);
+            if (tier == PageTier::Hot) hotPages++;
+            else if (tier == PageTier::Dead) deadPages++;
+        }
+        if (policyConfig.StaticEvictThresh < 0.0f) {
+            uint8_t targetAge;
+            if (pressure > 0.8f) {
+                targetAge = 32;
+            } else if (pressure > 0.5f) {
+                targetAge = deadPages > 0 ? static_cast<uint8_t>(48) : static_cast<uint8_t>(64);
+            } else {
+                targetAge = deadPages > 0 ? static_cast<uint8_t>(96) : static_cast<uint8_t>(128);
+            }
+            if (details->MaxDeadAge < targetAge) {
+                details->MaxDeadAge = std::min(static_cast<uint8_t>(details->MaxDeadAge + 2), targetAge);
+            } else if (details->MaxDeadAge > targetAge) {
+                details->MaxDeadAge = std::max(static_cast<uint8_t>(details->MaxDeadAge - 1), targetAge);
+            }
+        }
+        (void)hotPages;
+    }
+
     if (pressure < 0.2f) {
         auto t1 = std::chrono::high_resolution_clock::now();
         result.scanNs = std::chrono::duration<double, std::nano>(t1 - t0).count();
@@ -482,6 +528,30 @@ FurrBall<Policy>::ManagePages(int nodeID, bool simulateIO) noexcept {
     }
 
     if constexpr (Policy::HasScanner || Policy::HasDesire) {
+        size_t prevDeadCleaned = 0;
+        {
+            size_t cleanupBudget = 8;
+            for (size_t p = 0; p < details->NodePages.size() && prevDeadCleaned < cleanupBudget; p++) {
+                Page& page = details->NodePages[p];
+                if (page.Tier.load(std::memory_order_relaxed) != PageTier::Dead) continue;
+
+                page.DeadAge++;
+                if (page.DeadAge < details->MaxDeadAge) continue;
+
+                page.CompactLock.lock();
+                auto keys = page.KeyIndex;
+                page.CompactLock.unlock();
+
+                for (const auto& hp : keys) {
+                    details->KeyStore.EraseByHash(hp);
+                }
+                page.Recycle();
+                prevDeadCleaned++;
+                result.pagesEvicted++;
+                result.keysEvicted += keys.size();
+            }
+        }
+
         if constexpr (Policy::HasDesire) {
             struct PageInfo {
                 size_t idx;
@@ -498,7 +568,7 @@ FurrBall<Policy>::ManagePages(int nodeID, bool simulateIO) noexcept {
             for (size_t p = 0; p < details->NodePages.size(); p++) {
                 Page& page = details->NodePages[p];
                 PageTier tier = page.Tier.load(std::memory_order_relaxed);
-                if (tier == PageTier::Empty || tier == PageTier::Freeze) continue;
+                if (tier == PageTier::Empty || tier == PageTier::Freeze || tier == PageTier::Dead) continue;
 
                 size_t keyCount = page.TempCtrl.size();
                 if (keyCount == 0) continue;
@@ -607,25 +677,39 @@ FurrBall<Policy>::ManagePages(int nodeID, bool simulateIO) noexcept {
             }
 
             if constexpr (!Policy::HasStoreEviction) {
-                float evictThresh = (pressure > 0.8f) ? 0.1f : 0.5f;
+                float& thresh = details->EvictThresh;
+                if (policyConfig.StaticEvictThresh >= 0.0f)
+                    thresh = policyConfig.StaticEvictThresh;
+
                 size_t evictBudget = std::max(size_t(1),
                     static_cast<size_t>(scored.size() * pressure * 0.25f));
+                size_t newDeadKeys = 0;
+
                 for (size_t i = 0; i < evictBudget && i < scored.size(); i++) {
-                    if (scored[i].coldFrac < evictThresh) break;
+                    if (scored[i].coldFrac < thresh) break;
 
                     Page& page = details->NodePages[scored[i].idx];
                     if (!simulateIO && page.Dirty) FlushPage(&page);
-
-                    page.CompactLock.lock();
-                    auto keys = page.KeyIndex;
-                    page.CompactLock.unlock();
-
-                    for (const auto& hp : keys) {
-                        details->KeyStore.EraseByHash(hp);
-                    }
-                    page.Recycle();
+                    page.Tier.store(PageTier::Dead, std::memory_order_release);
+                    page.DeadAge = 1;
                     result.pagesEvicted++;
-                    result.keysEvicted += keys.size();
+                    result.keysEvicted += scored[i].keyCount;
+                    newDeadKeys += scored[i].keyCount;
+                }
+
+                if (policyConfig.StaticEvictThresh < 0.0f) {
+                    size_t revivals = Stats.GetMigrationCount() - details->PrevMigrationCount;
+                    details->PrevMigrationCount = Stats.GetMigrationCount();
+                    if (details->PrevDeadKeys > 0) {
+                        float revivalRate = static_cast<float>(revivals) / static_cast<float>(details->PrevDeadKeys);
+                        float error = revivalRate - 0.15f;
+                        details->EvictThresh += details->AdaptiveStep * error;
+                        details->EvictThresh = std::clamp(details->EvictThresh, 0.1f, 0.9f);
+                    } else if (newDeadKeys == 0 && pressure > 0.5f) {
+                        details->EvictThresh = std::max(details->EvictThresh - 0.1f, 0.1f);
+                    }
+                    details->AdaptiveStep = std::clamp(0.05f + 0.05f * pressure, 0.02f, 0.15f);
+                    details->PrevDeadKeys = newDeadKeys;
                 }
             }
             } // !HasStoreEviction
@@ -647,7 +731,7 @@ FurrBall<Policy>::ManagePages(int nodeID, bool simulateIO) noexcept {
             for (size_t p = 0; p < details->NodePages.size(); p++) {
                 Page& page = details->NodePages[p];
                 PageTier tier = page.Tier.load(std::memory_order_relaxed);
-                if (tier == PageTier::Empty || tier == PageTier::Freeze) continue;
+                if (tier == PageTier::Empty || tier == PageTier::Freeze || tier == PageTier::Dead) continue;
 
                 size_t keyCount = page.TempCtrl.size();
                 if (keyCount == 0) continue;
@@ -678,17 +762,10 @@ FurrBall<Policy>::ManagePages(int nodeID, bool simulateIO) noexcept {
 
                     Page& page = details->NodePages[scored[i].idx];
                     if (!simulateIO && page.Dirty) FlushPage(&page);
-
-                    page.CompactLock.lock();
-                    auto keys = page.KeyIndex;
-                    page.CompactLock.unlock();
-
-                    for (const auto& hp : keys) {
-                        details->KeyStore.EraseByHash(hp);
-                    }
-                    page.Recycle();
+                    page.Tier.store(PageTier::Dead, std::memory_order_release);
+                    page.DeadAge = 1;
                     result.pagesEvicted++;
-                    result.keysEvicted += keys.size();
+                    result.keysEvicted += scored[i].keyCount;
                 }
             }
     }
@@ -738,6 +815,113 @@ Error NuAtlas::FurrBall<Policy>::Get(const std::string &key, void* outBuf, size_
         auto* details = DataMembers->privateNumaState->NodeDetails[n];
         auto meta = details->KeyStore.Find(key);
         if(meta.has_value()){
+            if(meta->PageIndex < details->NodePages.size()) {
+                Page& deadPage = details->NodePages[meta->PageIndex];
+                PageTier tier = deadPage.Tier.load(std::memory_order_acquire);
+                if (tier == PageTier::Dead) {
+                    if (meta->PageGeneration == deadPage.Generation) {
+                        outSize = meta->DataSize;
+                        if(BufSize < meta->DataSize) return BUF_NOT_LARGE_ENOUGH;
+                        memcpy(outBuf, meta->DataOffset, meta->DataSize);
+
+                        size_t hotIdx = deadPage.FindKeyIndex(hp);
+                        if (hotIdx == SIZE_MAX) {
+                            Stats.HitCount.fetch_add(1, std::memory_order_relaxed);
+                            Stats.BytesRead.fetch_add(meta->DataSize, std::memory_order_relaxed);
+                            return NO_ERR;
+                        }
+
+                        uint8_t hotTc = (hotIdx < deadPage.TempCtrl.size()) ? deadPage.TempCtrl[hotIdx] : 0;
+
+                        int bestPage = -1;
+                        size_t bestIdx = SIZE_MAX;
+                        uint8_t bestScore = 0;
+                        for (size_t wp = 0; wp < details->NodePages.size(); wp++) {
+                            Page& warmPage = details->NodePages[wp];
+                            PageTier wt = warmPage.Tier.load(std::memory_order_relaxed);
+                            if (wt != PageTier::Hot) continue;
+                            for (size_t wi = 0; wi < warmPage.KeyIndex.size(); wi++) {
+                                uint8_t sc = 0;
+                                if constexpr (Policy::HasPerKeyState) {
+                                    uint8_t tc = (wi < warmPage.TempCtrl.size()) ? warmPage.TempCtrl[wi] : 0;
+                                    sc = Policy::EvictScore(tc);
+                                } else {
+                                    sc = details->KeyStore.GetDesire(warmPage.KeyIndex[wi].h2);
+                                    sc = 15 - sc;
+                                }
+                                if (sc > bestScore) {
+                                    bestScore = sc;
+                                    bestPage = static_cast<int>(wp);
+                                    bestIdx = wi;
+                                }
+                            }
+                        }
+
+                        if (bestPage >= 0) {
+                            Page& warmPage = details->NodePages[bestPage];
+                            HashPair coldHp = warmPage.KeyIndex[bestIdx];
+
+                            HashPair swappedHot = deadPage.RemoveKeyEntry(hotIdx);
+                            if (swappedHot.h2 != hp.h2) {
+                                details->KeyStore.UpdateInPlaceByHash(swappedHot,
+                                    [hIdx = hotIdx](KeyMeta& m) {
+                                        m.TempCtrlIdx = static_cast<uint8_t>(hIdx);
+                                    });
+                            }
+
+                            HashPair swappedCold = warmPage.RemoveKeyEntry(bestIdx);
+                            if (swappedCold.h2 != coldHp.h2) {
+                                details->KeyStore.UpdateInPlaceByHash(swappedCold,
+                                    [bIdx = bestIdx](KeyMeta& m) {
+                                        m.TempCtrlIdx = static_cast<uint8_t>(bIdx);
+                                    });
+                            }
+
+                            details->KeyStore.EraseByHash(coldHp);
+                            if (DataMembers && DataMembers->db) {
+                                std::string rkey(reinterpret_cast<const char*>(&coldHp), sizeof(HashPair));
+                            }
+
+                            warmPage.AddKeyEntry(hp, hotTc);
+                            details->KeyStore.UpdateInPlaceByHash(hp,
+                                [pi = static_cast<size_t>(bestPage), d = details](KeyMeta& m) {
+                                    m.PageIndex = pi;
+                                    m.TempCtrlIdx = static_cast<uint8_t>(
+                                        d->NodePages[pi].KeyIndex.size() - 1);
+                                    m.PageGeneration = d->NodePages[pi].Generation;
+                                });
+
+                            Stats.MigrationCount.fetch_add(1, std::memory_order_relaxed);
+                            Stats.EvictionCount.fetch_add(1, std::memory_order_relaxed);
+                        } else {
+                            deadPage.Tier.store(PageTier::Hot, std::memory_order_release);
+                            deadPage.DeadAge = 0;
+                            Stats.MigrationCount.fetch_add(1, std::memory_order_relaxed);
+                        }
+
+                        Stats.HitCount.fetch_add(1, std::memory_order_relaxed);
+                        Stats.BytesRead.fetch_add(meta->DataSize, std::memory_order_relaxed);
+                        return NO_ERR;
+                    }
+                    deadPage.RemoveKeyByHash(hp);
+                    details->KeyStore.EraseByHash(hp);
+                    return INVALID_ARG;
+                }
+                if (tier == PageTier::Cold) {
+                    if (meta->PageGeneration == deadPage.Generation) {
+                        outSize = meta->DataSize;
+                        if(BufSize < meta->DataSize) return BUF_NOT_LARGE_ENOUGH;
+                        memcpy(outBuf, meta->DataOffset, meta->DataSize);
+                        Stats.HitCount.fetch_add(1, std::memory_order_relaxed);
+                        Stats.BytesRead.fetch_add(meta->DataSize, std::memory_order_relaxed);
+                        Stats.ColdPageHits.fetch_add(1, std::memory_order_relaxed);
+                        return NO_ERR;
+                    }
+                    deadPage.RemoveKeyByHash(hp);
+                    details->KeyStore.EraseByHash(hp);
+                    return INVALID_ARG;
+                }
+            }
 #ifdef SIMULATE_NUMA_LATENCY_NS
             if(currentNode != n) {
                 simulateCrossNodeLatency();
@@ -793,6 +977,30 @@ Error NuAtlas::FurrBall<Policy>::Get(const std::string &key, void* outBuf, size_
             Stats.HitCount.fetch_add(1, std::memory_order_relaxed);
             Stats.BytesRead.fetch_add(meta->DataSize, std::memory_order_relaxed);
             return NO_ERR;
+        }
+        if (!Volatile && DataMembers && DataMembers->db) {
+            details->FrozenLock.lock();
+            auto fit = details->FrozenIndex.find(hp.h2);
+            if (fit != details->FrozenIndex.end()) {
+                const auto& fe = fit->second;
+                std::string slabKey = "frozen:" + std::to_string(fe.pageIndex);
+                std::string slabData;
+                auto s = DataMembers->db->Get(rocksdb::ReadOptions(), slabKey, &slabData);
+                if (s.ok() && slabData.size() >= fe.offset + fe.size) {
+                    outSize = fe.size;
+                    if (BufSize < fe.size) {
+                        details->FrozenLock.unlock();
+                        return BUF_NOT_LARGE_ENOUGH;
+                    }
+                    memcpy(outBuf, slabData.data() + fe.offset, fe.size);
+                    details->FrozenLock.unlock();
+                    Stats.HitCount.fetch_add(1, std::memory_order_relaxed);
+                    Stats.BytesRead.fetch_add(fe.size, std::memory_order_relaxed);
+                    Stats.FrozenPageHits.fetch_add(1, std::memory_order_relaxed);
+                    return NO_ERR;
+                }
+            }
+            details->FrozenLock.unlock();
         }
         return INVALID_ARG;
     };
@@ -862,12 +1070,130 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
 
     size_t pageIdx = details->CurrentPage.load(std::memory_order_relaxed);
     void* Loc = nullptr;
+    bool didRotate = false;
     while (true) {
-        if (pageIdx >= details->NodePages.size()) return OUT_OF_MEM;
+        if (pageIdx >= details->NodePages.size()) {
+            if constexpr (!Policy::HasStoreEviction) {
+                size_t numPgs = details->NodePages.size();
+
+                if (!didRotate) {
+                    size_t sacrificeIdx = SIZE_MAX;
+
+                    if constexpr (Policy::HasPerKeyState) {
+                            uint8_t minPageMaxEvict = UINT8_MAX;
+                            for (size_t p = 0; p < numPgs; p++) {
+                                Page& pg = details->NodePages[p];
+                                if (pg.Tier.load(std::memory_order_relaxed) != PageTier::Hot) continue;
+                                if (pg.KeyIndex.empty()) continue;
+                                uint8_t pageMax = 0;
+                                for (size_t k = 0; k < pg.TempCtrl.size(); k++) {
+                                    uint8_t es = Policy::EvictScore(pg.TempCtrl[k]);
+                                    if (es > pageMax) pageMax = es;
+                                }
+                                if (pageMax < minPageMaxEvict) {
+                                    minPageMaxEvict = pageMax;
+                                    sacrificeIdx = p;
+                                }
+                            }
+                        } else {
+                            for (size_t p = 0; p < numPgs; p++) {
+                                if (details->NodePages[p].Tier.load(std::memory_order_relaxed) == PageTier::Hot
+                                    && !details->NodePages[p].KeyIndex.empty()) {
+                                    sacrificeIdx = p;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (sacrificeIdx != SIZE_MAX) {
+                            details->NodePages[sacrificeIdx].Tier.store(PageTier::Cold, std::memory_order_release);
+                            Stats.EvictionCount.fetch_add(1, std::memory_order_relaxed);
+                            Stats.ColdPageRotations.fetch_add(1, std::memory_order_relaxed);
+
+                            bool rotated = false;
+                            for (size_t p = 0; p < numPgs && !rotated; p++) {
+                                if (p == sacrificeIdx) continue;
+                                if (details->NodePages[p].Tier.load(std::memory_order_relaxed) != PageTier::Cold) continue;
+
+                                Page& coldPage = details->NodePages[p];
+                                if (!Volatile && coldPage.Dirty) FlushPage(&coldPage);
+
+                                coldPage.CompactLock.lock();
+                                auto keys = coldPage.KeyIndex;
+                                coldPage.CompactLock.unlock();
+
+                                if (!Volatile && DataMembers && DataMembers->db) {
+                                    std::string slabKey = "frozen:" + std::to_string(p);
+                                    rocksdb::Slice slabVal(
+                                        reinterpret_cast<const char*>(coldPage.Data),
+                                        coldPage.GetUsedSize());
+                                    DataMembers->db->Put(rocksdb::WriteOptions(), slabKey, slabVal);
+                                    Stats.BytesWritten.fetch_add(coldPage.GetUsedSize(), std::memory_order_relaxed);
+
+                                    details->FrozenLock.lock();
+                                    for (const auto& khp : keys) {
+                                        auto it = details->KeyNames.find(khp.h2);
+                                        if (it == details->KeyNames.end()) continue;
+                                        auto meta = details->KeyStore.Find(it->second);
+                                        if (!meta.has_value()) continue;
+                                        if (meta->PageIndex != static_cast<size_t>(p)) continue;
+                                        if (meta->PageGeneration != coldPage.Generation) continue;
+                                        typename PerNodeDetails<Policy>::FrozenEntry fe;
+                                        fe.key = it->second;
+                                        fe.pageIndex = p;
+                                        fe.generation = coldPage.Generation;
+                                        fe.offset = reinterpret_cast<size_t>(meta->DataOffset) -
+                                                    reinterpret_cast<size_t>(coldPage.Data);
+                                        fe.size = meta->DataSize;
+                                        details->FrozenIndex[khp.h2] = std::move(fe);
+                                    }
+                                    details->FrozenLock.unlock();
+
+                                    Stats.FrozenPagesPersisted.fetch_add(1, std::memory_order_relaxed);
+                                }
+
+                                for (const auto& khp : keys) {
+                                    details->KeyStore.EraseByHash(khp);
+                                }
+
+                                coldPage.Recycle();
+                                coldPage.Tier.store(PageTier::Hot, std::memory_order_release);
+                                Stats.PagesReclaimed.fetch_add(1, std::memory_order_relaxed);
+
+                                details->CurrentPage.store(p, std::memory_order_relaxed);
+                                pageIdx = p;
+                                rotated = true;
+                            }
+                            if (rotated) {
+                                didRotate = true;
+                                continue;
+                        }
+                    }
+                }
+
+                for (size_t dp = 0; dp < numPgs; dp++) {
+                    Page& deadPage = details->NodePages[dp];
+                    if (deadPage.Tier.load(std::memory_order_acquire) != PageTier::Dead) continue;
+                    if (deadPage.ActiveKeys.load(std::memory_order_acquire) != 0) continue;
+                    deadPage.Recycle();
+                    deadPage.Tier.store(PageTier::Hot, std::memory_order_release);
+                    Stats.PagesReclaimed.fetch_add(1, std::memory_order_relaxed);
+                    details->CurrentPage.store(dp, std::memory_order_relaxed);
+                    pageIdx = dp;
+                    Loc = deadPage.TryBump(size);
+                    if (Loc) break;
+                }
+                if (Loc) break;
+            }
+            return OUT_OF_MEM;
+        }
         Loc = details->NodePages[pageIdx].TryBump(size);
         if (Loc) break;
         size_t nextIdx = pageIdx + 1;
-        if (nextIdx >= details->NodePages.size()) return OUT_OF_MEM;
+        if (nextIdx >= details->NodePages.size()) {
+            pageIdx = details->NodePages.size();
+            continue;
+        }
         if (!details->CurrentPage.compare_exchange_weak(pageIdx, nextIdx, std::memory_order_relaxed)) {
             pageIdx = details->CurrentPage.load(std::memory_order_relaxed);
         } else {
@@ -876,13 +1202,14 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
     }
     memcpy(Loc, data, size);
 
+    Page& page = details->NodePages[pageIdx];
     KeyMeta metadata;
     metadata.DataSize = size;
     metadata.NodeID = targetNode;
     metadata.PageIndex = pageIdx;
     metadata.DataOffset = Loc;
+    metadata.PageGeneration = page.Generation;
 
-    Page& page = details->NodePages[pageIdx];
     HashPair hp = HashKey(key);
     uint8_t initTC = Policy::InitialState();
     page.AddKeyEntry(hp, initTC);
@@ -891,6 +1218,10 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
     Error err = details->KeyStore.Set(key, metadata);
     if (err == NO_ERR) {
         Stats.BytesWritten.fetch_add(size, std::memory_order_relaxed);
+        details->KeyNames[hp.h2] = key;
+        details->FrozenLock.lock();
+        details->FrozenIndex.erase(hp.h2);
+        details->FrozenLock.unlock();
         if constexpr (Policy::HasDesire && Policy::HasPerKeyState) {
             uint8_t desire = details->ShadowDesire.get(hp.h2);
             desire = Policy::OnLocalAccess(desire, policyConfig);
@@ -1002,11 +1333,20 @@ FurrBall<Policy> *FurrBall<Policy>::CreateBall(const std::string &DBpath, const 
                 void* auxD = (void*)Numatic::AllocateLocal(sizeof(PerNodeDetails<Policy>));
                 Logger::getInstance().info(std::string("Per-node cache will have an inital capacity of ") + std::to_string(arcCap) + " Keys." );
                 auto* details = new(auxD) PerNodeDetails<Policy>(arcCap, Numatic::AllocateLocal, Numatic::FreeNUMA);
+                if constexpr (Policy::HasRemarcConfig) {
+                    details->MaxDeadAge = config.remarcConfig.MaxDeadAge;
+                }
                 details->PhysicalPageInNode = ptr;
                 details->NodePages.reserve(numPages);
                 
                 for(int pageC = 0; pageC < numPages; pageC++){
                     details->NodePages.emplace_back(static_cast<char*>(ptr) + (config.PageSize * pageC), config.PageSize, pageC);
+                }
+
+                if constexpr (!Policy::HasStoreEviction) {
+                    if (numPages > 1) {
+                        details->NodePages[numPages - 1].Tier.store(PageTier::Cold, std::memory_order_relaxed);
+                    }
                 }
                 
                 pNumaState->NodeDetails[i] = details;

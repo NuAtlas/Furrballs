@@ -66,6 +66,7 @@ namespace NuAtlas {
         int NodeID;
         uint8_t HotNode;
         uint8_t TempCtrlIdx;
+        uint32_t PageGeneration = 0;
     };
 
     // --- Statistics (policy-independent) ---
@@ -82,6 +83,11 @@ namespace NuAtlas {
         alignas(64) std::atomic<unsigned int> LocalHitCount{0};
         alignas(64) std::atomic<unsigned int> MigrationCount{0};
         alignas(64) std::atomic<unsigned int> MigrationReversalCount{0};
+        alignas(64) std::atomic<unsigned int> PagesReclaimed{0};
+        alignas(64) std::atomic<unsigned int> ColdPageRotations{0};
+        alignas(64) std::atomic<unsigned int> ColdPageHits{0};
+        alignas(64) std::atomic<unsigned int> FrozenPagesPersisted{0};
+        alignas(64) std::atomic<unsigned int> FrozenPageHits{0};
         Statistics() noexcept = default;
         Statistics& operator=(const Statistics&) = delete;
         Statistics& operator=(Statistics&&) = delete;
@@ -96,6 +102,11 @@ namespace NuAtlas {
         unsigned int GetLocalHitCount() const noexcept { return LocalHitCount.load(); }
         unsigned int GetMigrationCount() const noexcept { return MigrationCount.load(); }
         unsigned int GetMigrationReversalCount() const noexcept { return MigrationReversalCount.load(); }
+        unsigned int GetPagesReclaimed() const noexcept { return PagesReclaimed.load(); }
+        unsigned int GetColdPageRotations() const noexcept { return ColdPageRotations.load(); }
+        unsigned int GetColdPageHits() const noexcept { return ColdPageHits.load(); }
+        unsigned int GetFrozenPagesPersisted() const noexcept { return FrozenPagesPersisted.load(); }
+        unsigned int GetFrozenPageHits() const noexcept { return FrozenPageHits.load(); }
     };
 
     // --- Non-templated cache base (page-level ARC for void* API) ---

@@ -6,6 +6,10 @@ namespace NuAtlas {
 
     template<typename Value>
         requires std::is_move_constructible_v<Value> && std::is_trivially_copyable_v<Value>
+    class RawCMapStore;
+
+    template<typename Value>
+        requires std::is_move_constructible_v<Value> && std::is_trivially_copyable_v<Value>
     class ConcurrentARC;
 
     template<typename Value>
@@ -47,6 +51,7 @@ namespace NuAtlas {
         static constexpr bool HasScanner     = false;
         static constexpr bool HasDesire      = false;
         static constexpr bool HasStoreEviction = false;
+        static constexpr bool HasRemarcConfig   = false;
 
         static Config MakeConfig(const RemarcConfig&) noexcept { return {}; }
         static uint8_t InitialState() noexcept { return 0; }
@@ -57,7 +62,7 @@ namespace NuAtlas {
 
     template<typename AtomA, typename AtomB>
     struct RemarcPolicy {
-        template<typename Value> using Store = ConcurrentARC<Value>;
+        template<typename Value> using Store = RawCMapStore<Value>;
         using Config = RemarcConfig;
 
         static constexpr bool HasPerKeyState = true;
@@ -65,6 +70,7 @@ namespace NuAtlas {
         static constexpr bool HasScanner     = true;
         static constexpr bool HasDesire      = true;
         static constexpr bool HasStoreEviction = false;
+        static constexpr bool HasRemarcConfig   = true;
 
         static Config MakeConfig(const RemarcConfig& rc) noexcept { return rc; }
 
@@ -109,10 +115,10 @@ namespace NuAtlas {
 
     using StandardRemarc = RemarcPolicy<AtomSLocal, AtomSRemote>;
 
-    // --- AUG-ADAPT: ARC + adaptive heap eviction + REMARC scoring ---
+    // --- AUG-ADAPT: raw CMap + adaptive heap eviction + REMARC scoring ---
 
     struct AugAdaptPolicy {
-        template<typename Value> using Store = AugAdaptStore<Value>;
+        template<typename Value> using Store = RawCMapStore<Value>;
         using Config = RemarcConfig;
 
         static constexpr bool HasPerKeyState = true;
@@ -120,6 +126,7 @@ namespace NuAtlas {
         static constexpr bool HasScanner     = true;
         static constexpr bool HasDesire      = true;
         static constexpr bool HasStoreEviction = false;
+        static constexpr bool HasRemarcConfig   = true;
 
         static Config MakeConfig(const RemarcConfig& rc) noexcept { return rc; }
 
@@ -173,6 +180,7 @@ namespace NuAtlas {
         static constexpr bool HasScanner     = false;
         static constexpr bool HasDesire      = true;
         static constexpr bool HasStoreEviction = true;
+        static constexpr bool HasRemarcConfig   = false;
 
         static Config MakeConfig(const RemarcConfig& rc) noexcept { return rc; }
         static uint8_t InitialState() noexcept { return 0; }

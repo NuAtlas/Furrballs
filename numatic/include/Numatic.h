@@ -8,6 +8,8 @@ namespace NuAtlas::Numatic {
     bool IsNUMAAvailable() noexcept;
     int GetNodeCount() noexcept;
     int GetCurrentNode() noexcept;
+    void SetCurrentNodeOverride(int nodeId) noexcept;
+    void ClearCurrentNodeOverride() noexcept;
     void PinCurrentThreadToNode(int nodeId) noexcept;
     void SetPreferredNode(int nodeId) noexcept;
     size_t GetNodePageSize() noexcept;

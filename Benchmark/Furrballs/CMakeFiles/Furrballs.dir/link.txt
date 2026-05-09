@@ -1,0 +1,2 @@
+/usr/bin/ar qc libFurrballs.a CMakeFiles/Furrballs.dir/src/Furrballs.cpp.o CMakeFiles/Furrballs.dir/src/Logger.cpp.o CMakeFiles/Furrballs.dir/src/Page.cpp.o CMakeFiles/Furrballs.dir/src/NodeJob.cpp.o
+/usr/bin/ranlib libFurrballs.a

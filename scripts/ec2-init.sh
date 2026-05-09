@@ -38,10 +38,16 @@ mkdir -p "$BUILD_DIR"
 cmake -S "$REPO_DIR" -B "$BUILD_DIR" \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
-cmake --build "$BUILD_DIR" --target Benchmark -j$(nproc)
+cmake --build "$BUILD_DIR" --target Benchmark IsolatedBench MultiNodeBench -j$(nproc)
 
 echo "=== $(date) Init complete ==="
-echo "Build: $BUILD_DIR/Benchmark/Benchmark"
+echo "Build: $BUILD_DIR/Benchmark/"
+echo "  - Benchmark/Benchmark (architecture/latency)"
+echo "  - Benchmark/IsolatedBench (single-node, frozen tier)"
+echo "  - Benchmark/MultiNodeBench (2-node, policy/migration)"
 echo "NUMA:  /tmp/furrballs-numa.txt"
 echo ""
-echo "Run:   cd $BUILD_DIR && ./Benchmark/Benchmark"
+echo "Run benchmarks:"
+echo "  cd $BUILD_DIR && ./Benchmark/Benchmark"
+echo "  cd $BUILD_DIR && ./Benchmark/IsolatedBench"
+echo "  cd $BUILD_DIR && ./Benchmark/MultiNodeBench"

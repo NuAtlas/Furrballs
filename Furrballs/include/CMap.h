@@ -1074,4 +1074,44 @@ namespace NuAtlas {
         }
     };
 
+    template<typename Value>
+        requires std::is_move_constructible_v<Value> && std::is_trivially_copyable_v<Value>
+    class RawCMapStore {
+        CMap<Value> store_;
+    public:
+        RawCMapStore(size_t cap,
+                     CMapAllocFn af = CMapDefaultAlloc,
+                     CMapFreeFn ff = CMapDefaultFree)
+            : store_(cap, af, ff) {}
+
+        void SetEvictionCallback(auto) {}
+
+        uint8_t GetDesire(uint64_t) const { return 0; }
+
+        std::optional<Value> Find(const std::string& key) {
+            return store_.Find(std::string_view(key));
+        }
+
+        Error UpdateInPlace(const std::string& key, auto&& fn) {
+            return store_.UpdateInPlace(std::string_view(key), std::forward<decltype(fn)>(fn));
+        }
+
+        Error UpdateInPlaceByHash(const HashPair& hashes, auto&& fn) {
+            return store_.UpdateInPlaceByHash(hashes, std::forward<decltype(fn)>(fn));
+        }
+
+        typename CMap<Value>::FindAndEraseResult Erase(const std::string& key) {
+            return store_.FindAndErase(std::string_view(key));
+        }
+
+        auto EraseByHash(const HashPair& hashes) {
+            return store_.FindAndEraseByHash(hashes);
+        }
+
+        Error Set(const std::string& key, const Value& val) {
+            auto r = store_.Set(std::string_view(key), val);
+            return r.err;
+        }
+    };
+
 } // namespace NuAtlas

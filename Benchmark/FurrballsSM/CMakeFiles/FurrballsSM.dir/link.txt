@@ -1,0 +1,2 @@
+/usr/bin/ar qc libFurrballsSM.a CMakeFiles/FurrballsSM.dir/src/SharedNothingCache.cpp.o
+/usr/bin/ranlib libFurrballsSM.a

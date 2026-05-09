@@ -1,145 +1,25 @@
 #include "Furrballs.h"
 #include "Numatic.h"
 #include "BaselineCache.h"
+#include <rocksdb/db.h>
+#include <rocksdb/options.h>
+#include <rocksdb/table.h>
+#include <rocksdb/cache.h>
 #include <iostream>
 #include <vector>
 #include <string>
-#include <thread>
 #include <chrono>
 #include <algorithm>
 #include <numeric>
 #include <cstring>
 #include <iomanip>
-#include <functional>
 #include <random>
+#include <filesystem>
 #include <cmath>
 
 using namespace NuAtlas;
 using Clock = std::chrono::high_resolution_clock;
-using ns = std::chrono::nanoseconds;
-
-struct BenchStats {
-    double p50, p99, avg, opsPerSec;
-};
-
-template<typename Policy>
-struct PolicyBenchResult {
-    BenchStats setStats, getStats;
-    double scanNsPerPass = 0;
-    double scanMHz = 0;
-};
-
-template<typename Policy>
-PolicyBenchResult<Policy> benchPolicy(const std::string& label, size_t numOps, int iters, size_t valueSize, int scanIters) {
-    using FB = FurrBall<Policy>;
-
-    NumaConfig numaConfig;
-    numaConfig.AllocateUsingNodePageSize = false;
-
-    FurrConfig config;
-    config.EnableLogging = false;
-    config.EnableNUMA = true;
-    config.PageSize = 4096;
-    config.InitialPageCount = 2048;
-    config.numaConfig = &numaConfig;
-
-    std::string dbPath = "BenchDB_" + label;
-    FB* fb = FB::CreateBall(dbPath, config);
-    if (!fb) {
-        std::cerr << "Cannot create FurrBall<" << label << ">\n";
-        return {};
-    }
-
-    std::vector<char> value(valueSize, 'X');
-    std::vector<char> outBuf(valueSize + 64);
-    std::string prefix = label + "_key_";
-
-    PolicyBenchResult<Policy> result;
-    BenchStats& aggSet = result.setStats;
-    BenchStats& aggGet = result.getStats;
-
-    for (int i = 0; i < iters; i++) {
-        std::vector<ns> lats(numOps);
-        for (size_t j = 0; j < numOps; j++) {
-            std::string key = prefix + std::to_string(j);
-            auto t0 = Clock::now();
-            fb->Set(key, value.data(), valueSize);
-            lats[j] = Clock::now() - t0;
-        }
-        std::sort(lats.begin(), lats.end());
-        double total = 0;
-        for (auto& l : lats) total += l.count();
-        double p50 = lats[numOps/2].count();
-        double p99 = lats[numOps*99/100].count();
-        double ops = (total > 0) ? (numOps / (total / 1e9)) : 0;
-        aggSet.p50 += p50; aggSet.p99 += p99; aggSet.avg += total / numOps; aggSet.opsPerSec += ops;
-        std::cout << "  iter " << i << " Set: "
-                  << std::fixed << std::setprecision(0)
-                  << std::setw(10) << ops << " ops/s | "
-                  << "p50 " << std::setw(8) << p50 << " ns | "
-                  << "p99 " << std::setw(8) << p99 << " ns\n";
-    }
-    aggSet.p50 /= iters; aggSet.p99 /= iters; aggSet.avg /= iters; aggSet.opsPerSec /= iters;
-
-    for (int i = 0; i < iters; i++) {
-        std::vector<ns> lats(numOps);
-        for (size_t j = 0; j < numOps; j++) {
-            std::string key = prefix + std::to_string(j);
-            size_t outSize = 0;
-            auto t0 = Clock::now();
-            fb->Get(key, outBuf.data(), outBuf.size(), outSize);
-            lats[j] = Clock::now() - t0;
-        }
-        std::sort(lats.begin(), lats.end());
-        double total = 0;
-        for (auto& l : lats) total += l.count();
-        double p50 = lats[numOps/2].count();
-        double p99 = lats[numOps*99/100].count();
-        double ops = (total > 0) ? (numOps / (total / 1e9)) : 0;
-        aggGet.p50 += p50; aggGet.p99 += p99; aggGet.avg += total / numOps; aggGet.opsPerSec += ops;
-        std::cout << "  iter " << i << " Get: "
-                  << std::fixed << std::setprecision(0)
-                  << std::setw(10) << ops << " ops/s | "
-                  << "p50 " << std::setw(8) << p50 << " ns | "
-                  << "p99 " << std::setw(8) << p99 << " ns\n";
-    }
-    aggGet.p50 /= iters; aggGet.p99 /= iters; aggGet.avg /= iters; aggGet.opsPerSec /= iters;
-
-    if constexpr (Policy::HasScanner) {
-        std::cout << "  SIMD Scan: ";
-        double totalScanNs = 0;
-        for (int i = 0; i < scanIters; i++) {
-            auto t0 = Clock::now();
-            fb->ScanAndExecute(0);
-            totalScanNs += (Clock::now() - t0).count();
-        }
-        result.scanNsPerPass = totalScanNs / scanIters;
-        size_t totalKeys = 0;
-        for (int n = 0; n < Numatic::GetNodeCount(); n++) {
-            (void)n;
-            totalKeys += numOps;
-        }
-        result.scanMHz = (totalScanNs > 0) ? (totalKeys / (totalScanNs / scanIters / 1e9)) / 1e6 : 0;
-        std::cout << std::fixed << std::setprecision(0)
-                  << result.scanNsPerPass << " ns/pass | "
-                  << std::setprecision(1) << result.scanMHz << " Mkeys/s\n";
-    } else {
-        std::cout << "  SIMD Scan: N/A (HasScanner=false)\n";
-    }
-
-    delete fb;
-    return result;
-}
-
-void printRow(const std::string& label, const BenchStats& s, const BenchStats& g, double scanNs, double scanMHz) {
-    std::cout << std::left << std::setw(20) << label
-              << "Set " << std::setw(8) << std::fixed << std::setprecision(0) << s.opsPerSec << "/s"
-              << " p50 " << std::setw(6) << s.p50
-              << " | Get " << std::setw(8) << g.opsPerSec << "/s"
-              << " p50 " << std::setw(6) << g.p50
-              << " | Scan " << std::setw(7) << std::setprecision(0) << scanNs << " ns"
-              << " " << std::setprecision(1) << scanMHz << " Mkeys/s\n";
-}
+using us = std::chrono::microseconds;
 
 static size_t zipfianSample(size_t n, double theta, std::mt19937_64& rng) {
     std::uniform_real_distribution<double> dist(0.0, 1.0);
@@ -157,333 +37,224 @@ static size_t zipfianSample(size_t n, double theta, std::mt19937_64& rng) {
     return k - 1;
 }
 
+static rocksdb::DB* openRocksDB(const std::string& path) {
+    rocksdb::Options options;
+    options.create_if_missing = true;
+    options.optimize_filters_for_hits = true;
+    rocksdb::BlockBasedTableOptions tableOpts;
+    tableOpts.block_cache = rocksdb::NewLRUCache(0);
+    options.table_factory.reset(rocksdb::NewBlockBasedTableFactory(tableOpts));
+    rocksdb::DB* db = nullptr;
+    auto s = rocksdb::DB::Open(options, path, &db);
+    if (!s.ok()) { std::cerr << "RocksDB open failed: " << s.ToString() << "\n"; return nullptr; }
+    return db;
+}
+
+struct LatencyStats {
+    std::vector<int64_t> samples;
+    void add(int64_t ns) { samples.push_back(ns); }
+    double p50() const { if (samples.empty()) return 0; auto s = samples; std::sort(s.begin(), s.end()); return s[s.size()/2]; }
+    double p99() const { if (samples.size() < 100) return p50(); auto s = samples; std::sort(s.begin(), s.end()); return s[s.size()*99/100]; }
+    double mean() const { if (samples.empty()) return 0; return std::accumulate(samples.begin(), samples.end(), 0.0) / samples.size(); }
+    double stddev() const { double m = mean(); double sq = 0; for (auto v : samples) sq += (v-m)*(v-m); return samples.size() > 1 ? std::sqrt(sq/(samples.size()-1)) : 0; }
+};
+
 int main() {
     FurrBall<StandardRemarc>::Bootstrap();
-    int numNodes = Numatic::GetNodeCount();
-    size_t numOps = 10000;
-    int iters = 5;
-    size_t valSize = 64;
-    int scanIters = 100;
 
-    std::cout << "=== INTEGRATED POLICY BENCHMARK ===" << std::endl;
-    std::cout << "NUMA nodes: " << numNodes << " | " << iters << " iters | "
-              << numOps << " ops | " << valSize << " B | "
-              << scanIters << " scan iters\n\n";
+    NumaConfig nc;
+    nc.AllocateUsingNodePageSize = false;
+    const size_t valSize = 64;
 
-    std::cout << "--- ArcPolicy (plain ARC) ---" << std::endl;
-    auto arc = benchPolicy<ArcPolicy>("arc", numOps, iters, valSize, scanIters);
+    std::cout << std::fixed << std::setprecision(1);
 
-    std::cout << "\n--- StandardRemarc (REMARC scoring + SIMD scan) ---" << std::endl;
-    auto remarc = benchPolicy<StandardRemarc>("remarc", numOps, iters, valSize, scanIters);
+    std::cout << "=== COMPREHENSIVE BENCHMARK ===\n";
+    std::cout << "Measures: hit rate, latency (p50/p99/us), throughput (Mops), I/O\n\n";
 
-    std::cout << "\n--- AugAdaptPolicy (adaptive heap + SIMD scan) ---" << std::endl;
-    auto aug = benchPolicy<AugAdaptPolicy>("aug", numOps, iters, valSize, scanIters);
+    auto run = [&](const std::string& label, bool isRemarc,
+                    size_t numPages, size_t keysPerPhase, size_t numPhases,
+                    size_t opsPerPhase, size_t revisitOps) {
 
-    std::cout << "\n--- NativeRemarcPolicy (desire-only, no ARC) ---" << std::endl;
-    auto native = benchPolicy<NativeRemarcPolicy>("native", numOps, iters, valSize, scanIters);
+        std::string dbPath = "/tmp/bench_" + label;
+        std::filesystem::remove_all(dbPath);
+        rocksdb::DB* rdb = openRocksDB(dbPath);
+        if (!rdb) return;
 
-    std::cout << "\n=== SUMMARY ===" << std::endl;
-    printRow("ArcPolicy", arc.setStats, arc.getStats, arc.scanNsPerPass, arc.scanMHz);
-    printRow("StandardRemarc", remarc.setStats, remarc.getStats, remarc.scanNsPerPass, remarc.scanMHz);
-    printRow("AugAdaptPolicy", aug.setStats, aug.getStats, aug.scanNsPerPass, aug.scanMHz);
-    printRow("NativeRemarc", native.setStats, native.getStats, native.scanNsPerPass, native.scanMHz);
-
-    std::cout << "\n  REMARC vs ARC Set throughput: "
-              << std::setprecision(1)
-              << ((remarc.setStats.opsPerSec - arc.setStats.opsPerSec) / arc.setStats.opsPerSec * 100.0) << "%\n";
-    std::cout << "  AUG-ADAPT vs ARC Set throughput: "
-              << ((aug.setStats.opsPerSec - arc.setStats.opsPerSec) / arc.setStats.opsPerSec * 100.0) << "%\n";
-    std::cout << "  NATIVE-REMARc vs ARC Set throughput: "
-              << ((native.setStats.opsPerSec - arc.setStats.opsPerSec) / arc.setStats.opsPerSec * 100.0) << "%\n";
-    std::cout << "  REMARC vs ARC Get p50: "
-              << std::setprecision(1)
-              << ((remarc.getStats.p50 - arc.getStats.p50) / arc.getStats.p50 * 100.0) << "%\n";
-    std::cout << "  AUG-ADAPT vs ARC Get p50: "
-              << ((aug.getStats.p50 - arc.getStats.p50) / arc.getStats.p50 * 100.0) << "%\n";
-    std::cout << "  NATIVE-REMARc vs ARC Get p50: "
-              << ((native.getStats.p50 - arc.getStats.p50) / arc.getStats.p50 * 100.0) << "%\n";
-
-    std::cout << "\n=== HIT-RATE PRESSURE TEST ===" << std::endl;
-    std::cout << "Oversubscribed cache, Zipf 0.99 workload, 4 policies\n\n";
-
-    {
-        NumaConfig nc;
-        nc.AllocateUsingNodePageSize = false;
-
-        const size_t numUniverse = 20000;
-        const size_t accessOps = 100000;
-        const double zipfTheta = 0.99;
-        const size_t valSize = 64;
-        const int pageCount = 128;
-
-        auto runHitRate = [&](const std::string& label, auto makeBall) -> double {
-            FurrConfig fc;
-            fc.EnableLogging = false;
-            fc.EnableNUMA = true;
-            fc.PageSize = 4096;
-            fc.InitialPageCount = pageCount;
-            fc.numaConfig = &nc;
-
-            auto* fb = makeBall(fc);
-            if (!fb) { std::cerr << "Cannot create " << label << "\n"; return 0; }
-
-            std::vector<char> val(valSize, 'X');
-            std::vector<char> outBuf(valSize + 64);
-            std::mt19937_64 rng(12345);
-
-            size_t hits = 0, misses = 0;
-
-            for (size_t i = 0; i < accessOps; i++) {
-                size_t keyIdx = zipfianSample(numUniverse, zipfTheta, rng);
-                std::string key = "hr_" + std::to_string(keyIdx);
-                size_t outSize = 0;
-                Error err = fb->Get(key, outBuf.data(), outBuf.size(), outSize);
-                if (err == NO_ERR) {
-                    hits++;
-                } else {
-                    misses++;
-                    fb->Set(key, val.data(), valSize);
-                }
-                if constexpr (requires { fb->ManagePages(0, false); }) {
-                    if ((i + 1) % 5000 == 0) fb->ManagePages(0, false);
-                }
-            }
-
-            double hitRate = 100.0 * hits / accessOps;
-            std::cout << std::left << std::setw(20) << label
-                      << "hits " << std::setw(6) << hits
-                      << " misses " << std::setw(6) << misses
-                      << " hit rate " << std::fixed << std::setprecision(1)
-                      << hitRate << "%\n";
-
-            delete fb;
-            return hitRate;
-        };
-
-        auto arcHR = runHitRate("ArcPolicy", [](FurrConfig& fc) {
-            return FurrBall<ArcPolicy>::CreateBall("hr_arc", fc);
-        });
-        auto remarcHR = runHitRate("StandardRemarc", [](FurrConfig& fc) {
-            return FurrBall<StandardRemarc>::CreateBall("hr_remarc", fc);
-        });
-        auto augHR = runHitRate("AugAdaptPolicy", [](FurrConfig& fc) {
-            return FurrBall<AugAdaptPolicy>::CreateBall("hr_aug", fc);
-        });
-        auto nativeHR = runHitRate("NativeRemarc", [](FurrConfig& fc) {
-            return FurrBall<NativeRemarcPolicy>::CreateBall("hr_native", fc);
-        });
-
-        std::cout << "\n  ARC hit rate: " << std::fixed << std::setprecision(1) << arcHR << "%\n";
-        std::cout << "  REMARC vs ARC: " << std::setprecision(1) << (remarcHR - arcHR) << " pp\n";
-        std::cout << "  AUG vs ARC: " << (augHR - arcHR) << " pp\n";
-        std::cout << "  NATIVE vs ARC: " << (nativeHR - arcHR) << " pp\n";
-    }
-
-    std::cout << "\n=== SCAN RESISTANCE TEST ===" << std::endl;
-    std::cout << "Zipf warmup -> full sequential scan -> Zipf recovery, 2 policies\n\n";
-
-    {
-        NumaConfig nc;
-        nc.AllocateUsingNodePageSize = false;
-
-        const size_t hotUniverse = 5000;
-        const size_t scanStart = 5000;
-        const size_t scanRange = 30000;
-        const size_t valSize = 64;
-        const int pageCount = 64;
-
-        auto runScan = [&](const std::string& label, auto makeBall) -> double {
-            FurrConfig fc;
-            fc.EnableLogging = false;
-            fc.EnableNUMA = true;
-            fc.PageSize = 4096;
-            fc.InitialPageCount = pageCount;
-            fc.numaConfig = &nc;
-
-            auto* fb = makeBall(fc);
-            if (!fb) { std::cerr << "Cannot create " << label << "\n"; return 0; }
-
-            std::vector<char> val(valSize, 'X');
-            std::vector<char> outBuf(valSize + 64);
-            std::mt19937_64 rng(99999);
-
-            std::cout << "  [" << label << "]\n";
-
-            size_t warmupHits = 0;
-            for (size_t i = 0; i < 30000; i++) {
-                size_t keyIdx = zipfianSample(hotUniverse, 0.99, rng);
-                std::string key = "scan_" + std::to_string(keyIdx);
-                size_t outSize = 0;
-                if (fb->Get(key, outBuf.data(), outBuf.size(), outSize) != NO_ERR)
-                    fb->Set(key, val.data(), valSize);
-                else
-                    warmupHits++;
-            }
-            double warmupHR = 100.0 * warmupHits / 30000;
-            std::cout << "    Warmup (Zipf 0.99, 30k): " << std::setprecision(1) << warmupHR << "%\n";
-
-            size_t scanHits = 0;
-            for (size_t i = 0; i < scanRange; i++) {
-                std::string key = "scan_" + std::to_string(scanStart + i);
-                size_t outSize = 0;
-                if (fb->Get(key, outBuf.data(), outBuf.size(), outSize) == NO_ERR)
-                    scanHits++;
-                else
-                    fb->Set(key, val.data(), valSize);
-                if constexpr (requires { fb->ManagePages(0, false); }) {
-                    if ((i + 1) % 5000 == 0) fb->ManagePages(0, false);
-                }
-            }
-            double scanHR = 100.0 * scanHits / scanRange;
-            std::cout << "    Scan (seq " << scanRange << " cold keys): " << scanHR << "%\n";
-
-            size_t recoveryHits = 0;
-            for (size_t i = 0; i < 30000; i++) {
-                size_t keyIdx = zipfianSample(hotUniverse, 0.99, rng);
-                std::string key = "scan_" + std::to_string(keyIdx);
-                size_t outSize = 0;
-                if (fb->Get(key, outBuf.data(), outBuf.size(), outSize) == NO_ERR)
-                    recoveryHits++;
-                else
-                    fb->Set(key, val.data(), valSize);
-                if constexpr (requires { fb->ManagePages(0, false); }) {
-                    if ((i + 1) % 5000 == 0) fb->ManagePages(0, false);
-                }
-            }
-            double recoveryHR = 100.0 * recoveryHits / 30000;
-            std::cout << "    Recovery (Zipf 0.99, 30k): " << recoveryHR << "%\n";
-
-            delete fb;
-            return recoveryHR;
-        };
-
-        auto arcRec = runScan("ArcPolicy", [](FurrConfig& fc) {
-            return FurrBall<ArcPolicy>::CreateBall("scan_arc", fc);
-        });
-        auto nativeRec = runScan("NativeRemarc", [](FurrConfig& fc) {
-            return FurrBall<NativeRemarcPolicy>::CreateBall("scan_native", fc);
-        });
-
-        std::cout << "\n  ARC recovery: " << std::fixed << std::setprecision(1) << arcRec << "%\n";
-        std::cout << "  NATIVE recovery: " << nativeRec << "%\n";
-        std::cout << "  NATIVE vs ARC recovery: " << std::setprecision(1) << (nativeRec - arcRec) << " pp\n";
-    }
-
-    std::cout << "\n=== PAGE MANAGEMENT BENCHMARK ===" << std::endl;
-    std::cout << "Random-order insert, hard oversubscription, A/B: migration vs eviction-only\n\n";
-
-    {
-        using FB = FurrBall<StandardRemarc>;
-        NumaConfig nc;
-        nc.AllocateUsingNodePageSize = false;
         FurrConfig fc;
         fc.EnableLogging = false;
         fc.EnableNUMA = true;
+        fc.IsVolatile = false;
         fc.PageSize = 4096;
-        fc.InitialPageCount = 512;
-        fc.remarcConfig.ThetaEvict = 6;
+        fc.InitialPageCount = numPages;
         fc.numaConfig = &nc;
+        fc.remarcConfig.MaxDeadAge = 8;
+        fc.remarcConfig.StaticEvictThresh = -1.0f;
 
-        auto runHardWorkload = [&](bool disableMigration) {
-            FurrConfig localFc = fc;
-            localFc.DisableMigration = disableMigration;
+        FurrBall<StandardRemarc>* fbR = nullptr;
+        FurrBall<ArcPolicy>* fbA = nullptr;
+        if (isRemarc)
+            fbR = FurrBall<StandardRemarc>::CreateBall("_bn_" + label, fc);
+        else
+            fbA = FurrBall<ArcPolicy>::CreateBall("_bn_" + label, fc);
 
-            std::mt19937_64 rng(42);
-            std::vector<char> val(64, 'X');
-            std::vector<char> outBuf(128);
+        if ((!fbR && isRemarc) || (!fbA && !isRemarc)) {
+            std::cerr << "  FAILED: " << label << "\n";
+            delete rdb; std::filesystem::remove_all(dbPath); return;
+        }
 
-            FB* fb = FB::CreateBall("BenchDB_page", localFc);
-            if (!fb) { std::cerr << "Cannot create page bench FurrBall\n"; return; }
+        std::vector<char> val(valSize, 'X');
+        std::vector<char> outBuf(valSize + 64);
+        std::mt19937_64 rng(42);
 
-            const size_t totalKeys = 30000;
-            const size_t hotKeys = 3000;
-            const size_t numPhases = 3;
-
-            std::cout << "  Phase 1: Loading " << totalKeys << " keys in RANDOM order..." << std::flush;
-            std::vector<size_t> loadOrder(totalKeys);
-            std::iota(loadOrder.begin(), loadOrder.end(), 0);
-            std::shuffle(loadOrder.begin(), loadOrder.end(), rng);
-            for (size_t idx : loadOrder) {
-                fb->Set("pg_key_" + std::to_string(idx), val.data(), 64);
+        auto doGet = [&](const std::string& key, char* buf, size_t& sz) -> bool {
+            if (isRemarc) return fbR->Get(key, buf, outBuf.size(), sz) == NO_ERR;
+            else return fbA->Get(key, buf, outBuf.size(), sz) == NO_ERR;
+        };
+        auto doSet = [&](const std::string& key, void* data, size_t sz) -> bool {
+            Error err = OUT_OF_MEM;
+            if (isRemarc) {
+                err = fbR->Set(key, data, sz);
+                rdb->Put(rocksdb::WriteOptions(), key,
+                         rocksdb::Slice(static_cast<const char*>(data), sz));
+            } else {
+                err = fbA->Set(key, data, sz);
+                rdb->Put(rocksdb::WriteOptions(), key,
+                         rocksdb::Slice(static_cast<const char*>(data), sz));
             }
-            std::cout << " done\n";
-
-            std::cout << "  Phase 2: " << numPhases << " phases (Zipf 0.99, 30k ops + ManagePages each)...\n";
-            size_t totalMigrated = 0, totalEvicted = 0, totalPages = 0;
-            double totalScanUs = 0;
-            for (size_t phase = 0; phase < numPhases; phase++) {
-                for (size_t i = 0; i < 30000; i++) {
-                    size_t keyIdx = zipfianSample(totalKeys, 0.99, rng);
-                    size_t outSize = 0;
-                    fb->Get("pg_key_" + std::to_string(keyIdx), outBuf.data(), outBuf.size(), outSize);
-                }
-                auto mr = fb->ManagePages(0, true);
-                totalMigrated += mr.keysMigrated;
-                totalPages += mr.pagesEvicted;
-                totalEvicted += mr.keysEvicted;
-                totalScanUs += mr.scanNs / 1000.0;
-                std::cout << "    Phase " << phase << ": " << mr.keysMigrated << " migrated, "
-                          << mr.pagesEvicted << " pg evicted (" << mr.scanNs / 1000 << " us)\n";
-            }
-
-            std::cout << "  Phase 3: Oversubscribing +15k keys..." << std::flush;
-            for (size_t i = totalKeys; i < totalKeys + 15000; i++) {
-                fb->Set("pg_key_" + std::to_string(i), val.data(), 64);
-            }
-            std::cout << " done\n";
-
-            std::cout << "  Phase 4: Final ManagePages..." << std::flush;
-            auto finalMr = fb->ManagePages(0, true);
-            totalMigrated += finalMr.keysMigrated;
-            totalPages += finalMr.pagesEvicted;
-            totalEvicted += finalMr.keysEvicted;
-            totalScanUs += finalMr.scanNs / 1000.0;
-            std::cout << " " << finalMr.keysMigrated << " migrated, "
-                      << finalMr.pagesEvicted << " pg evicted\n";
-
-            size_t hotHits = 0;
-            for (size_t i = 0; i < hotKeys; i++) {
-                size_t outSize = 0;
-                if (fb->Get("pg_key_" + std::to_string(i), outBuf.data(), outBuf.size(), outSize) == NO_ERR) hotHits++;
-            }
-            size_t midHits = 0;
-            for (size_t i = hotKeys; i < hotKeys + 5000; i++) {
-                size_t outSize = 0;
-                if (fb->Get("pg_key_" + std::to_string(i), outBuf.data(), outBuf.size(), outSize) == NO_ERR) midHits++;
-            }
-            size_t coldHits = 0;
-            for (size_t i = 15000; i < 20000; i++) {
-                size_t outSize = 0;
-                if (fb->Get("pg_key_" + std::to_string(i), outBuf.data(), outBuf.size(), outSize) == NO_ERR) coldHits++;
-            }
-            size_t tailHits = 0;
-            for (size_t i = 25000; i < totalKeys; i++) {
-                size_t outSize = 0;
-                if (fb->Get("pg_key_" + std::to_string(i), outBuf.data(), outBuf.size(), outSize) == NO_ERR) tailHits++;
-            }
-
-            std::cout << "  Results (total: " << totalMigrated << " migrated, "
-                      << totalPages << " pg, " << totalEvicted << " keys evicted"
-                      << ", avg scan " << std::setprecision(0) << totalScanUs / (numPhases + 1) << " us):\n"
-                      << "    Hot   (0-2.9k):  " << std::setw(5) << hotHits << "/" << hotKeys
-                      << "  (" << std::fixed << std::setprecision(1)
-                      << (100.0 * hotHits / hotKeys) << "%)\n"
-                      << "    Mid   (3k-7.9k): " << std::setw(5) << midHits << "/5000"
-                      << "  (" << (100.0 * midHits / 5000) << "%)\n"
-                      << "    Cold  (15k-20k): " << std::setw(5) << coldHits << "/5000"
-                      << "  (" << (100.0 * coldHits / 5000) << "%)\n"
-                      << "    Tail  (25k-30k): " << std::setw(5) << tailHits << "/5000"
-                      << "  (" << (100.0 * tailHits / 5000) << "%)\n\n";
-
-            delete fb;
+            return err == NO_ERR;
         };
 
-        std::cout << "====== WITH MIGRATION (desire + bit-vector swap) ======\n";
-        runHardWorkload(false);
+        LatencyStats getHit, getMiss, setOk, setFail;
 
-        std::cout << "====== WITHOUT MIGRATION (eviction-only, same budget) ======\n";
-        runHardWorkload(true);
-    }
+        auto t0 = Clock::now();
+        size_t totalSets = 0, totalSetFails = 0;
+
+        for (size_t p = 0; p < numPhases; p++) {
+            size_t base = p * keysPerPhase;
+            for (size_t i = 0; i < opsPerPhase; i++) {
+                size_t ki = base + zipfianSample(keysPerPhase, 0.99, rng);
+                std::string key = "ph_" + std::to_string(ki);
+                size_t outSize = 0;
+                auto gt = Clock::now();
+                if (doGet(key, outBuf.data(), outSize)) {
+                    getHit.add(std::chrono::duration_cast<us>(Clock::now() - gt).count());
+                } else {
+                    auto st = Clock::now();
+                    if (doSet(key, val.data(), valSize)) {
+                        setOk.add(std::chrono::duration_cast<us>(Clock::now() - st).count());
+                        totalSets++;
+                    } else {
+                        setFail.add(std::chrono::duration_cast<us>(Clock::now() - st).count());
+                        totalSetFails++;
+                    }
+                }
+            }
+        }
+
+        size_t revHits = 0, revMiss = 0, rdbGets = 0, rdbPuts = 0, setFails2 = 0;
+        auto t1 = Clock::now();
+
+        for (size_t i = 0; i < revisitOps; i++) {
+            size_t ki = zipfianSample(keysPerPhase, 0.99, rng);
+            std::string key = "ph_" + std::to_string(ki);
+            size_t outSize = 0;
+            size_t mBefore = 0;
+            if (isRemarc) mBefore = fbR->Stats.GetMigrationCount();
+            auto gt = Clock::now();
+            if (doGet(key, outBuf.data(), outSize)) {
+                auto lat = std::chrono::duration_cast<us>(Clock::now() - gt).count();
+                if (isRemarc && fbR->Stats.GetMigrationCount() > mBefore) {
+                    getMiss.add(lat);
+                    revHits++;
+                } else {
+                    getHit.add(lat);
+                }
+            } else {
+                auto lat = std::chrono::duration_cast<us>(Clock::now() - gt).count();
+                getMiss.add(lat);
+                revMiss++;
+                std::string rval;
+                auto s = rdb->Get(rocksdb::ReadOptions(), key, &rval);
+                rdbGets++;
+                if (s.ok() && !rval.empty()) {
+                    auto st = Clock::now();
+                    std::vector<char> tmp(rval.data(), rval.data() + rval.size());
+                    if (doSet(key, tmp.data(), tmp.size())) {
+                        rdbPuts++;
+                    } else {
+                        setFails2++;
+                    }
+                }
+            }
+        }
+        auto t2 = Clock::now();
+
+        int64_t revUs = std::chrono::duration_cast<us>(t2 - t1).count();
+        int64_t totUs = std::chrono::duration_cast<us>(t2 - t0).count();
+        double revMs = revUs / 1000.0;
+        double totMs = totUs / 1000.0;
+        double revMops = revisitOps / (revUs / 1e6);
+
+        size_t totalMisses = revMiss;
+        double hitRate = 100.0 * (revisitOps - totalMisses) / revisitOps;
+
+        std::cout << std::left << std::setw(14) << label
+                  << " " << numPages << "pg " << keysPerPhase << "k/ph"
+                  << " | HR=" << std::setw(5) << hitRate << "%"
+                  << " miss=" << std::setw(5) << totalMisses
+                  << "\n"
+                  << "  get: p50=" << std::setw(6) << getHit.p50()
+                  << "us p99=" << std::setw(6) << getHit.p99()
+                  << "us (miss p50=" << std::setw(6) << getMiss.p50()
+                  << "us p99=" << std::setw(6) << getMiss.p99() << "us)"
+                  << "\n"
+                  << "  set: ok=" << totalSets << " fail=" << (totalSetFails + setFails2)
+                  << " (phases " << totalSetFails << ", revisit " << setFails2 << ")"
+                  << " | rdb-get=" << rdbGets << " rdb-put=" << rdbPuts
+                  << "\n"
+                  << "  throughput: " << std::setprecision(0) << revMops << " Mops"
+                  << " | " << std::setprecision(1) << revMs << "ms revisit"
+                  << " " << totMs << "ms total";
+        if (!isRemarc && fbA) {
+            std::cout << "\n  ARC: reclaim=" << fbA->Stats.GetPagesReclaimed()
+                      << " cold-rot=" << fbA->Stats.GetColdPageRotations()
+                      << " cold-hit=" << fbA->Stats.GetColdPageHits()
+                      << " frozen-persist=" << fbA->Stats.GetFrozenPagesPersisted()
+                      << " frozen-hit=" << fbA->Stats.GetFrozenPageHits();
+        }
+        if (isRemarc && fbR) {
+            std::cout << "\n  REMARC: reclaim=" << fbR->Stats.GetPagesReclaimed()
+                      << " cold-rot=" << fbR->Stats.GetColdPageRotations()
+                      << " cold-hit=" << fbR->Stats.GetColdPageHits()
+                      << " frozen-persist=" << fbR->Stats.GetFrozenPagesPersisted()
+                      << " frozen-hit=" << fbR->Stats.GetFrozenPageHits()
+                      << " migrate=" << fbR->Stats.GetMigrationCount();
+        }
+        std::cout << "\n\n";
+
+        delete fbR;
+        delete fbA;
+        delete rdb;
+        std::filesystem::remove_all(dbPath);
+    };
+
+    std::cout << "--- 1. ARC baseline (8 pages, 800 keys/phase, under-subscribed) ---\n";
+    run("arc_8pg", false, 8, 800, 6, 15000, 15000);
+
+    std::cout << "\n--- 2. REMARC (8 pages, 800 keys/phase, under-subscribed) ---\n";
+    run("rm_8pg", true, 8, 800, 6, 15000, 15000);
+
+    std::cout << "\n--- 3. ARC (4 pages, 800 keys/phase, over-subscribed 2x) ---\n";
+    run("arc_4pg", false, 4, 800, 6, 15000, 15000);
+
+    std::cout << "\n--- 4. REMARC (4 pages, 800 keys/phase, over-subscribed 2x) ---\n";
+    run("rm_4pg", true, 4, 800, 6, 15000, 15000);
+
+    std::cout << "\n--- 5. ARC (8 pages, 1600 keys/phase, over-subscribed 4x) ---\n";
+    run("arc_8pg_1600", false, 8, 1600, 6, 15000, 15000);
+
+    std::cout << "\n--- 6. REMARC (8 pages, 1600 keys/phase, over-subscribed 4x) ---\n";
+    run("rm_8pg_1600", true, 8, 1600, 6, 15000, 15000);
 
     FurrBall<StandardRemarc>::Shutdown();
     return 0;

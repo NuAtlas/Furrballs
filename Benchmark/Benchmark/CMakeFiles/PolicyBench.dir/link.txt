@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG -Wl,--dependency-file=CMakeFiles/PolicyBench.dir/link.d CMakeFiles/PolicyBench.dir/PolicyBench.cpp.o -o PolicyBench

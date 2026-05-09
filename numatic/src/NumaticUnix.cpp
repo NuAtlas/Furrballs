@@ -19,9 +19,20 @@ namespace NuAtlas::Numatic {
         return numa_max_node() + 1;
     }
 
+    static thread_local int sNodeOverride = -1;
+
     int GetCurrentNode() noexcept {
+        if (sNodeOverride >= 0) return sNodeOverride;
         thread_local int node = numa_node_of_cpu(sched_getcpu());
         return node;
+    }
+
+    void SetCurrentNodeOverride(int nodeId) noexcept {
+        sNodeOverride = nodeId;
+    }
+
+    void ClearCurrentNodeOverride() noexcept {
+        sNodeOverride = -1;
     }
 
     void PinCurrentThreadToNode(int nodeId) noexcept {

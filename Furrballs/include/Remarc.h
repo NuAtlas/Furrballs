@@ -39,6 +39,8 @@ namespace NuAtlas
         uint8_t HotNodeProb = 13;
         uint8_t TimeDecayNum = 7;
         uint8_t TimeDecayDen = 8;
+        float StaticEvictThresh = -1.0f;
+        uint8_t MaxDeadAge = 8;
     };
 
     namespace RemarcDetail {
@@ -225,7 +227,8 @@ namespace NuAtlas
         Hot = 0,
         Cold = 1,
         Empty = 2,
-        Freeze = 3
+        Freeze = 3,
+        Dead = 4
     };
 
     // --- REMARC Atom Framework ---
