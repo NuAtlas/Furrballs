@@ -1220,8 +1220,8 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
     Error err = details->KeyStore.Set(key, metadata);
     if (err == NO_ERR) {
         Stats.BytesWritten.fetch_add(size, std::memory_order_relaxed);
-        details->KeyNames[hp.h2] = key;
         details->FrozenLock.lock();
+        details->KeyNames[hp.h2] = key;
         details->FrozenIndex.erase(hp.h2);
         details->FrozenLock.unlock();
         if constexpr (Policy::HasDesire && Policy::HasPerKeyState) {
