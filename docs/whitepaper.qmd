@@ -1,6 +1,6 @@
 ---
 title: "Furrballs: A NUMA-Aware, High-Performance Caching Library"
-subtitle: "Technical Report v1.12.0"
+subtitle: "Technical Report v1.14.0"
 author: "Hamza Jamil Saied (The Sphynx)"
 date: last-modified
 doi: "10.5281/zenodo.19794753"
@@ -44,6 +44,8 @@ format:
 ---
 
 ## Status
+v1.14.0 --- §5.21 per-key eviction design plan: two-level REMARC architecture (KeyPolicy + PagePolicy), 2×2 factorial benchmark (ARC vs REMARC, 1-level vs 2-level), ARC data structure finding (linked list 2-3x slower than flat array, not fundamental to ARC algorithm), 3-way comparison plan (ARC-linked vs ARC-flat vs REMARC-flat). Roadmap updated: Phase 2c (per-key eviction), Phase 2d (two-level + optimization). §7 Risks updated with ARC double-edged sword analysis. REMARC-BLOOM noted as speed baseline.
+v1.13.0 --- Phase 2b benchmark data collected on c6i.metal (commit 6e734ad). §5.20 added with full tables, DEFERRED status. Page-level eviction smothers policy differentiation: hit rates identical across all policies in all workloads, 2.6x latency gap is data structure artifact (ArcList vs TempCtrl layout), migration only fires on LOOP. Policy comparison deferred pending benchmark redesign to isolate data structure overhead from policy decisions.
 v1.12.0 --- REMARC paper v0.8.0 with Finding 31 (QuotaFree: pure prediction insufficient without structural scan detection). Consistency pass on both papers (53 issues: heading numbers, cross-refs, stale data, variant counts, Furrballs refs removed from REMARC paper). Whitepaper updated: QuotaFree in taxonomy, Related Work "two-level ARC"→"REMARC unified policy", §2.1.1 future tense fixed.
 
 ## Abstract
@@ -1745,9 +1747,266 @@ The run-to-run Cross-OH variance for ablation step D (21.0% in Run 2 vs 38.9% in
 
 Step D's stddev (3.8pp) confirms that the thread-local routing signal is statistically stable within a run. The higher stddev at step C (19.0pp) reflects that without thread-local routing, keys are distributed across nodes by round-robin, and the Cross-OH measurement depends on which shard holds each key — a noisier signal. Step D concentrates keys on the requesting thread's node, producing a consistent and stable cross-node penalty.
 
+### 5.20 Phase 2b: Multi-Node Policy Comparison (DEFERRED)
+
+> **Status: DEFERRED.** Data collected on c6i.metal (commit `6e734ad`, 10 iterations per cell). Results are valid but their inclusion in the evaluation narrative is delayed because page-level eviction smothers policy differentiation (see Limitation Analysis below). The benchmark will be redesigned to isolate what each mechanism actually contributes.
+
+#### Raw Data
+
+**A1: NUMA Cross-Node Overhead** (ARC, thread-local routing, 500 distinct keys, 10 iterations)
+
+| Metric | Mean | Range |
+|--------|------|-------|
+| Local p50 | 97 ns | 96--98 ns |
+| Cross p50 | 108 ns | 106--112 ns |
+| Cross-OH | 11.6% | 8.2--15.5% |
+
+**A2: Routing Strategy** (ARC, 5000 keys/thread)
+
+| Strategy | Self-Get p50 | Cross-Get p50 | Local-hit rate |
+|----------|-------------:|---------------:|---------------:|
+| Round-robin | 652 ns | 735 ns | 0.0% |
+| Thread-local | 509 ns | 606 ns | 50.0% |
+
+**A3: Thread Scaling (Set throughput)**
+
+| Threads | ARC ops/s | REMARC ops/s | AUG-ADAPT ops/s |
+|--------:|----------:|-------------:|----------------:|
+| 4 | 21.9M | 15.0M | 13.8M |
+| 8 | 30.0M | 26.7M | 33.4M |
+| 16 | 60.1M | 53.9M | 61.8M |
+| 32 | 91.5M | 79.0M | 96.4M |
+| 64 | 161.9M | 142.8M | 154.4M |
+
+**Policy Comparison: 10% capacity (16 pages, 960 hot keys)**
+
+| Workload | HR (all policies) | ARC p50 | REMARC p50 | AUG p50 | REMARC mig |
+|----------|:------------------|--------:|-----------:|--------:|-----------:|
+| ZIPF (theta=0.99) | 19.7% | 190 ns | 70 ns | 72 ns | 0 |
+| LOOP (period=2000) | 100.0% | 520 ns | 352 ns | 313 ns | 48 |
+| TEMPORAL (shift at 50k) | 19.4% | 186 ns | 72 ns | 71 ns | 0 |
+| SCAN-RES (50% scan) | 79.9% | 412 ns | 100 ns | 99 ns | 0 |
+
+**Policy Comparison: 3% capacity (4 pages, 192 hot keys)**
+
+| Workload | HR (all policies) | ARC p50 | REMARC p50 | AUG p50 | REMARC mig |
+|----------|:------------------|--------:|-----------:|--------:|-----------:|
+| ZIPF | 3.6% | 194 ns | 188 ns | 210 ns | 0 |
+| LOOP | 23.1% | 191 ns | 186 ns | 190 ns | 48 |
+| TEMPORAL | 4.0% | 87 ns | 193 ns | 185 ns | 0 |
+| SCAN-RES | 12.0% | 179 ns | 98 ns | 81 ns | 0 |
+
+**Latency Breakdown: 10% cap, ZIPF** (representative single iteration)
+
+| Policy | local-hit p50 | remote-hit p50 | miss p50 | lh count | rh count | mi count |
+|--------|-------------:|---------------:|---------:|---------:|---------:|---------:|
+| ARC | 423 ns | 399 ns | 188 ns | 9921 | 9740 | 80339 |
+| REMARC | 218 ns | 6184 ns | 60 ns | 9921 | 9740 | 80339 |
+| AUG-ADAPT | 208 ns | 6749 ns | 62 ns | 9921 | 9740 | 80339 |
+
+**Latency Breakdown: 10% cap, SCAN-RES**
+
+| Policy | local-hit p50 | remote-hit p50 | miss p50 | lh count | rh count | mi count |
+|--------|-------------:|---------------:|---------:|---------:|---------:|---------:|
+| ARC | 546 ns | 529 ns | 187 ns | 39927 | 39978 | 20095 |
+| REMARC | 85 ns | 6026 ns | 69 ns | 39927 | 39978 | 20095 |
+| AUG-ADAPT | 84 ns | 6816 ns | 69 ns | 39927 | 39978 | 20095 |
+
+**Ablation Study (ZIPF, 10% cap, 10 iterations)**
+
+| Step | Policy | Avg p50 | StdDev | Min | Max |
+|------|--------|--------:|-------:|----:|----:|
+| A | ARC (baseline) | 186 ns | 8.3 ns | 181 ns | 209 ns |
+| B | REMARC scoring only | 70 ns | 1.6 ns | 68 ns | 73 ns |
+| C | + migration | 70 ns | 2.0 ns | 68 ns | 74 ns |
+| D | + self-tuning (AUG) | 69 ns | 0.9 ns | 68 ns | 70 ns |
+
+- Delta B--A (TempCtrl scoring): **-117 ns**
+- Delta C--B (Migration): 0 ns
+- Delta D--C (Self-tuning): -1 ns
+
+**Latency Gap Investigation (ZIPF, 10% cap, 10 iterations per run)**
+
+| Run | Condition | ARC p50 | REMARC p50 | AUG p50 |
+|-----|-----------|--------:|-----------:|--------:|
+| A | NoScan (UpdateMinDesire disabled) | 182 ns | 70 ns | 70 ns |
+| B | ReverseOrder (AUG first, ARC last) | 184 ns | 71 ns | 70 ns |
+| C | EqualScan (ARC gets page-warming) | 176 ns | 69 ns | 69 ns |
+
+Gap persists in all three control runs. Verdict: **real structural difference** (ArcList pointer-chasing vs TempCtrl contiguous array).
+
+**Single-Node Control (no thread-local routing, 100k ops)**
+
+| Workload | Capacity | HR (all) | ARC p50 | REMARC p50 | AUG p50 |
+|----------|----------|:---------|--------:|-----------:|--------:|
+| ZIPF | 10% | 25.6% | 56 ns | 60 ns | 60 ns |
+| LOOP | 10% | 100% | 84 ns | 85 ns | 84 ns |
+| TEMPORAL | 10% | 22.5% | 55 ns | 56 ns | 56 ns |
+| SCAN-RES | 10% | 68.2% | 81 ns | 99 ns | 98 ns |
+| ZIPF | 3% | 4.4% | 55 ns | 56 ns | 56 ns |
+| LOOP | 3% | 23.2% | 55 ns | 56 ns | 56 ns |
+| TEMPORAL | 3% | 4.1% | 55 ns | 56 ns | 56 ns |
+| SCAN-RES | 3% | 23.2% | 65 ns | 58 ns | 60 ns |
+
+Single-node: no latency gap. All policies within 1--18 ns of each other.
+
+#### Limitation Analysis
+
+The data above reveals a fundamental problem with using page-level eviction as the evaluation substrate for cache policy comparison:
+
+1. **Hit rates are identical across all policies in every workload.** Page recycling evicts all keys on a page wholesale. No policy can selectively retain high-value keys. The Locality Barrier (~24.5% ceiling at 10% cap, Finding 1) is not just a ceiling --- it is a study validity constraint.
+
+2. **Per-key EvictScore is inert for eviction.** REMARC computes a desire score per key, but this score never selects individual victims. It only influences migration (MigrateScore > MinDesire). Migration fired in exactly one workload (LOOP, 48 migrations). In ZIPF, TEMPORAL, and SCAN-RES: zero migrations.
+
+3. **The 2.6x latency gap is a data structure artifact, not a policy advantage.** The ablation shows the entire gap appears at Step B (adding TempCtrl scoring) with zero contribution from migration or self-tuning. Single-node results confirm no gap exists. The gap is caused by ArcList (pointer-chasing doubly-linked list) vs TempCtrl (contiguous array, cache-line-local access) --- a structural difference in metadata layout, not in eviction intelligence.
+
+4. **What the study actually measures:**
+   - Multi-node routing overhead (A1: 11.6% cross-node penalty)
+   - Data structure latency (TempCtrl array faster than ArcList linked list)
+   - Migration benefit on perfectly periodic workloads (LOOP only)
+   
+   It does **not** measure "which policy makes better eviction decisions" because no policy gets to make that decision.
+
+5. **Remote-hit latency inversion.** In the latency breakdown, REMARC/AUG-ADAPT show remote-hit p50 of 6000--6800 ns vs ARC's 399 ns. This is because REMARC's faster miss path (68 ns vs 188 ns) means the remote-hit path --- which requires cross-node communication --- appears relatively slower. The absolute latency is likely similar, but the distribution shifts.
+
+#### Why Deferred
+
+Including this data as-is in the evaluation would support the narrative that REMARC is "2.6x faster" when in fact:
+
+- Hit rates are identical (no policy advantage in the metric that matters most)
+- The latency advantage comes from array vs linked-list metadata layout
+- Migration is the only REMARC-specific mechanism that actually fires, and only on one synthetic workload
+- The per-key scoring that is REMARC's theoretical contribution never influences eviction
+
+A honest paper cannot claim policy superiority from data structure layout differences. The benchmark must be redesigned to either:
+(a) isolate data structure overhead from policy decisions, or
+(b) test on a substrate where policy decisions actually matter (per-key eviction, compaction, or a separate PolicyBench)
+
+#### What Remains Valid
+
+The following findings from this run are independent of the policy comparison issue:
+
+- **A1 cross-node overhead** (11.6%) is a pure architecture measurement
+- **A2 routing strategy** confirms thread-local routing advantage
+- **A3 thread scaling** shows linear scaling for all policies
+- **Single-node parity** confirms no policy overhead in single-node mode
+- **Migration activates on LOOP** (48 migrations, 40% latency reduction) is a real mechanism observation
+
+These can be extracted and included in the evaluation without the misleading policy comparison framing.
+
+### 5.21 Per-Key Eviction: Design Plan
+
+> **Status: Planned.** This section documents the design decisions, benchmark methodology, and implementation priority for per-key eviction — the change that will make REMARC's EvictScore meaningful and enable fair policy comparison.
+
+#### Root Cause of §5.20 Deferral
+
+Page-level eviction made hit rates identical across all policies because no policy could selectively retain high-value keys. REMARC's EvictScore was computed per-key but never acted on — the only eviction mechanism was wholesale page recycling. The Locality Barrier was not just a ceiling but a study validity constraint.
+
+The fix: add per-key eviction so the policy's scoring actually determines what stays in cache.
+
+#### Architecture: Two-Level REMARC
+
+The original intent was always a two-level control structure, where per-key (fine granularity) and per-page (coarse granularity) each provide different decision spaces:
+
+```
+Level 1: KeyPolicy (per-key REMARC instance)
+  Element:   individual key-value entry within a page
+  State:     TempCtrl[256] per page (uint8_t, already exists)
+  Atoms:     AtomSLocal (recency), AtomSRemote (frequency)
+  Projections: EvictScore(key), MigrateScore(key)
+  Actions:   evict key, keep key
+  Trigger:   capacity pressure → find min EvictScore key → evict → free slot
+
+Level 2: PagePolicy (per-page REMARC instance / super-policy)
+  Element:   page (aggregation of N keys)
+  State:     derived from Level 1 outputs (mean EvictScore, occupancy, tier)
+  Projections: EPage(sum, n) — already exists as RemarcComputeEPage
+  Actions:   migrate page to node, recycle empty page, compact pages, rebalance keys between pages
+  Trigger:   periodic scan, NUMA rebalance, memory pressure
+```
+
+Level 2's inputs come FROM Level 1's outputs. A page's "health" is the aggregate of its keys' scores. EPage already computes this (RemarcComputeEPage). The two levels compose: KeyPolicy decides which keys survive; PagePolicy decides where pages live and when they're recycled.
+
+This is analogous to Memcached's model: slab = allocation unit (our page), item = eviction unit (our key), slab reclamation = lazy/when-empty (our Level 2 recycle). Furrballs adds REMARC scoring at both levels plus NUMA-aware placement.
+
+#### Per-Key Eviction Implementation
+
+**Approach: tombstone + dead-bytes, no in-page reuse (simplest viable)**
+
+1. When capacity pressure: find the key with the lowest EvictScore across all pages
+2. `RemoveKeyEntry(idx)` — removes from KeyIndex/TempCtrl/HotNodes (already exists in Page.h:153)
+3. Erase from CMap (`KeyStore.EraseByHash(hp)`) — already exists for page recycling
+4. Track dead data bytes per page (the freed entry's data region is unreusable but accounted)
+5. Page recycling when `ActiveKeys == 0` — already works (line 1217-1228)
+
+**Why no free-list initially:** The free-list is infrastructure, not policy. It affects ARC and REMARC equally — both use the same mechanism to reclaim freed slots. The policy difference is only in which key gets selected for eviction. Therefore, the simplest viable implementation (tombstone, no in-page reuse) produces a fair comparison. Free-list optimization (SIMD scan, compact offsets) is deferred to a later phase.
+
+**Bump allocator preserved:** Bump handles the fast path (fresh page, sequential writes). Tombstoned entries accumulate dead space. When a page empties completely (ActiveKeys == 0), Recycle() resets the bump pointer. New entries go to pages with bump space; pages with high dead-byte ratios drain naturally as their coldest keys are evicted.
+
+**Future optimization (SIMD free-list):** When the free-list is added, each entry is (offset: uint32_t, size: uint32_t) = 8 bytes. AVX2 YMM register holds 4 entries. First-fit scan becomes vectorized. This matches the existing RemarcScanBatch SIMD pattern. Deferred because it does not affect the policy comparison.
+
+#### Benchmark Methodology: 2×2 Factorial Design
+
+The previous benchmark compared policies at the same (page-level) granularity — no differentiation possible. The new design is a 2×2 factorial:
+
+```
+                    |  1-level (per-key only)  |  2-level (per-key + per-page)
+--------------------|--------------------------|-------------------------------
+ARC scoring         |  ARC-1L: ArcList per-key |  ARC-2L: + page migration/tiering
+REMARC scoring      |  REMARC-1L: TC per-key   |  REMARC-2L: + page super-policy
+```
+
+**Tier 1 (row comparison): ARC-1L vs REMARC-1L**
+Same granularity (per-key), different scoring. Isolates "which scoring mechanism produces better hit rates?" This is the core policy comparison — fair because both operate at the same level.
+
+**Tier 2 (column comparison): REMARC-1L vs REMARC-2L**
+Same scoring, different architecture. Isolates "does the page-level super-policy add value beyond per-key decisions?" This tests the two-level architecture thesis.
+
+**Cross-comparison: ARC-1L vs REMARC-2L**
+"How much does the full REMARC stack improve over baseline ARC?"
+
+**REMARC-BLOOM as speed baseline:**
+Page-level only, Bloom filter for membership, no per-key state. Measures the cost of per-key scoring. This is the fastest variant — useful as a throughput ceiling reference.
+
+#### ARC Data Structure Finding
+
+Phase 2b revealed a 2.6x latency gap between ARC and REMARC that persists across all investigation controls (§5.20). The gap is caused by ArcList (doubly-linked list, pointer-chasing) vs TempCtrl (contiguous array, cache-line-local).
+
+This is not fundamental to the ARC algorithm. ARC requires:
+- O(1) promote (move to most-recent position)
+- O(1) evict (remove least-recent)
+- O(1) lookup (find key in list)
+
+A flat array with a clock hand or generation counter satisfies all three with better cache behavior. This suggests a three-way comparison that isolates data structure from policy:
+
+```
+1. ARC-linked   — current implementation (linked list metadata)
+2. ARC-flat     — same ARC algorithm, flat array layout
+3. REMARC-flat  — different scoring, flat array layout (current)
+```
+
+Deltas:
+- **ARC-flat vs ARC-linked**: pure data structure benefit (measures the cost of pointer-chasing)
+- **REMARC-flat vs ARC-flat**: pure policy benefit (measures scoring quality, equalized layout)
+- **REMARC-flat vs ARC-linked**: combined (total REMARC advantage)
+
+This is a publishable finding independent of REMARC: "ARC's linked list implementation is 2-3x slower than a flat array for cache metadata access in NUMA settings, and this is not fundamental to the adaptive replacement algorithm." ARC's strength (p-adaptation between recency and frequency) comes with a hidden cost (linked list pointer-chasing). REMARC's simpler 2-atom composition avoids this cost by design.
+
+**Double-edged sword characterization:**
+- ARC: smarter adaptive mechanism → potentially better hit rates, but slower per-operation metadata access
+- REMARC: simpler scoring → potentially worse hit rates, but faster per-operation metadata access
+- The total throughput comparison (hit rate × latency) is workload-dependent and untested with per-key eviction
+
+#### Implementation Priority
+
+1. **Per-key eviction (simplest viable):** tombstone + dead-bytes, no in-page reuse. Fair comparison, minimal code changes. Estimated: Page.h (~20 lines), Furrballs.cpp (~40 lines).
+2. **2×2 benchmark:** re-run Phase 2b with per-key eviction. Same workloads, same methodology. Expect hit rate divergence.
+3. **3-way comparison (ARC-linked vs ARC-flat vs REMARC-flat):** requires ARC-flat implementation. Isolates data structure from policy.
+4. **Optimization (deferred):** SIMD free-list, compact uint32_t offsets, REMARC-BLOOM speed baseline. These are engineering improvements that do not affect the policy comparison.
+
 ## 6. Current Status
 
-**Phase 1 is complete.** **Phase 2a is complete.**
+**Phase 1 is complete.** **Phase 2a is complete.** **Phase 2b data collected but evaluation deferred** (§5.20: page-level eviction smothers policy differentiation).
 
 Phase 1 delivered artifacts:
 - Key-based Set/Get API with flat KeyStore (CAS bump allocator, round-robin + thread-local routing, per-node shards; no eviction policy in Phase 1)
@@ -1811,6 +2070,9 @@ The project is on the `numa-focus` branch. Licensed under MIT. Build and test ar
 - How does the bump allocator's fragmentation ratio evolve under real workloads?
 - ~~Will the per-key `unique_ptr<SeqLock>` allocation overhead become a bottleneck at scale?~~ **Answered: eliminated in Phase 2a.** CMap stores values inline in cacheline-aligned slots with no per-key heap allocation.
 - ~~**Hypothesized scaling advantage (untested):** Per-node sharding creates N independent contention domains...~~ **Answered: validated for reads, bottleneck identified for writes.** Get throughput scales +72% from 4→64 threads (lock partitioning prevents cross-node read contention). Set throughput degrades -79% due to SpinLock bottleneck at 32 threads/node (§5.19). The read scaling confirms the hypothesis; the write bottleneck identifies the next optimization target.
+- **Page-level eviction smothers policy differentiation.** Phase 2b benchmark data (§5.20) shows identical hit rates across ARC/REMARC/AUG-ADAPT in all workloads. The 2.6x latency gap is a data structure layout artifact (ArcList vs TempCtrl), not a policy advantage. Per-key EvictScore is inert for eviction. Benchmark redesign required before policy comparison can be meaningful. **Plan documented in §5.21.**
+- **ARC's linked list is a performance bottleneck independent of policy choice.** The 2.6x latency gap between ArcList (pointer-chasing doubly-linked list) and TempCtrl (contiguous array) is not fundamental to the ARC algorithm. A flat array with clock hand satisfies ARC's O(1) promote/evict/lookup requirements with better cache behavior. This is a publishable finding: ARC-flat would close the data structure gap while keeping ARC's adaptive p-adjustment. The policy comparison (ARC vs REMARC) should be conducted with equalized data structure layouts (§5.21: 3-way comparison ARC-linked vs ARC-flat vs REMARC-flat).
+- **ARC is a double-edged sword: smarter adaptation at higher per-operation cost.** ARC's p-adaptation between recency and frequency is more sophisticated than REMARC's 2-atom composition, potentially yielding better hit rates. But ArcList pointer-chasing makes each metadata operation 2-3x slower. The total throughput (hit rate x latency) tradeoff is workload-dependent and cannot be evaluated until per-key eviction is implemented.
 
 ## 8. Roadmap
 
@@ -1857,10 +2119,26 @@ The project is on the `numa-focus` branch. Licensed under MIT. Build and test ar
 - [x] Page recycling: HOT -> EMPTY -> COLD -> FREEZE -> EMPTY transitions, `ResetBump()`
 - [x] Policy framework validation: 24 variants evaluated in PolicyBench, compile-time template type parameter
 - [x] AUG-ADAPT self-tuning policy: feedback controller achieving 99.33% looping + ARC-equivalent Zipf/ScanRes/Temporal
+- [x] Phase 2b benchmark data collected on c6i.metal (§5.20: DEFERRED, page-level eviction smothers policy differentiation)
+
+#### Phase 2c: Per-Key Eviction + Fair Policy Comparison
+- [ ] Per-key eviction: tombstone + dead-bytes, no in-page reuse (simplest viable implementation)
+- [ ] EvictOneKey: scan pages for min EvictScore key, remove from Page + KeyStore
+- [ ] Page.h: dead-bytes tracking per page, page recycling when ActiveKeys == 0
+- [ ] ARC per-key eviction: use ArcList position (tail of T2) for victim selection instead of page recycling
+- [ ] 2x2 factorial benchmark: ARC-1L vs REMARC-1L (scoring quality), REMARC-1L vs REMARC-2L (architecture benefit)
+- [ ] REMARC-BLOOM speed baseline: page-level only, Bloom filter membership, no per-key state
+- [ ] Re-run Phase 2b workloads with per-key eviction, expect hit rate divergence
+- [ ] ARC-flat variant: same ARC algorithm with flat array layout (isolates data structure from policy)
+- [ ] 3-way comparison: ARC-linked vs ARC-flat vs REMARC-flat
+
+#### Phase 2d: Two-Level REMARC + Optimization
+- [ ] PagePolicy as explicit REMARC instance (page-level atoms/projections)
 - [ ] Page eviction: E_page aggregation from per-key scores, page flush to RocksDB for E_page > theta_e
 - [ ] Cold page eviction to whole-page RocksDB persistence (PageBlob format)
 - [ ] Ghost hit recovery to whole-page RocksDB reload (speculative, full page)
 - [ ] `evictedKeyIndex_` (H2 to PageId) for ghost hit lookup
+- [ ] SIMD free-list optimization: uint32_t offsets, AVX2 first-fit scan, deferred (infrastructure, not policy)
 - [ ] Multi-node simulation validation in PolicyBench (desire encoding, 2-node AUG-ADAPT)
 
 ### Phase 3: Adaptive Memory Pooling (AMP)
