@@ -44,15 +44,7 @@ format:
 ---
 
 ## Status
-v1.20.0 --- §5.23 updated with HYBRID-POS (position+score) and HYBRID-FB (feedback) results. POS preserves recency but loses loop detection. FB never triggers. Cross-reference to REMARC paper Findings 32-34. REMARC paper v0.10.0 with three new findings.
-v1.19.0 --- §5.23 ARC-REMARC Hybrid: negative finding. REMARC per-key TempCtrl scoring does not subsume ARC p-adaptation. Hybrid wins Scan-Res (+2%), Looping (+97%) but loses Zipfian (-5%), Temporal (-21%). Mechanisms are complementary, not substitutable. Supports REMARC positioning as multi-action framework (eviction+migration), not better eviction.
-v1.18.0 --- Strategic reframe from "NUMA-aware cache" to "topology-aware resource placement for asymmetric memory systems." Title, abstract, problem statement, architecture, evaluation, related work, conclusion updated. NUMA framed as first validation instance, CXL/HBM tiers as target. ~90 mechanical substitutions across all sections.
-v1.17.0 --- §5.22 ARC-FLATLL2 limits documented and tested (15/15 pass): uint32_t capacity bound (2.1B), per-list 2×cap occupancy, cap=1 edge case, pure scan, single-key, high churn, thread safety. --limits mode added to PolicyBench.
-v1.16.0 --- §5.22 updated with ARC-FLATLL2 optimized variant: uint32_t indices (Slot 32→20 bytes), pre-allocated arena, removed redundant cached_ set. ARC-FLATLL2 beats ARC by +87--172% throughput, ranked #2 KPI (71.60) vs ARC #7 (59.78). Hit rates identical.
-v1.15.0 --- §5.22 ARC-Flat: Data Structure Improvement to ARC. Three variants compared (ARC/ARC-FLAT/ARC-FLATLL), all produce identical hit rates. ARC-FLATLL (flat-linked-list) beats ARC-linked on every workload (+1.5% to +34%), ranked #3 overall vs ARC #6. Free-list eliminates all per-operation heap allocation. Implementation details, optimization opportunities, REMARC+ARC hybrid design outlined.
-v1.14.0 --- §5.21 per-key eviction design plan: two-level REMARC architecture (KeyPolicy + PagePolicy), 2×2 factorial benchmark (ARC vs REMARC, 1-level vs 2-level), ARC data structure finding (linked list 2-3x slower than flat array, not fundamental to ARC algorithm), 3-way comparison plan (ARC-linked vs ARC-flat vs REMARC-flat). Roadmap updated: Phase 2c (per-key eviction), Phase 2d (two-level + optimization). §7 Risks updated with ARC double-edged sword analysis. REMARC-BLOOM noted as speed baseline.
-v1.13.0 --- Phase 2b benchmark data collected on c6i.metal (commit 6e734ad). §5.20 added with full tables, DEFERRED status. Page-level eviction smothers policy differentiation: hit rates identical across all policies in all workloads, 2.6x latency gap is data structure artifact (ArcList vs TempCtrl layout), migration only fires on LOOP. Policy comparison deferred pending benchmark redesign to isolate data structure overhead from policy decisions.
-v1.12.0 --- REMARC paper v0.8.0 with Finding 31 (QuotaFree: pure prediction insufficient without structural scan detection). Consistency pass on both papers (53 issues: heading numbers, cross-refs, stale data, variant counts, Furrballs refs removed from REMARC paper). Whitepaper updated: QuotaFree in taxonomy, Related Work "two-level ARC"→"REMARC unified policy", §2.1.1 future tense fixed.
+**v1.21.0** --- Topology-aware resource placement for asymmetric memory systems. REMARC as unified eviction/migration policy. ARC-FLATLL2 closes the data structure gap (+87--172% over ARC, identical hit rates). ARC-REMARC hybrid experiments confirm REMARC's value is the migration axis, not eviction improvement (Findings 32--34 in REMARC paper). Status section compacted; changelog moved to Appendix C.
 
 ## Abstract
 Furrballs is a topology-aware resource placement library for asymmetric memory systems. Asymmetric memory --- where memory domains have different access latencies (NUMA, CXL-attached memory, HBM tiers) --- is the defining characteristic of modern server memory hierarchies. Furrballs uses memory topology as a first-class input to per-page placement and eviction decisions. The core contribution is per-page allocation on specific memory domains, with REMARC (Reduction-Modeled Adaptive Replacement Cache) as the unified eviction and migration policy. REMARC reduces three access dimensions (recency, frequency, locality) into a 2D state space (S_local, S_remote), producing dual action scores (Evict, Migrate) via precomputed lookup tables scored with SSE2 SIMD arithmetic. The per-key Evict scores aggregate to per-page eviction decisions, collapsing the key-level and page-level policies into a single mechanism with one scanner and two thresholds. Pages are pre-allocated at initialization via one physical allocation per memory domain (NUMA node in the current implementation), subdivided into logical pages filled by a bump allocator. Key routing supports round-robin distribution and thread-local placement (via a runtime config flag). The library is implemented in C++20, uses a platform abstraction layer (Numatic) for memory topology operations, and integrates a custom synchronization library (StreamLine) for thread coordination.
@@ -2491,3 +2483,17 @@ QEMU VM:
 ```bash
 ~/vm/furrballs/furr.sh benchmark  # Build on host, run in VM
 ```
+
+## Appendix C: Changelog
+
+| Version | Summary |
+|---------|---------|
+| v1.20.0 | §5.23 HYBRID-POS and HYBRID-FB results. Cross-reference to REMARC paper Findings 32--34. |
+| v1.19.0 | §5.23 ARC-REMARC Hybrid: negative finding. REMARC scoring and ARC p-adaptation are complementary, not substitutable. |
+| v1.18.0 | Strategic reframe to topology-aware asymmetric memory. ~90 substitutions across all sections. |
+| v1.17.0 | §5.22 ARC-FLATLL2 limits: 15/15 pass, 8 documented limits. `--limits` mode added. |
+| v1.16.0 | §5.22 ARC-FLATLL2 optimized variant: uint32_t indices, pre-allocated arena. +87--172% over ARC. |
+| v1.15.0 | §5.22 ARC-Flat data structure improvement. ARC-FLATLL +1.5--34% over ARC-linked. |
+| v1.14.0 | §5.21 per-key eviction design plan. Two-level REMARC architecture. Roadmap Phase 2c/2d. |
+| v1.13.0 | Phase 2b benchmark on c6i.metal. §5.20 DEFERRED: page-level eviction smothers policy differentiation. |
+| v1.12.0 | REMARC paper v0.8.0 Finding 31. Consistency pass: 53 issues fixed across both papers. |
