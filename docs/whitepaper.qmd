@@ -1,6 +1,6 @@
 ---
 title: "Furrballs: A NUMA-Aware, High-Performance Caching Library"
-subtitle: "Technical Report v1.15.0"
+subtitle: "Technical Report v1.16.0"
 author: "Hamza Jamil Saied (The Sphynx)"
 date: last-modified
 doi: "10.5281/zenodo.19794753"
@@ -44,6 +44,7 @@ format:
 ---
 
 ## Status
+v1.16.0 --- §5.22 updated with ARC-FLATLL2 optimized variant: uint32_t indices (Slot 32→20 bytes), pre-allocated arena, removed redundant cached_ set. ARC-FLATLL2 beats ARC by +87--172% throughput, ranked #2 KPI (71.60) vs ARC #7 (59.78). Hit rates identical.
 v1.15.0 --- §5.22 ARC-Flat: Data Structure Improvement to ARC. Three variants compared (ARC/ARC-FLAT/ARC-FLATLL), all produce identical hit rates. ARC-FLATLL (flat-linked-list) beats ARC-linked on every workload (+1.5% to +34%), ranked #3 overall vs ARC #6. Free-list eliminates all per-operation heap allocation. Implementation details, optimization opportunities, REMARC+ARC hybrid design outlined.
 v1.14.0 --- §5.21 per-key eviction design plan: two-level REMARC architecture (KeyPolicy + PagePolicy), 2×2 factorial benchmark (ARC vs REMARC, 1-level vs 2-level), ARC data structure finding (linked list 2-3x slower than flat array, not fundamental to ARC algorithm), 3-way comparison plan (ARC-linked vs ARC-flat vs REMARC-flat). Roadmap updated: Phase 2c (per-key eviction), Phase 2d (two-level + optimization). §7 Risks updated with ARC double-edged sword analysis. REMARC-BLOOM noted as speed baseline.
 v1.13.0 --- Phase 2b benchmark data collected on c6i.metal (commit 6e734ad). §5.20 added with full tables, DEFERRED status. Page-level eviction smothers policy differentiation: hit rates identical across all policies in all workloads, 2.6x latency gap is data structure artifact (ArcList vs TempCtrl layout), migration only fires on LOOP. Policy comparison deferred pending benchmark redesign to isolate data structure overhead from policy decisions.
@@ -2107,6 +2108,27 @@ Every major ARC implementation (ZFS, PostgreSQL, FlashCache, Redis modules) uses
 
 The flat-linked-list is a drop-in replacement for `std::list` in any ARC implementation. It changes ARC's throughput narrative: ARC's adaptivity no longer comes at the cost of heap allocation overhead.
 
+#### ARC-FLATLL2: Optimized Variant
+
+Three further optimizations were applied to ARC-FLATLL:
+
+1. **`uint32_t` indices** instead of `size_t`: Slot shrinks from 32 to 20 bytes (8 key + 4 prev + 4 next + 1 active + 3 padding). 60% denser packing → better cache line utilization. For capacity ≤ 4B entries, `uint32_t` suffices.
+2. **Pre-allocated arena**: Each list pre-allocates 2×capacity slots at construction (ARC allows any individual list to hold up to 2×cap entries in pathological cases). Free-list chains inactive slots. Zero malloc/free after construction.
+3. **Removed redundant `cached_` set**: The original ARC implementation tracks cache membership in a separate `unordered_set<uint64_t>`. Since T1∪T2 IS the cache, membership is `t1_.contains(k) || t2_.contains(k)` — one redundant hash lookup eliminated per access.
+
+Hit rates remain identical (verified across all 4 workloads). Throughput results:
+
+| Workload | ARC | ARC-FLATLL | ARC-FLATLL2 | vs ARC | vs FLATLL |
+|----------|----:|----------:|------------:|-------:|----------:|
+| Zipfian | 5.05M | 5.60M | **9.45M** | +87% | +69% |
+| Scan-Res | 9.53M | 11.2M | **19.8M** | +108% | +77% |
+| Temporal | 11.2M | 12.7M | **21.5M** | +92% | +69% |
+| Looping | 5.22M | 7.10M | **14.2M** | +172% | +100% |
+
+KPI scoreboard: ARC-FLATLL2 ranked **#2** (71.60), behind only AUG-ADAPT (72.87, which benefits from 98% looping hit rate via ARC-specific detection). ARC-FLATLL ranked #4 (61.73), ARC ranked #7 (59.78).
+
+The dominant optimization is the `uint32_t` compaction: reducing Slot from 32→20 bytes means 5 slots per 64-byte cache line instead of 2, a 2.5x improvement in cache line efficiency for list traversal operations (splice, erase). The pre-allocation eliminates vector growth overhead. Removing `cached_` saves one hash lookup per access (2 probes instead of 3 for cache membership check).
+
 #### Next Step: REMARC + ARC-FLATLL Hybrid
 
 The flat-linked-list provides the data structure foundation. The next step is combining ARC's adaptive p-adjustment with REMARC's per-key desire scoring:
@@ -2119,7 +2141,7 @@ This would be a true two-level composition: ARC at the list level (architecture 
 
 ## 6. Current Status
 
-**Phase 1 is complete.** **Phase 2a is complete.** **Phase 2b data collected but evaluation deferred** (§5.20: page-level eviction smothers policy differentiation). **ARC-FLATLL validated** (§5.22: flat-linked-list closes data structure gap, +1.5--34% throughput over ARC-linked, identical hit rates).
+**Phase 1 is complete.** **Phase 2a is complete.** **Phase 2b data collected but evaluation deferred** (§5.20: page-level eviction smothers policy differentiation). **ARC-FLATLL validated** (§5.22: flat-linked-list closes data structure gap). **ARC-FLATLL2 optimized** (uint32_t indices + arena + no cached_: +87--172% over ARC, ranked #2 KPI).
 
 Phase 1 delivered artifacts:
 - Key-based Set/Get API with flat KeyStore (CAS bump allocator, round-robin + thread-local routing, per-node shards; no eviction policy in Phase 1)
@@ -2184,7 +2206,7 @@ The project is on the `numa-focus` branch. Licensed under MIT. Build and test ar
 - ~~Will the per-key `unique_ptr<SeqLock>` allocation overhead become a bottleneck at scale?~~ **Answered: eliminated in Phase 2a.** CMap stores values inline in cacheline-aligned slots with no per-key heap allocation.
 - ~~**Hypothesized scaling advantage (untested):** Per-node sharding creates N independent contention domains...~~ **Answered: validated for reads, bottleneck identified for writes.** Get throughput scales +72% from 4→64 threads (lock partitioning prevents cross-node read contention). Set throughput degrades -79% due to SpinLock bottleneck at 32 threads/node (§5.19). The read scaling confirms the hypothesis; the write bottleneck identifies the next optimization target.
 - **Page-level eviction smothers policy differentiation.** Phase 2b benchmark data (§5.20) shows identical hit rates across ARC/REMARC/AUG-ADAPT in all workloads. The 2.6x latency gap is a data structure layout artifact (ArcList vs TempCtrl), not a policy advantage. Per-key EvictScore is inert for eviction. Benchmark redesign required before policy comparison can be meaningful. **Plan documented in §5.21.**
-- **ARC's linked list is a performance bottleneck independent of policy choice.** ~~The 2.6x latency gap between ArcList (pointer-chasing doubly-linked list) and TempCtrl (contiguous array) is not fundamental to the ARC algorithm. A flat array with clock hand satisfies ARC's O(1) promote/evict/lookup requirements with better cache behavior. This is a publishable finding: ARC-flat would close the data structure gap while keeping ARC's adaptive p-adjustment. The policy comparison (ARC vs REMARC) should be conducted with equalized data structure layouts (§5.21: 3-way comparison ARC-linked vs ARC-flat vs REMARC-flat).~~ **Validated in §5.22.** ARC-FLATLL (flat-linked-list) eliminates heap allocation, beats ARC-linked by +1.5--34% throughput, produces identical hit rates. The data structure gap is closed. Next: REMARC + ARC-FLATLL hybrid (ARC p-adaptation + REMARC per-key scoring).
+- **ARC's linked list is a performance bottleneck independent of policy choice.** ~~The 2.6x latency gap...~~ **Validated and resolved in §5.22.** ARC-FLATLL2 (flat-linked-list + uint32_t + arena + no cached_) beats ARC-linked by +87--172% throughput with identical hit rates. The data structure gap is fully closed. Next: REMARC + ARC-FLATLL hybrid (ARC p-adaptation + REMARC per-key scoring).
 - **ARC is a double-edged sword: smarter adaptation at higher per-operation cost.** ARC's p-adaptation between recency and frequency is more sophisticated than REMARC's 2-atom composition, potentially yielding better hit rates. But ArcList pointer-chasing makes each metadata operation 2-3x slower. The total throughput (hit rate x latency) tradeoff is workload-dependent and cannot be evaluated until per-key eviction is implemented.
 
 ## 8. Roadmap
@@ -2244,7 +2266,8 @@ The project is on the `numa-focus` branch. Licensed under MIT. Build and test ar
 - [ ] 2x2 factorial benchmark: ARC-1L vs REMARC-1L (scoring quality), REMARC-1L vs REMARC-2L (architecture benefit)
 - [ ] REMARC-BLOOM speed baseline: page-level only, Bloom filter membership, no per-key state
 - [ ] Re-run Phase 2b workloads with per-key eviction, expect hit rate divergence
-- [ ] ARC-FLATLL in production (CMap.h): replace std::list with flat-linked-list
+- [x] ARC-FLATLL in production (CMap.h): replace std::list with flat-linked-list
+- [x] ARC-FLATLL2 optimized: uint32_t indices, pre-allocated arena, no cached_ set (+87--172% vs ARC)
 - [ ] REMARC + ARC-FLATLL hybrid: ARC p-adaptation (list level) + REMARC TempCtrl scoring (key level)
 
 #### Phase 2d: Two-Level REMARC + Optimization

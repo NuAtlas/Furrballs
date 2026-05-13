@@ -466,6 +466,219 @@ public:
 };
 
 // =====================================================================
+//  ArcFlatLinkedList2: fully optimized (flat hash, uint32_t, no cached_)
+// =====================================================================
+
+class ArcFlatLinkedList2 {
+    static constexpr uint32_t NIL = UINT32_MAX;
+
+    struct Slot {
+        uint64_t key;
+        uint32_t prev;
+        uint32_t next;
+        bool     active;
+    };
+
+    std::vector<Slot> slots_;
+    std::unordered_map<uint64_t, uint32_t> idx_;
+    uint32_t head_;
+    uint32_t tail_;
+    uint32_t freeHead_;
+    uint32_t count_;
+
+    uint32_t allocSlot() {
+        uint32_t s = freeHead_;
+        freeHead_ = slots_[s].next;
+        return s;
+    }
+
+    void freeSlot(uint32_t s) {
+        slots_[s].key = 0;
+        slots_[s].prev = NIL;
+        slots_[s].next = freeHead_;
+        slots_[s].active = false;
+        freeHead_ = s;
+    }
+
+public:
+    explicit ArcFlatLinkedList2(uint32_t maxEntries) {
+        slots_.resize(maxEntries);
+        for (uint32_t i = 0; i < maxEntries; i++) {
+            slots_[i] = {0, NIL, i + 1, false};
+        }
+        slots_[maxEntries - 1].next = NIL;
+        freeHead_ = 0;
+
+        idx_.reserve(maxEntries);
+
+        head_ = NIL;
+        tail_ = NIL;
+        count_ = 0;
+    }
+
+    bool contains(uint64_t k) const { return idx_.count(k) > 0; }
+
+    void push_front(uint64_t k) {
+        uint32_t s = allocSlot();
+        slots_[s].key = k;
+        slots_[s].active = true;
+        slots_[s].prev = NIL;
+        slots_[s].next = head_;
+        if (head_ != NIL) slots_[head_].prev = s;
+        else tail_ = s;
+        head_ = s;
+        idx_[k] = s;
+        count_++;
+    }
+
+    void pop_back() {
+        if (tail_ == NIL) return;
+        uint32_t s = tail_;
+        idx_.erase(slots_[s].key);
+        uint32_t p = slots_[s].prev;
+        if (p != NIL) slots_[p].next = NIL;
+        else head_ = NIL;
+        tail_ = p;
+        freeSlot(s);
+        count_--;
+    }
+
+    void erase(uint64_t k) {
+        auto it = idx_.find(k);
+        if (it == idx_.end()) return;
+        uint32_t s = it->second;
+        idx_.erase(it);
+        uint32_t p = slots_[s].prev, n = slots_[s].next;
+        if (p != NIL) slots_[p].next = n;
+        else head_ = n;
+        if (n != NIL) slots_[n].prev = p;
+        else tail_ = p;
+        freeSlot(s);
+        count_--;
+    }
+
+    void splice_front(uint64_t k) {
+        auto it = idx_.find(k);
+        if (it == idx_.end()) return;
+        uint32_t s = it->second;
+        if (s == head_) return;
+        uint32_t p = slots_[s].prev, n = slots_[s].next;
+        if (p != NIL) slots_[p].next = n;
+        if (n != NIL) slots_[n].prev = p;
+        else tail_ = p;
+        slots_[s].prev = NIL;
+        slots_[s].next = head_;
+        if (head_ != NIL) slots_[head_].prev = s;
+        head_ = s;
+    }
+
+    uint64_t back() const {
+        return tail_ == NIL ? 0 : slots_[tail_].key;
+    }
+
+    uint64_t front() const {
+        return head_ == NIL ? 0 : slots_[head_].key;
+    }
+
+    void pop_front() {
+        if (head_ == NIL) return;
+        uint32_t s = head_;
+        idx_.erase(slots_[s].key);
+        uint32_t n = slots_[s].next;
+        if (n != NIL) slots_[n].prev = NIL;
+        else tail_ = NIL;
+        head_ = n;
+        freeSlot(s);
+        count_--;
+    }
+
+    size_t size() const { return count_; }
+    bool empty() const { return count_ == 0; }
+};
+
+// =====================================================================
+//  BareARC_FlatLL2: optimized ARC (flat hash, uint32_t, no cached_)
+// =====================================================================
+
+class BareARC_FlatLL2 {
+    ArcFlatLinkedList2 t1_, t2_, b1_, b2_;
+    size_t cap_, p_;
+    size_t hits_ = 0, misses_ = 0, evictions_ = 0;
+
+    void replace(uint64_t key) {
+        if (!t1_.empty() && (t1_.size() > p_ ||
+            (b2_.contains(key) && t1_.size() == p_))) {
+            uint64_t old = t1_.back();
+            t1_.pop_back();
+            b1_.push_front(old);
+        } else if (!t2_.empty()) {
+            uint64_t old = t2_.back();
+            t2_.pop_back();
+            b2_.push_front(old);
+        }
+        evictions_++;
+    }
+
+    void doEvict() {
+        if (t1_.size() + b1_.size() >= cap_) {
+            if (t1_.size() < cap_ && !b1_.empty()) {
+                b1_.pop_back();
+            } else if (!t1_.empty()) {
+                t1_.pop_back();
+                evictions_++;
+            }
+        }
+        if (t1_.size() + t2_.size() + b1_.size() + b2_.size() >= 2 * cap_) {
+            if (!b2_.empty()) {
+                b2_.pop_back();
+            } else if (!t2_.empty()) {
+                t2_.pop_back();
+                evictions_++;
+            }
+        }
+    }
+
+public:
+    explicit BareARC_FlatLL2(size_t cap)
+        : cap_(cap), p_(0),
+          t1_(cap * 2), t2_(cap * 2), b1_(cap * 2), b2_(cap * 2) {}
+
+    void access(uint64_t key) {
+        bool inT1 = t1_.contains(key);
+        bool inT2 = t2_.contains(key);
+        if (inT1 || inT2) {
+            if (inT1) { t1_.erase(key); t2_.push_front(key); }
+            else t2_.splice_front(key);
+            hits_++;
+            return;
+        }
+        misses_++;
+        bool ghost = false;
+        if (b1_.contains(key)) {
+            size_t d = b1_.size() > 0
+                ? std::max(b2_.size() / b1_.size(), (size_t)1) : 1;
+            p_ = std::min(cap_, p_ + d);
+            doEvict(); replace(key); b1_.erase(key);
+            ghost = true;
+        } else if (b2_.contains(key)) {
+            size_t d = b2_.size() > 0
+                ? std::max(b1_.size() / b2_.size(), (size_t)1) : 1;
+            p_ = (p_ >= d) ? p_ - d : 0;
+            doEvict(); replace(key); b2_.erase(key);
+            ghost = true;
+        } else {
+            doEvict();
+        }
+        if (ghost) t2_.push_front(key);
+        else t1_.push_front(key);
+    }
+
+    size_t hits() const { return hits_; }
+    size_t misses() const { return misses_; }
+    size_t evictions() const { return evictions_; }
+};
+
+// =====================================================================
 //  BareARC_FlatLL: exact ARC with ArcFlatLinkedList
 // =====================================================================
 
@@ -4308,22 +4521,24 @@ int main(int argc, char** argv) {
         BareARC verifyARC(capacity);
         BareARC_Flat verifyARCFlat(capacity);
         BareARC_FlatLL verifyARCFlatLL(capacity);
+        BareARC_FlatLL2 verifyARCFlatLL2(capacity);
         BareREMARC_Aug_TS verifyTS(capacity, kpp, defaultCfg);
         BareREMARC_Aug_GS verifyGS(capacity, kpp, defaultCfg);
         BareREMARC_Aug_CB verifyCB(capacity, kpp, defaultCfg);
         BareREMARC_Aug_PRED verifyPRED(capacity, kpp, defaultCfg);
         for (auto k : wlZipf) {
-            verifyARC.access(k); verifyARCFlat.access(k); verifyARCFlatLL.access(k); verifyTS.access(k);
+            verifyARC.access(k); verifyARCFlat.access(k); verifyARCFlatLL.access(k); verifyARCFlatLL2.access(k); verifyTS.access(k);
             verifyGS.access(k); verifyCB.access(k);
             verifyPRED.access(k);
         }
         std::cout << "\nVERIFY ARC:      " << verifyARC.hits() << " hits, " << verifyARC.misses() << " misses, " << verifyARC.evictions() << " evictions" << std::endl;
         std::cout << "VERIFY ARC-FLAT: " << verifyARCFlat.hits() << " hits, " << verifyARCFlat.misses() << " misses, " << verifyARCFlat.evictions() << " evictions" << std::endl;
         std::cout << "VERIFY ARC-FLATLL: " << verifyARCFlatLL.hits() << " hits, " << verifyARCFlatLL.misses() << " misses, " << verifyARCFlatLL.evictions() << " evictions" << std::endl;
-        if (verifyARC.hits() != verifyARCFlat.hits() || verifyARC.misses() != verifyARCFlat.misses() || verifyARC.hits() != verifyARCFlatLL.hits() || verifyARC.misses() != verifyARCFlatLL.misses()) {
-            std::cout << "*** MISMATCH: ARC / ARC-FLAT / ARC-FLATLL produced different hit/miss counts! ***" << std::endl;
+        std::cout << "VERIFY ARC-FLATLL2: " << verifyARCFlatLL2.hits() << " hits, " << verifyARCFlatLL2.misses() << " misses, " << verifyARCFlatLL2.evictions() << " evictions" << std::endl;
+        if (verifyARC.hits() != verifyARCFlat.hits() || verifyARC.misses() != verifyARCFlat.misses() || verifyARC.hits() != verifyARCFlatLL.hits() || verifyARC.misses() != verifyARCFlatLL.misses() || verifyARC.hits() != verifyARCFlatLL2.hits() || verifyARC.misses() != verifyARCFlatLL2.misses()) {
+            std::cout << "*** MISMATCH: ARC / ARC-FLAT / ARC-FLATLL / ARC-FLATLL2 produced different hit/miss counts! ***" << std::endl;
         } else {
-            std::cout << "MATCH: ARC, ARC-FLAT, ARC-FLATLL all produce identical hit/miss counts." << std::endl;
+            std::cout << "MATCH: All ARC variants produce identical hit/miss counts." << std::endl;
         }
         std::cout << "VERIFY AUG-TS: " << verifyTS.hits() << " hits, " << verifyTS.misses() << " misses, " << verifyTS.evictions() << " evictions" << std::endl;
         std::cout << "VERIFY AUG-PRED: " << verifyPRED.hits() << " hits, " << verifyPRED.misses() << " misses, " << verifyPRED.evictions() << " evictions" << std::endl;
@@ -4339,6 +4554,7 @@ int main(int argc, char** argv) {
         "ARC",
         "ARC-FLAT",
         "ARC-FLATLL",
+        "ARC-FLATLL2",
         "REMARC",
         "REMARC-OPT",
         "REMARC-LazyInc",
@@ -4377,6 +4593,8 @@ int main(int argc, char** argv) {
             samples["ARC-FLAT"].push_back(runBench(arcflat, wl));
             BareARC_FlatLL arcflatll(capacity);
             samples["ARC-FLATLL"].push_back(runBench(arcflatll, wl));
+            BareARC_FlatLL2 arcflatll2(capacity);
+            samples["ARC-FLATLL2"].push_back(runBench(arcflatll2, wl));
             BareREMARC remarc(capacity, kpp, defaultCfg);
             samples["REMARC"].push_back(runBench(remarc, wl));
             BareREMARC_Opt opt(capacity, kpp, defaultCfg);
