@@ -3,7 +3,7 @@ title: "REMARC: Reduction-Modeled Adaptive Replacement --- A Composable Policy F
 subtitle: "Multi-Dimensional Policy Composition for Asymmetric Memory Systems"
 author: "Hamza Jamil Saied (The Sphynx)"
 date: last-modified
-version: "0.9.0"
+version: "0.10.0"
 doi: "10.5281/zenodo.19794758"
 lang: en
 babel-lang: none
@@ -1176,6 +1176,18 @@ This tension suggests three research directions:
 
 **Finding 31 (Pure Prediction Is Insufficient Without Structural Scan Detection).** The QuotaFree experiment demonstrates that Belady-style prediction ($predictedNext = lastEpoch + avgGap$) cannot replace ARC's structural machinery. The bottleneck is cold keys with no access history: without future knowledge, a key's first access provides zero information about whether it will be re-accessed. ARC's ghost lists solve this by observing eviction outcomes (ghost hit vs ghost miss)---a one-step-delayed form of future information. Any tiered memory policy that must handle workloads with cold-key scans (Zipfian long tail, sequential scans) requires some form of structural scan detection; prediction alone is insufficient.
 
+### ARC-REMARC Hybrid Experiments
+
+The following three experiments test whether REMARC's per-key TempCtrl scoring can replace or improve ARC's LRU-within-list eviction. All use ARC's full p-adaptation (ghost lists, p-adjustment) with ARC-FLATLL2 as the base data structure. The only change is *which entry within the chosen list* gets evicted.
+
+**Finding 32 (Per-Key Scoring Does Not Subsume p-Adaptation).** Replacing ARC's LRU tail eviction with min-TempCtrl eviction (pop the entry with lowest desire score) produces mixed results: Zipfian -5.2%, Scan-Resistant +2.0%, Temporal Shift -21.4%, Looping +97%. The Temporal Shift catastrophe occurs because TempCtrl reflects *cumulative* access frequency, not *current* access pattern. When the workload shifts phases, keys that were hot in phase 1 retain high TempCtrl and block phase 2 keys. ARC's ghost lists handle phase shifts immediately (ghost hit → p adjusts → eviction redirects). The mechanisms are complementary: TempCtrl captures frequency, p-adaptation captures temporal phase. Neither subsumes the other.
+
+**Finding 33 (Position-Weighted Scoring Preserves Recency but Loses Loop Detection).** Combining position in the linked list with TempCtrl (score = TempCtrl - position_weight) produces nearly identical hit rates to ARC on Zipfian (+0.2%) and Temporal Shift (+0.02%), confirming that position weighting correctly preserves recency. However, it completely loses the Looping benefit (5% vs 97%) because position weighting penalizes entries that aren't at the MRU end, even if they're frequently accessed within a loop. The position-based approach effectively reverts to LRU-like behavior, negating the value of per-key scoring.
+
+**Finding 34 (Feedback Control Does Not Trigger on Hybrid Eviction).** A reversal-rate feedback controller (switch from min-Desire to LRU when >15% of recently-evicted keys are re-accessed) produces identical results to the base hybrid on all workloads. The reversal rate never exceeds the threshold because min-Desire eviction makes *different* choices from LRU, not *worse* choices — the evicted keys are genuinely low-desire and rarely re-accessed. The failure mode is not reversals but *opportunity cost*: the scoring evicts keys that wouldn't have been re-accessed soon, but also fails to protect keys that *would* have been re-accessed soon (a signal only position captures).
+
+**Synthesis.** The three experiments confirm that REMARC's value proposition is not in replacing ARC's eviction heuristic but in adding the migration axis. REMARC answers "should this key be on a different tier?" — a question ARC never asks. The eviction axis is well-served by ARC's proven p-adaptation + LRU combination. The migration axis is where REMARC's per-key scoring provides unique value.
+
 ---
 
 ## Conclusion
@@ -1193,6 +1205,8 @@ The evaluation (Sections 5, 8, 9) establishes five principal results across sing
 4. **Scalable global state for $n \geq 3$:** A cross-node desire comparison ($O(1)$ per decision, $O(n)$ state) resolves contention for shared hot keys. The compare ratio $r$ has a sharp cliff at 1.1$\times$ and a wide effective range (1.1$\times$--1.5$\times$), making the system robust to parameter selection.
 
 5. **Structured eviction breaks the looping barrier (Section 9):** A heap-based eviction delivery mechanism (AUG-HEAP) achieves 99% on the Looping workload where all list-based policies score 0%. A self-tuning variant (AUG-ADAPT) uses a feedback controller (population CV + prediction regret) to adaptively switch between heap and LRU eviction, achieving **99.33% Looping** while matching AUG-TS4 exactly on Zipfian, ScanRes, and Temporal. This eliminates the delivery--quota tradeoff (Finding 30). The delivery--quota tension's three research directions are fully resolved: quota-free delivery fails catastrophically on scan workloads (Finding 31), quota-aware delivery is marginal, and adaptive delivery switching succeeds via AUG-ADAPT.
+
+6. **Per-key scoring and p-adaptation are complementary, not substitutable (Findings 32--34):** Three hybrid experiments (min-Desire eviction, position-weighted scoring, feedback-controlled switching) confirm that REMARC's TempCtrl scoring captures frequency while ARC's p-adaptation captures temporal phase. Neither subsumes the other. REMARC's value proposition is the *migration axis* (multi-action framework for tiered memory), not better eviction within a single tier.
 
 The mathematical framework (switched linear system with linear projection) provides convergence guarantees, steady-state characterization, and natural generalization to $K > 2$ for tiered storage and heterogeneous memory hierarchies (Section 6). The implementation architecture (Section 5.6, Appendix A) demonstrates practical deployment: 2 bytes per key shadow map, lazy migration on access, SIMD-optimized periodic decay. The desire encoding mechanism requires no distributed coordination, making it suitable for shared-memory NUMA systems and potentially extensible to distributed caches via the factorization framework (Section 11.1).
 

@@ -1,6 +1,6 @@
 ---
 title: "Furrballs: Topology-Aware, High-Performance Resource Placement for Asymmetric Memory Systems"
-subtitle: "Technical Report v1.19.0"
+subtitle: "Technical Report v1.20.0"
 author: "Hamza Jamil Saied (The Sphynx)"
 date: last-modified
 doi: "10.5281/zenodo.19794753"
@@ -44,6 +44,7 @@ format:
 ---
 
 ## Status
+v1.20.0 --- §5.23 updated with HYBRID-POS (position+score) and HYBRID-FB (feedback) results. POS preserves recency but loses loop detection. FB never triggers. Cross-reference to REMARC paper Findings 32-34. REMARC paper v0.10.0 with three new findings.
 v1.19.0 --- §5.23 ARC-REMARC Hybrid: negative finding. REMARC per-key TempCtrl scoring does not subsume ARC p-adaptation. Hybrid wins Scan-Res (+2%), Looping (+97%) but loses Zipfian (-5%), Temporal (-21%). Mechanisms are complementary, not substitutable. Supports REMARC positioning as multi-action framework (eviction+migration), not better eviction.
 v1.18.0 --- Strategic reframe from "NUMA-aware cache" to "topology-aware resource placement for asymmetric memory systems." Title, abstract, problem statement, architecture, evaluation, related work, conclusion updated. NUMA framed as first validation instance, CXL/HBM tiers as target. ~90 mechanical substitutions across all sections.
 v1.17.0 --- §5.22 ARC-FLATLL2 limits documented and tested (15/15 pass): uint32_t capacity bound (2.1B), per-list 2×cap occupancy, cap=1 edge case, pure scan, single-key, high churn, thread safety. --limits mode added to PolicyBench.
@@ -2193,6 +2194,14 @@ KPI: HYBRID ranked #3 (70.44) vs ARC-FLATLL2 #4 (69.77) — essentially tied. Th
 **Conclusion:** REMARC's per-key scoring and ARC's p-adaptation solve different problems. TempCtrl scoring captures *how desirable* a key is (access frequency). ARC's p-adaptation captures *what balance of recency vs frequency* the workload currently needs. The hybrid only replaces the former, losing the temporal adaptivity that makes ARC robust under phase shifts. The two mechanisms are complementary — a true hybrid would need both operating simultaneously, not one replacing the other.
 
 This finding supports REMARC's positioning as a *multi-action* framework (eviction + migration) rather than a *better eviction* policy. REMARC's value is not in replacing ARC's eviction heuristic but in adding the migration axis that ARC cannot express.
+
+Two follow-up experiments confirmed and refined this conclusion:
+
+- **HYBRID-POS (position-weighted scoring):** Combining position in the linked list with TempCtrl (score = TempCtrl - position_weight) preserves recency, yielding nearly identical hit rates to ARC on Zipfian (+0.2%) and Temporal Shift (+0.02%). But it loses the Looping benefit entirely (5% vs 97%) because position weighting penalizes entries not at the MRU end. KPI ranked #19 (51.24) due to O(n) scoring overhead on every eviction.
+
+- **HYBRID-FB (feedback control):** A reversal-rate feedback controller (switch from min-Desire to LRU when >15% of evicted keys are re-accessed) produced identical results to the base HYBRID. The reversal rate never exceeded the threshold because min-Desire eviction makes *different* choices from LRU, not *worse* choices. The failure mode is opportunity cost, not reversals.
+
+Full analysis and methodology are documented in the REMARC companion paper (Findings 32--34, DOI: 10.5281/zenodo.19794758).
 
 ## 6. Current Status
 

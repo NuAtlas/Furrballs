@@ -18,6 +18,7 @@
 #include <mutex>
 #include <queue>
 #include <numeric>
+#include <cstring>
 
 using namespace NuAtlas;
 
@@ -761,6 +762,25 @@ public:
         return k;
     }
 
+    uint64_t popScored() {
+        if (head_ == NIL) return 0;
+        if (count_ <= 1) { uint64_t k = slots_[head_].key; erase(k); return k; }
+        uint32_t best = head_;
+        int32_t bestScore = INT32_MAX;
+        uint32_t pos = 0;
+        for (uint32_t cur = head_; cur != NIL; cur = slots_[cur].next, pos++) {
+            int32_t posWeight = static_cast<int32_t>(pos) * 255 / static_cast<int32_t>(count_);
+            int32_t score = static_cast<int32_t>(slots_[cur].tempCtrl) - posWeight;
+            if (score < bestScore) {
+                bestScore = score;
+                best = cur;
+            }
+        }
+        uint64_t k = slots_[best].key;
+        erase(k);
+        return k;
+    }
+
     size_t size() const { return count_; }
     bool empty() const { return count_ == 0; }
 };
@@ -846,7 +866,208 @@ public:
 };
 
 // =====================================================================
-//  BareARC_FlatLL2: optimized ARC (flat hash, uint32_t, no cached_)
+//  BareARC_Hybrid2: position-weighted scoring (recency + TempCtrl)
+// =====================================================================
+
+class BareARC_Hybrid2 {
+    ArcFlatLinkedList3 t1_, t2_, b1_, b2_;
+    size_t cap_, p_;
+    size_t hits_ = 0, misses_ = 0, evictions_ = 0;
+
+    void replace(uint64_t key) {
+        if (!t1_.empty() && (t1_.size() > p_ ||
+            (b2_.contains(key) && t1_.size() == p_))) {
+            uint64_t old = t1_.popScored();
+            b1_.push_front(old, 0);
+        } else if (!t2_.empty()) {
+            uint64_t old = t2_.popScored();
+            b2_.push_front(old, 0);
+        }
+        evictions_++;
+    }
+
+    void doEvict() {
+        if (t1_.size() + b1_.size() >= cap_) {
+            if (t1_.size() < cap_ && !b1_.empty()) {
+                b1_.pop_back();
+            } else if (!t1_.empty()) {
+                t1_.popScored();
+                evictions_++;
+            }
+        }
+        if (t1_.size() + t2_.size() + b1_.size() + b2_.size() >= 2 * cap_) {
+            if (!b2_.empty()) {
+                b2_.pop_back();
+            } else if (!t2_.empty()) {
+                t2_.popScored();
+                evictions_++;
+            }
+        }
+    }
+
+public:
+    explicit BareARC_Hybrid2(size_t cap)
+        : cap_(cap), p_(0),
+          t1_(cap * 2), t2_(cap * 2), b1_(cap * 2), b2_(cap * 2) {}
+
+    void access(uint64_t key) {
+        bool inT1 = t1_.contains(key);
+        bool inT2 = t2_.contains(key);
+        if (inT1 || inT2) {
+            if (inT1) { t1_.erase(key); t2_.push_front(key, 128); }
+            else { t2_.splice_front(key); t2_.bumpTempCtrl(key); }
+            hits_++;
+            return;
+        }
+        misses_++;
+        bool ghost = false;
+        if (b1_.contains(key)) {
+            size_t d = b1_.size() > 0
+                ? std::max(b2_.size() / b1_.size(), (size_t)1) : 1;
+            p_ = std::min(cap_, p_ + d);
+            doEvict(); replace(key); b1_.erase(key);
+            ghost = true;
+        } else if (b2_.contains(key)) {
+            size_t d = b2_.size() > 0
+                ? std::max(b1_.size() / b2_.size(), (size_t)1) : 1;
+            p_ = (p_ >= d) ? p_ - d : 0;
+            doEvict(); replace(key); b2_.erase(key);
+            ghost = true;
+        } else {
+            doEvict();
+        }
+        if (ghost) t2_.push_front(key, 128);
+        else t1_.push_front(key, 64);
+    }
+
+    size_t hits() const { return hits_; }
+    size_t misses() const { return misses_; }
+    size_t evictions() const { return evictions_; }
+};
+
+// =====================================================================
+//  BareARC_Hybrid3: feedback-controlled victim selection
+// =====================================================================
+
+class BareARC_Hybrid3 {
+    ArcFlatLinkedList3 t1_, t2_, b1_, b2_;
+    size_t cap_, p_;
+    size_t hits_ = 0, misses_ = 0, evictions_ = 0;
+
+    static constexpr size_t WINDOW = 100;
+    static constexpr double REVERSAL_THRESHOLD = 0.15;
+
+    uint64_t lastEvicted_[100];
+    size_t evictIdx_ = 0;
+    size_t evictCount_ = 0;
+    size_t reversalCount_ = 0;
+    bool useScoring_ = true;
+
+    void recordEviction(uint64_t k) {
+        lastEvicted_[evictIdx_ % WINDOW] = k;
+        evictIdx_++;
+        if (evictCount_ < WINDOW) evictCount_++;
+    }
+
+    void checkReversal(uint64_t key) {
+        if (evictCount_ == 0) return;
+        for (size_t i = 0; i < evictCount_; i++) {
+            if (lastEvicted_[(evictIdx_ - 1 - i) % WINDOW] == key) {
+                reversalCount_++;
+                break;
+            }
+        }
+        if (evictCount_ >= WINDOW / 2) {
+            double rate = static_cast<double>(reversalCount_) / static_cast<double>(evictCount_);
+            useScoring_ = (rate < REVERSAL_THRESHOLD);
+        }
+    }
+
+    uint64_t evictFrom(ArcFlatLinkedList3& list) {
+        if (useScoring_) return list.popMinDesire();
+        uint64_t old = list.back();
+        list.pop_back();
+        return old;
+    }
+
+    void replace(uint64_t key) {
+        if (!t1_.empty() && (t1_.size() > p_ ||
+            (b2_.contains(key) && t1_.size() == p_))) {
+            uint64_t old = evictFrom(t1_);
+            recordEviction(old);
+            b1_.push_front(old, 0);
+        } else if (!t2_.empty()) {
+            uint64_t old = evictFrom(t2_);
+            recordEviction(old);
+            b2_.push_front(old, 0);
+        }
+        evictions_++;
+    }
+
+    void doEvict() {
+        if (t1_.size() + b1_.size() >= cap_) {
+            if (t1_.size() < cap_ && !b1_.empty()) {
+                b1_.pop_back();
+            } else if (!t1_.empty()) {
+                uint64_t old = evictFrom(t1_);
+                recordEviction(old);
+                evictions_++;
+            }
+        }
+        if (t1_.size() + t2_.size() + b1_.size() + b2_.size() >= 2 * cap_) {
+            if (!b2_.empty()) {
+                b2_.pop_back();
+            } else if (!t2_.empty()) {
+                uint64_t old = evictFrom(t2_);
+                recordEviction(old);
+                evictions_++;
+            }
+        }
+    }
+
+public:
+    explicit BareARC_Hybrid3(size_t cap)
+        : cap_(cap), p_(0),
+          t1_(cap * 2), t2_(cap * 2), b1_(cap * 2), b2_(cap * 2),
+          evictIdx_(0), evictCount_(0), reversalCount_(0), useScoring_(true) {
+        memset(lastEvicted_, 0, sizeof(lastEvicted_));
+    }
+
+    void access(uint64_t key) {
+        bool inT1 = t1_.contains(key);
+        bool inT2 = t2_.contains(key);
+        if (inT1 || inT2) {
+            checkReversal(key);
+            if (inT1) { t1_.erase(key); t2_.push_front(key, 128); }
+            else { t2_.splice_front(key); t2_.bumpTempCtrl(key); }
+            hits_++;
+            return;
+        }
+        misses_++;
+        bool ghost = false;
+        if (b1_.contains(key)) {
+            size_t d = b1_.size() > 0
+                ? std::max(b2_.size() / b1_.size(), (size_t)1) : 1;
+            p_ = std::min(cap_, p_ + d);
+            doEvict(); replace(key); b1_.erase(key);
+            ghost = true;
+        } else if (b2_.contains(key)) {
+            size_t d = b2_.size() > 0
+                ? std::max(b1_.size() / b2_.size(), (size_t)1) : 1;
+            p_ = (p_ >= d) ? p_ - d : 0;
+            doEvict(); replace(key); b2_.erase(key);
+            ghost = true;
+        } else {
+            doEvict();
+        }
+        if (ghost) t2_.push_front(key, 128);
+        else t1_.push_front(key, 64);
+    }
+
+    size_t hits() const { return hits_; }
+    size_t misses() const { return misses_; }
+    size_t evictions() const { return evictions_; }
+};
 // =====================================================================
 
 class BareARC_FlatLL2 {
@@ -4885,12 +5106,14 @@ int main(int argc, char** argv) {
         BareARC_FlatLL verifyARCFlatLL(capacity);
         BareARC_FlatLL2 verifyARCFlatLL2(capacity);
         BareARC_Hybrid verifyHybrid(capacity);
+        BareARC_Hybrid2 verifyHybrid2(capacity);
+        BareARC_Hybrid3 verifyHybrid3(capacity);
         BareREMARC_Aug_TS verifyTS(capacity, kpp, defaultCfg);
         BareREMARC_Aug_GS verifyGS(capacity, kpp, defaultCfg);
         BareREMARC_Aug_CB verifyCB(capacity, kpp, defaultCfg);
         BareREMARC_Aug_PRED verifyPRED(capacity, kpp, defaultCfg);
         for (auto k : wlZipf) {
-            verifyARC.access(k); verifyARCFlat.access(k); verifyARCFlatLL.access(k); verifyARCFlatLL2.access(k); verifyHybrid.access(k); verifyTS.access(k);
+            verifyARC.access(k); verifyARCFlat.access(k); verifyARCFlatLL.access(k); verifyARCFlatLL2.access(k); verifyHybrid.access(k); verifyHybrid2.access(k); verifyHybrid3.access(k); verifyTS.access(k);
             verifyGS.access(k); verifyCB.access(k);
             verifyPRED.access(k);
         }
@@ -4899,6 +5122,8 @@ int main(int argc, char** argv) {
         std::cout << "VERIFY ARC-FLATLL: " << verifyARCFlatLL.hits() << " hits, " << verifyARCFlatLL.misses() << " misses, " << verifyARCFlatLL.evictions() << " evictions" << std::endl;
         std::cout << "VERIFY ARC-FLATLL2: " << verifyARCFlatLL2.hits() << " hits, " << verifyARCFlatLL2.misses() << " misses, " << verifyARCFlatLL2.evictions() << " evictions" << std::endl;
         std::cout << "VERIFY HYBRID: " << verifyHybrid.hits() << " hits, " << verifyHybrid.misses() << " misses, " << verifyHybrid.evictions() << " evictions" << std::endl;
+        std::cout << "VERIFY HYBRID-POS: " << verifyHybrid2.hits() << " hits, " << verifyHybrid2.misses() << " misses, " << verifyHybrid2.evictions() << " evictions" << std::endl;
+        std::cout << "VERIFY HYBRID-FB: " << verifyHybrid3.hits() << " hits, " << verifyHybrid3.misses() << " misses, " << verifyHybrid3.evictions() << " evictions" << std::endl;
         if (verifyARC.hits() != verifyARCFlat.hits() || verifyARC.misses() != verifyARCFlat.misses() || verifyARC.hits() != verifyARCFlatLL.hits() || verifyARC.misses() != verifyARCFlatLL.misses() || verifyARC.hits() != verifyARCFlatLL2.hits() || verifyARC.misses() != verifyARCFlatLL2.misses()) {
             std::cout << "*** MISMATCH: ARC / ARC-FLAT / ARC-FLATLL / ARC-FLATLL2 produced different hit/miss counts! ***" << std::endl;
         } else {
@@ -4920,6 +5145,8 @@ int main(int argc, char** argv) {
         "ARC-FLATLL",
         "ARC-FLATLL2",
         "HYBRID",
+        "HYBRID-POS",
+        "HYBRID-FB",
         "REMARC",
         "REMARC-OPT",
         "REMARC-LazyInc",
@@ -4962,6 +5189,10 @@ int main(int argc, char** argv) {
             samples["ARC-FLATLL2"].push_back(runBench(arcflatll2, wl));
             BareARC_Hybrid hybrid(capacity);
             samples["HYBRID"].push_back(runBench(hybrid, wl));
+            BareARC_Hybrid2 hybrid2(capacity);
+            samples["HYBRID-POS"].push_back(runBench(hybrid2, wl));
+            BareARC_Hybrid3 hybrid3(capacity);
+            samples["HYBRID-FB"].push_back(runBench(hybrid3, wl));
             BareREMARC remarc(capacity, kpp, defaultCfg);
             samples["REMARC"].push_back(runBench(remarc, wl));
             BareREMARC_Opt opt(capacity, kpp, defaultCfg);
