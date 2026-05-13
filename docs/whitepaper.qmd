@@ -1,6 +1,6 @@
 ---
 title: "Furrballs: Topology-Aware, High-Performance Resource Placement for Asymmetric Memory Systems"
-subtitle: "Technical Report v1.18.0"
+subtitle: "Technical Report v1.19.0"
 author: "Hamza Jamil Saied (The Sphynx)"
 date: last-modified
 doi: "10.5281/zenodo.19794753"
@@ -44,6 +44,7 @@ format:
 ---
 
 ## Status
+v1.19.0 --- §5.23 ARC-REMARC Hybrid: negative finding. REMARC per-key TempCtrl scoring does not subsume ARC p-adaptation. Hybrid wins Scan-Res (+2%), Looping (+97%) but loses Zipfian (-5%), Temporal (-21%). Mechanisms are complementary, not substitutable. Supports REMARC positioning as multi-action framework (eviction+migration), not better eviction.
 v1.18.0 --- Strategic reframe from "NUMA-aware cache" to "topology-aware resource placement for asymmetric memory systems." Title, abstract, problem statement, architecture, evaluation, related work, conclusion updated. NUMA framed as first validation instance, CXL/HBM tiers as target. ~90 mechanical substitutions across all sections.
 v1.17.0 --- §5.22 ARC-FLATLL2 limits documented and tested (15/15 pass): uint32_t capacity bound (2.1B), per-list 2×cap occupancy, cap=1 edge case, pure scan, single-key, high churn, thread safety. --limits mode added to PolicyBench.
 v1.16.0 --- §5.22 updated with ARC-FLATLL2 optimized variant: uint32_t indices (Slot 32→20 bytes), pre-allocated arena, removed redundant cached_ set. ARC-FLATLL2 beats ARC by +87--172% throughput, ranked #2 KPI (71.60) vs ARC #7 (59.78). Hit rates identical.
@@ -2153,19 +2154,49 @@ The following limits were identified and verified via the `--limits` test suite 
 
 8. **Thread safety**: None. `ArcFlatLinkedList2` and `BareARC_FlatLL2` are single-threaded. Concurrent access requires external synchronization (production Furrballs wraps in per-node SpinLock).
 
-#### Next Step: REMARC + ARC-FLATLL Hybrid
+#### §5.23 ARC-REMARC Hybrid: Negative Result
 
-The flat-linked-list provides the data structure foundation. The next step is combining ARC's adaptive p-adjustment with REMARC's per-key desire scoring:
+> **Status: Negative finding.** REMARC per-key TempCtrl scoring does not subsume ARC's p-adaptation. The mechanisms are complementary, not substitutable.
 
-- **ARC provides**: p-adaptation (recency vs frequency balance), ghost lists (adaptive learning)
-- **REMARC provides**: per-key TempCtrl scoring (2-atom desire composition), SIMD-scannable eviction selection
-- **Hybrid**: ARC's p-adaptation decides which list to evict from (T1 or T2), REMARC's EvictScore selects which specific key within that list to evict (not always the LRU)
+**Design:** The hybrid preserves ARC's full p-adaptation machinery (T1/T2/B1/B2 ghost lists, p-adjustment on ghost hits) but replaces one operation: eviction victim selection. Instead of always evicting the LRU tail of the chosen list, the hybrid scans the list for the entry with minimum TempCtrl and evicts that one. This tests whether per-key desire scoring makes better eviction decisions than position-based LRU.
 
-This would be a true two-level composition: ARC at the list level (architecture decisions), REMARC at the key level (scoring decisions). The flat-linked-list layout makes both levels efficient — ARC operations via index linking, REMARC scoring via contiguous TempCtrl array.
+REMARC's contribution to the hybrid is minimal — a single `uint8_t tempCtrl` per slot with a simple scoring rule:
+- On T1 hit (promoted to T2): tempCtrl = 128 (high desire, recently used)
+- On T2 hit: tempCtrl += 1 (increment, capped at 255)
+- On cold miss insertion to T1: tempCtrl = 64 (moderate desire, untested)
+- On ghost hit insertion to T2: tempCtrl = 128 (high desire, ghost-validated)
+- On eviction: `popMinDesire()` walks the linked list, evicts the slot with lowest tempCtrl
+
+ARC's contribution is unchanged — p-adaptation via ghost lists, list management, the full ARC algorithm. The only change is *which entry within a list* gets evicted.
+
+**Results:**
+
+| Workload | ARC (LRU) | HYBRID (min-Desire) | Delta |
+|----------|----:|-----:|------:|
+| Zipfian | 34,964 | 33,151 | **-5.2%** |
+| Scan-Resistant | 88,346 | 90,117 | **+2.0%** |
+| Temporal Shift | 74,726 | 58,767 | **-21.4%** |
+| Looping | 0 | 96,999 | **+97%** |
+
+KPI: HYBRID ranked #3 (70.44) vs ARC-FLATLL2 #4 (69.77) — essentially tied. The hybrid gains on Scan-Res and Looping but loses catastrophically on Temporal Shift.
+
+**Analysis:**
+
+1. **Temporal Shift (-21.4%):** The hybrid's Achilles heel. When the workload shifts from one access pattern to another, ARC's ghost lists immediately adjust p (ghost hit → p changes), redirecting future evictions. The hybrid evicts based on TempCtrl, which reflects *cumulative* access frequency, not *current* access pattern. Keys that were hot in phase 1 have high TempCtrl and survive into phase 2, taking cache slots from keys that are hot in phase 2. ARC's LRU eviction handles this naturally — the tail of the list is always the least recently used regardless of past frequency.
+
+2. **Zipfian (-5.2%):** Under thrashing (65% miss rate), the hybrid makes different eviction choices than LRU. Some of these are better (keeping genuinely hot keys), some worse (keeping keys that were hot recently but are now cooling). The net effect is slightly negative. ARC's LRU is robust because it doesn't depend on scoring accuracy — it always evicts the least recent, which is a good default under uncertainty.
+
+3. **Scan-Resistant (+2.0%):** The hybrid correctly protects the hot set. TempCtrl scores for repeatedly-accessed keys grow high (127+), making them nearly invulnerable to eviction. ARC's LRU occasionally evicts a hot key that happened to be at the tail due to timing. The +2% improvement is real but small.
+
+4. **Looping (+97%):** The hybrid achieves 97% hit rate (matching AUG-HEAP) because TempCtrl monotonically increases for the active loop keys. Once the loop keys have tempCtrl ≈ 200+, they're never evicted. ARC scores 0% because it has no loop detection — every loop iteration evicts the previous loop's entries. This is a known ARC weakness.
+
+**Conclusion:** REMARC's per-key scoring and ARC's p-adaptation solve different problems. TempCtrl scoring captures *how desirable* a key is (access frequency). ARC's p-adaptation captures *what balance of recency vs frequency* the workload currently needs. The hybrid only replaces the former, losing the temporal adaptivity that makes ARC robust under phase shifts. The two mechanisms are complementary — a true hybrid would need both operating simultaneously, not one replacing the other.
+
+This finding supports REMARC's positioning as a *multi-action* framework (eviction + migration) rather than a *better eviction* policy. REMARC's value is not in replacing ARC's eviction heuristic but in adding the migration axis that ARC cannot express.
 
 ## 6. Current Status
 
-**Phase 1 is complete.** **Phase 2a is complete.** **Phase 2b data collected but evaluation deferred** (§5.20: page-level eviction smothers policy differentiation). **ARC-FLATLL validated** (§5.22: flat-linked-list closes data structure gap). **ARC-FLATLL2 optimized** (uint32_t indices + arena + no cached_: +87--172% over ARC, ranked #2 KPI).
+**Phase 1 is complete.** **Phase 2a is complete.** **Phase 2b data collected but evaluation deferred** (§5.20: page-level eviction smothers policy differentiation). **ARC-FLATLL2 optimized** (uint32_t indices + arena + no cached_: +87--172% over ARC, ranked #2 KPI). **ARC-REMARC Hybrid tested** (§5.23: negative finding, REMARC scoring does not subsume p-adaptation, complementary not substitutable).
 
 Phase 1 delivered artifacts:
 - Key-based Set/Get API with flat KeyStore (CAS bump allocator, round-robin + thread-local routing, per-node shards; no eviction policy in Phase 1)
@@ -2230,7 +2261,7 @@ The project is on the `numa-focus` branch. Licensed under MIT. Build and test ar
 - ~~Will the per-key `unique_ptr<SeqLock>` allocation overhead become a bottleneck at scale?~~ **Answered: eliminated in Phase 2a.** CMap stores values inline in cacheline-aligned slots with no per-key heap allocation.
 - ~~**Hypothesized scaling advantage (untested):** Per-node sharding creates N independent contention domains...~~ **Answered: validated for reads, bottleneck identified for writes.** Get throughput scales +72% from 4→64 threads (lock partitioning prevents cross-node read contention). Set throughput degrades -79% due to SpinLock bottleneck at 32 threads/node (§5.19). The read scaling confirms the hypothesis; the write bottleneck identifies the next optimization target.
 - **Page-level eviction smothers policy differentiation.** Phase 2b benchmark data (§5.20) shows identical hit rates across ARC/REMARC/AUG-ADAPT in all workloads. The 2.6x latency gap is a data structure layout artifact (ArcList vs TempCtrl), not a policy advantage. Per-key EvictScore is inert for eviction. Benchmark redesign required before policy comparison can be meaningful. **Plan documented in §5.21.**
-- **ARC's linked list is a performance bottleneck independent of policy choice.** ~~The 2.6x latency gap...~~ **Validated and resolved in §5.22.** ARC-FLATLL2 (flat-linked-list + uint32_t + arena + no cached_) beats ARC-linked by +87--172% throughput with identical hit rates. The data structure gap is fully closed. Next: REMARC + ARC-FLATLL hybrid (ARC p-adaptation + REMARC per-key scoring).
+- **ARC's linked list is a performance bottleneck independent of policy choice.** ~~The 2.6x latency gap...~~ **Validated and resolved in §5.22.** ARC-FLATLL2 (flat-linked-list + uint32_t + arena + no cached_) beats ARC-linked by +87--172% throughput with identical hit rates. The data structure gap is fully closed. ~~Next: REMARC + ARC-FLATLL hybrid (ARC p-adaptation + REMARC per-key scoring).~~ **Hybrid tested in §5.23: negative finding.** REMARC scoring and ARC p-adaptation are complementary, not substitutable. REMARC's value is in the migration axis (multi-action), not in replacing ARC's eviction heuristic.
 - **ARC is a double-edged sword: smarter adaptation at higher per-operation cost.** ARC's p-adaptation between recency and frequency is more sophisticated than REMARC's 2-atom composition, potentially yielding better hit rates. But ArcList pointer-chasing makes each metadata operation 2-3x slower. The total throughput (hit rate x latency) tradeoff is workload-dependent and cannot be evaluated until per-key eviction is implemented.
 
 ## 8. Roadmap
@@ -2283,6 +2314,7 @@ The project is on the `numa-focus` branch. Licensed under MIT. Build and test ar
 - [x] 3-way ARC comparison complete: ARC-linked vs ARC-FLAT vs ARC-FLATLL (§5.22)
 
 #### Phase 2c: Per-Key Eviction + Fair Policy Comparison
+- [x] ARC-REMARC Hybrid tested: negative finding, scoring and p-adaptation are complementary (§5.23)
 - [ ] Per-key eviction: tombstone + dead-bytes, no in-page reuse (simplest viable implementation)
 - [ ] EvictOneKey: scan pages for min EvictScore key, remove from Page + KeyStore
 - [ ] Page.h: dead-bytes tracking per page, page recycling when ActiveKeys == 0

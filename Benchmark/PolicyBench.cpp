@@ -597,6 +597,255 @@ public:
 };
 
 // =====================================================================
+//  ArcFlatLinkedList3: flat-linked-list with TempCtrl per slot
+// =====================================================================
+
+class ArcFlatLinkedList3 {
+    static constexpr uint32_t NIL = UINT32_MAX;
+
+    struct Slot {
+        uint64_t key;
+        uint32_t prev;
+        uint32_t next;
+        uint8_t  tempCtrl;
+        bool     active;
+    };
+
+    std::vector<Slot> slots_;
+    std::unordered_map<uint64_t, uint32_t> idx_;
+    uint32_t head_;
+    uint32_t tail_;
+    uint32_t freeHead_;
+    uint32_t count_;
+
+    uint32_t allocSlot() {
+        uint32_t s = freeHead_;
+        freeHead_ = slots_[s].next;
+        return s;
+    }
+
+    void freeSlot(uint32_t s) {
+        slots_[s].key = 0;
+        slots_[s].prev = NIL;
+        slots_[s].next = freeHead_;
+        slots_[s].tempCtrl = 0;
+        slots_[s].active = false;
+        freeHead_ = s;
+    }
+
+public:
+    explicit ArcFlatLinkedList3(uint32_t maxEntries) {
+        slots_.resize(maxEntries);
+        for (uint32_t i = 0; i < maxEntries; i++) {
+            slots_[i] = {0, NIL, i + 1, 0, false};
+        }
+        slots_[maxEntries - 1].next = NIL;
+        freeHead_ = 0;
+        idx_.reserve(maxEntries);
+        head_ = NIL;
+        tail_ = NIL;
+        count_ = 0;
+    }
+
+    bool contains(uint64_t k) const { return idx_.count(k) > 0; }
+
+    void push_front(uint64_t k, uint8_t tc = 0) {
+        uint32_t s = allocSlot();
+        slots_[s].key = k;
+        slots_[s].active = true;
+        slots_[s].tempCtrl = tc;
+        slots_[s].prev = NIL;
+        slots_[s].next = head_;
+        if (head_ != NIL) slots_[head_].prev = s;
+        else tail_ = s;
+        head_ = s;
+        idx_[k] = s;
+        count_++;
+    }
+
+    void pop_back() {
+        if (tail_ == NIL) return;
+        uint32_t s = tail_;
+        idx_.erase(slots_[s].key);
+        uint32_t p = slots_[s].prev;
+        if (p != NIL) slots_[p].next = NIL;
+        else head_ = NIL;
+        tail_ = p;
+        freeSlot(s);
+        count_--;
+    }
+
+    void erase(uint64_t k) {
+        auto it = idx_.find(k);
+        if (it == idx_.end()) return;
+        uint32_t s = it->second;
+        idx_.erase(it);
+        uint32_t p = slots_[s].prev, n = slots_[s].next;
+        if (p != NIL) slots_[p].next = n;
+        else head_ = n;
+        if (n != NIL) slots_[n].prev = p;
+        else tail_ = p;
+        freeSlot(s);
+        count_--;
+    }
+
+    void splice_front(uint64_t k) {
+        auto it = idx_.find(k);
+        if (it == idx_.end()) return;
+        uint32_t s = it->second;
+        if (s == head_) return;
+        uint32_t p = slots_[s].prev, n = slots_[s].next;
+        if (p != NIL) slots_[p].next = n;
+        if (n != NIL) slots_[n].prev = p;
+        else tail_ = p;
+        slots_[s].prev = NIL;
+        slots_[s].next = head_;
+        if (head_ != NIL) slots_[head_].prev = s;
+        head_ = s;
+    }
+
+    uint64_t back() const {
+        return tail_ == NIL ? 0 : slots_[tail_].key;
+    }
+
+    uint64_t front() const {
+        return head_ == NIL ? 0 : slots_[head_].key;
+    }
+
+    void pop_front() {
+        if (head_ == NIL) return;
+        uint32_t s = head_;
+        idx_.erase(slots_[s].key);
+        uint32_t n = slots_[s].next;
+        if (n != NIL) slots_[n].prev = NIL;
+        else tail_ = NIL;
+        head_ = n;
+        freeSlot(s);
+        count_--;
+    }
+
+    void setTempCtrl(uint64_t k, uint8_t tc) {
+        auto it = idx_.find(k);
+        if (it != idx_.end()) slots_[it->second].tempCtrl = tc;
+    }
+
+    uint8_t getTempCtrl(uint64_t k) const {
+        auto it = idx_.find(k);
+        return it != idx_.end() ? slots_[it->second].tempCtrl : 0;
+    }
+
+    void bumpTempCtrl(uint64_t k) {
+        auto it = idx_.find(k);
+        if (it != idx_.end() && slots_[it->second].tempCtrl < 255)
+            slots_[it->second].tempCtrl++;
+    }
+
+    void decayTempCtrl(uint64_t k) {
+        auto it = idx_.find(k);
+        if (it != idx_.end() && slots_[it->second].tempCtrl > 0)
+            slots_[it->second].tempCtrl--;
+    }
+
+    uint64_t popMinDesire() {
+        if (head_ == NIL) return 0;
+        uint32_t best = head_;
+        uint8_t bestTC = slots_[head_].tempCtrl;
+        for (uint32_t cur = slots_[head_].next; cur != NIL; cur = slots_[cur].next) {
+            if (slots_[cur].tempCtrl < bestTC) {
+                bestTC = slots_[cur].tempCtrl;
+                best = cur;
+            }
+        }
+        uint64_t k = slots_[best].key;
+        erase(k);
+        return k;
+    }
+
+    size_t size() const { return count_; }
+    bool empty() const { return count_ == 0; }
+};
+
+// =====================================================================
+//  BareARC_Hybrid: ARC p-adaptation + REMARC per-key TempCtrl scoring
+// =====================================================================
+
+class BareARC_Hybrid {
+    ArcFlatLinkedList3 t1_, t2_, b1_, b2_;
+    size_t cap_, p_;
+    size_t hits_ = 0, misses_ = 0, evictions_ = 0;
+
+    void replace(uint64_t key) {
+        if (!t1_.empty() && (t1_.size() > p_ ||
+            (b2_.contains(key) && t1_.size() == p_))) {
+            uint64_t old = t1_.popMinDesire();
+            b1_.push_front(old, 0);
+        } else if (!t2_.empty()) {
+            uint64_t old = t2_.popMinDesire();
+            b2_.push_front(old, 0);
+        }
+        evictions_++;
+    }
+
+    void doEvict() {
+        if (t1_.size() + b1_.size() >= cap_) {
+            if (t1_.size() < cap_ && !b1_.empty()) {
+                b1_.pop_back();
+            } else if (!t1_.empty()) {
+                t1_.popMinDesire();
+                evictions_++;
+            }
+        }
+        if (t1_.size() + t2_.size() + b1_.size() + b2_.size() >= 2 * cap_) {
+            if (!b2_.empty()) {
+                b2_.pop_back();
+            } else if (!t2_.empty()) {
+                t2_.popMinDesire();
+                evictions_++;
+            }
+        }
+    }
+
+public:
+    explicit BareARC_Hybrid(size_t cap)
+        : cap_(cap), p_(0),
+          t1_(cap * 2), t2_(cap * 2), b1_(cap * 2), b2_(cap * 2) {}
+
+    void access(uint64_t key) {
+        bool inT1 = t1_.contains(key);
+        bool inT2 = t2_.contains(key);
+        if (inT1 || inT2) {
+            if (inT1) { t1_.erase(key); t2_.push_front(key, 128); }
+            else { t2_.splice_front(key); t2_.bumpTempCtrl(key); }
+            hits_++;
+            return;
+        }
+        misses_++;
+        bool ghost = false;
+        if (b1_.contains(key)) {
+            size_t d = b1_.size() > 0
+                ? std::max(b2_.size() / b1_.size(), (size_t)1) : 1;
+            p_ = std::min(cap_, p_ + d);
+            doEvict(); replace(key); b1_.erase(key);
+            ghost = true;
+        } else if (b2_.contains(key)) {
+            size_t d = b2_.size() > 0
+                ? std::max(b1_.size() / b2_.size(), (size_t)1) : 1;
+            p_ = (p_ >= d) ? p_ - d : 0;
+            doEvict(); replace(key); b2_.erase(key);
+            ghost = true;
+        } else {
+            doEvict();
+        }
+        if (ghost) t2_.push_front(key, 128);
+        else t1_.push_front(key, 64);
+    }
+
+    size_t hits() const { return hits_; }
+    size_t misses() const { return misses_; }
+    size_t evictions() const { return evictions_; }
+};
+
+// =====================================================================
 //  BareARC_FlatLL2: optimized ARC (flat hash, uint32_t, no cached_)
 // =====================================================================
 
@@ -4635,12 +4884,13 @@ int main(int argc, char** argv) {
         BareARC_Flat verifyARCFlat(capacity);
         BareARC_FlatLL verifyARCFlatLL(capacity);
         BareARC_FlatLL2 verifyARCFlatLL2(capacity);
+        BareARC_Hybrid verifyHybrid(capacity);
         BareREMARC_Aug_TS verifyTS(capacity, kpp, defaultCfg);
         BareREMARC_Aug_GS verifyGS(capacity, kpp, defaultCfg);
         BareREMARC_Aug_CB verifyCB(capacity, kpp, defaultCfg);
         BareREMARC_Aug_PRED verifyPRED(capacity, kpp, defaultCfg);
         for (auto k : wlZipf) {
-            verifyARC.access(k); verifyARCFlat.access(k); verifyARCFlatLL.access(k); verifyARCFlatLL2.access(k); verifyTS.access(k);
+            verifyARC.access(k); verifyARCFlat.access(k); verifyARCFlatLL.access(k); verifyARCFlatLL2.access(k); verifyHybrid.access(k); verifyTS.access(k);
             verifyGS.access(k); verifyCB.access(k);
             verifyPRED.access(k);
         }
@@ -4648,6 +4898,7 @@ int main(int argc, char** argv) {
         std::cout << "VERIFY ARC-FLAT: " << verifyARCFlat.hits() << " hits, " << verifyARCFlat.misses() << " misses, " << verifyARCFlat.evictions() << " evictions" << std::endl;
         std::cout << "VERIFY ARC-FLATLL: " << verifyARCFlatLL.hits() << " hits, " << verifyARCFlatLL.misses() << " misses, " << verifyARCFlatLL.evictions() << " evictions" << std::endl;
         std::cout << "VERIFY ARC-FLATLL2: " << verifyARCFlatLL2.hits() << " hits, " << verifyARCFlatLL2.misses() << " misses, " << verifyARCFlatLL2.evictions() << " evictions" << std::endl;
+        std::cout << "VERIFY HYBRID: " << verifyHybrid.hits() << " hits, " << verifyHybrid.misses() << " misses, " << verifyHybrid.evictions() << " evictions" << std::endl;
         if (verifyARC.hits() != verifyARCFlat.hits() || verifyARC.misses() != verifyARCFlat.misses() || verifyARC.hits() != verifyARCFlatLL.hits() || verifyARC.misses() != verifyARCFlatLL.misses() || verifyARC.hits() != verifyARCFlatLL2.hits() || verifyARC.misses() != verifyARCFlatLL2.misses()) {
             std::cout << "*** MISMATCH: ARC / ARC-FLAT / ARC-FLATLL / ARC-FLATLL2 produced different hit/miss counts! ***" << std::endl;
         } else {
@@ -4668,6 +4919,7 @@ int main(int argc, char** argv) {
         "ARC-FLAT",
         "ARC-FLATLL",
         "ARC-FLATLL2",
+        "HYBRID",
         "REMARC",
         "REMARC-OPT",
         "REMARC-LazyInc",
@@ -4708,6 +4960,8 @@ int main(int argc, char** argv) {
             samples["ARC-FLATLL"].push_back(runBench(arcflatll, wl));
             BareARC_FlatLL2 arcflatll2(capacity);
             samples["ARC-FLATLL2"].push_back(runBench(arcflatll2, wl));
+            BareARC_Hybrid hybrid(capacity);
+            samples["HYBRID"].push_back(runBench(hybrid, wl));
             BareREMARC remarc(capacity, kpp, defaultCfg);
             samples["REMARC"].push_back(runBench(remarc, wl));
             BareREMARC_Opt opt(capacity, kpp, defaultCfg);
