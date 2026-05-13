@@ -4484,6 +4484,118 @@ static void PrintUsage() {
               << "  --paper : publication mode (10 iterations, full sections).\n";
 }
 
+void RunLimitTests() {
+    std::cout << "=== ARC-FLATLL2 LIMIT TESTS ===" << std::endl;
+    int pass = 0, fail = 0;
+
+    auto check = [&](const char* name, bool cond) {
+        if (cond) { std::cout << "  PASS: " << name << std::endl; pass++; }
+        else { std::cout << "  FAIL: " << name << std::endl; fail++; }
+    };
+
+    auto checkMatch = [&](const char* name, size_t cap,
+                          const std::vector<uint64_t>& wl) {
+        BareARC ref(cap);
+        BareARC_FlatLL2 opt(cap);
+        for (auto k : wl) { ref.access(k); opt.access(k); }
+        bool ok = (ref.hits() == opt.hits() && ref.misses() == opt.misses()
+                   && ref.evictions() == opt.evictions());
+        if (ok) { std::cout << "  PASS: " << name << " (h=" << ref.hits()
+                  << " m=" << ref.misses() << " e=" << ref.evictions() << ")" << std::endl; pass++; }
+        else { std::cout << "  FAIL: " << name
+                  << " ARC(h=" << ref.hits() << ",m=" << ref.misses() << ",e=" << ref.evictions() << ")"
+                  << " FLATLL2(h=" << opt.hits() << ",m=" << opt.misses() << ",e=" << opt.evictions() << ")"
+                  << std::endl; fail++; }
+    };
+
+    {
+        std::cout << "\n--- Cap=1 (minimum) ---" << std::endl;
+        BareARC_FlatLL2 arc(1);
+        arc.access(1); arc.access(2); arc.access(1); arc.access(2); arc.access(3);
+        check("no crash cap=1", arc.hits() + arc.misses() == 5);
+        checkMatch("cap=1 alternating 3 keys", 1, {1,2,1,2,3,1,2,3,4,5});
+    }
+
+    {
+        std::cout << "\n--- Cap=2 ---" << std::endl;
+        checkMatch("cap=2 sequential scan", 2, {1,2,3,4,5,6,7,8,9,10});
+        checkMatch("cap=2 repeating 3 keys", 2, {1,2,3,1,2,3,1,2,3,1,2,3});
+        checkMatch("cap=2 all same key", 2, {5,5,5,5,5,5,5,5,5,5});
+    }
+
+    {
+        std::cout << "\n--- Cap=universe (no eviction expected after warmup) ---" << std::endl;
+        std::vector<uint64_t> wl;
+        for (uint64_t i = 0; i < 10; i++) wl.push_back(i);
+        for (uint64_t i = 0; i < 10; i++) wl.push_back(i);
+        checkMatch("cap=10 universe=10 (revisit all)", 10, wl);
+        check("cap=10 all hits on second pass", [&]{
+            BareARC_FlatLL2 a(10);
+            for (uint64_t i = 0; i < 10; i++) a.access(i);
+            size_t h0 = a.hits();
+            for (uint64_t i = 0; i < 10; i++) a.access(i);
+            return a.hits() - h0 == 10;
+        }());
+    }
+
+    {
+        std::cout << "\n--- Pure sequential scan (every access misses) ---" << std::endl;
+        std::vector<uint64_t> wl;
+        for (uint64_t i = 0; i < 5000; i++) wl.push_back(i);
+        checkMatch("cap=100 pure scan 5000 keys", 100, wl);
+    }
+
+    {
+        std::cout << "\n--- Ghost list pressure (drive p to extremes) ---" << std::endl;
+        std::vector<uint64_t> wl;
+        for (int r = 0; r < 20; r++) {
+            for (uint64_t i = 0; i < 50; i++) wl.push_back(i);
+            for (uint64_t i = 50; i < 150; i++) wl.push_back(i);
+        }
+        checkMatch("cap=50 alternating hot/cold blocks", 50, wl);
+    }
+
+    {
+        std::cout << "\n--- Single key repeated ---" << std::endl;
+        std::vector<uint64_t> wl(1000, 42);
+        checkMatch("cap=100 single key 1000 times", 100, wl);
+        checkMatch("cap=1 single key 100 times", 1, wl);
+    }
+
+    {
+        std::cout << "\n--- Large cap (verify no uint32_t overflow) ---" << std::endl;
+        BareARC_FlatLL2 arc(100000);
+        std::mt19937_64 rng(123);
+        for (int i = 0; i < 500000; i++) arc.access(rng() % 500000);
+        check("cap=100000 no crash", arc.hits() + arc.misses() == 500000);
+
+        BareARC ref(100000);
+        rng.seed(123);
+        for (int i = 0; i < 500000; i++) ref.access(rng() % 500000);
+        check("cap=100000 hit rate match", ref.hits() == arc.hits());
+    }
+
+    {
+        std::cout << "\n--- Max list occupancy (force T2 to 2*cap) ---" << std::endl;
+        size_t cap = 100;
+        std::vector<uint64_t> wl;
+        for (uint64_t i = 0; i < (uint64_t)cap; i++) wl.push_back(i);
+        for (int r = 0; r < 10; r++) {
+            for (uint64_t i = 0; i < (uint64_t)cap; i++) wl.push_back(i);
+            for (uint64_t i = (uint64_t)cap; i < (uint64_t)(cap * 3); i++) wl.push_back(i);
+        }
+        checkMatch("cap=100 T2 pressure via ghost hits", cap, wl);
+    }
+
+    {
+        std::cout << "\n--- Empty workload ---" << std::endl;
+        BareARC_FlatLL2 arc(10);
+        check("zero ops", arc.hits() == 0 && arc.misses() == 0 && arc.evictions() == 0);
+    }
+
+    std::cout << "\n=== LIMIT TESTS: " << pass << " passed, " << fail << " failed ===" << std::endl;
+}
+
 int main(int argc, char** argv) {
     const size_t capacity = 1000;
     const size_t universe = 10000;
@@ -4494,6 +4606,7 @@ int main(int argc, char** argv) {
         std::string arg = argv[i];
         if (arg == "--paper") mode = {"paper", 300000, 10, true};
         else if (arg == "--quick") mode = {"quick", 100000, 3, false};
+        else if (arg == "--limits") { RunLimitTests(); return 0; }
         else if (arg == "--help" || arg == "-h") {
             PrintUsage();
             return 0;

@@ -1,6 +1,6 @@
 ---
 title: "Furrballs: A NUMA-Aware, High-Performance Caching Library"
-subtitle: "Technical Report v1.16.0"
+subtitle: "Technical Report v1.17.0"
 author: "Hamza Jamil Saied (The Sphynx)"
 date: last-modified
 doi: "10.5281/zenodo.19794753"
@@ -44,6 +44,7 @@ format:
 ---
 
 ## Status
+v1.17.0 --- §5.22 ARC-FLATLL2 limits documented and tested (15/15 pass): uint32_t capacity bound (2.1B), per-list 2×cap occupancy, cap=1 edge case, pure scan, single-key, high churn, thread safety. --limits mode added to PolicyBench.
 v1.16.0 --- §5.22 updated with ARC-FLATLL2 optimized variant: uint32_t indices (Slot 32→20 bytes), pre-allocated arena, removed redundant cached_ set. ARC-FLATLL2 beats ARC by +87--172% throughput, ranked #2 KPI (71.60) vs ARC #7 (59.78). Hit rates identical.
 v1.15.0 --- §5.22 ARC-Flat: Data Structure Improvement to ARC. Three variants compared (ARC/ARC-FLAT/ARC-FLATLL), all produce identical hit rates. ARC-FLATLL (flat-linked-list) beats ARC-linked on every workload (+1.5% to +34%), ranked #3 overall vs ARC #6. Free-list eliminates all per-operation heap allocation. Implementation details, optimization opportunities, REMARC+ARC hybrid design outlined.
 v1.14.0 --- §5.21 per-key eviction design plan: two-level REMARC architecture (KeyPolicy + PagePolicy), 2×2 factorial benchmark (ARC vs REMARC, 1-level vs 2-level), ARC data structure finding (linked list 2-3x slower than flat array, not fundamental to ARC algorithm), 3-way comparison plan (ARC-linked vs ARC-flat vs REMARC-flat). Roadmap updated: Phase 2c (per-key eviction), Phase 2d (two-level + optimization). §7 Risks updated with ARC double-edged sword analysis. REMARC-BLOOM noted as speed baseline.
@@ -2130,6 +2131,26 @@ Hit rates remain identical (verified across all 4 workloads). Throughput results
 KPI scoreboard: ARC-FLATLL2 ranked **#2** (71.60), behind only AUG-ADAPT (72.87, which benefits from 98% looping hit rate via ARC-specific detection). ARC-FLATLL ranked #4 (61.73), ARC ranked #7 (59.78).
 
 The uint32_t compaction is responsible for the bulk of the improvement (denser cache lines), with pre-allocation and `cached_` removal contributing incrementally. The flat hash experiment confirms that `unordered_map` is not a bottleneck under ARC's churn pattern.
+
+#### Known Limits and Edge Cases
+
+The following limits were identified and verified via the `--limits` test suite (15/15 pass):
+
+1. **Maximum capacity**: `uint32_t` indices with `NIL = UINT32_MAX` sentinel. Each list pre-allocates 2×cap slots. Valid indices: 0..2×cap-1. Maximum cap before `NIL` collision: 2^31 - 1 ≈ 2.1B entries. In practice, memory is the binding constraint (4 lists × 2×cap × 20 bytes = 160×cap bytes; cap=1M → 160MB).
+
+2. **Per-list occupancy**: ARC's invariant is |T1|+|T2|+|B1|+|B2| ≤ 2×cap. Any single list can theoretically hold 2×cap entries. The pre-allocation of 2×cap per list is necessary (discovered via T2 overflow crash at cap=1000). Verified with ghost-hit pressure test that drives T2 to maximum occupancy.
+
+3. **Minimum capacity (cap=1)**: Works correctly. All list operations degrade to single-element push/pop/erase. Hit rates match ARC exactly (verified with alternating 3-key workload).
+
+4. **cap ≥ universe**: No eviction after warmup. All keys fit in cache. Second-pass hits = 100%. Verified.
+
+5. **Pure sequential scan**: Every access misses (capacity << universe). Ghost lists (B1/B2) never fire because no key is revisited. p stays at 0. Hit rates = 0 for all policies. Verified with 5000-key scan at cap=100.
+
+6. **Single key repeated**: After first miss, all subsequent accesses hit. No eviction. cap=1 works correctly (999 hits, 1 miss for 1000 ops). Verified.
+
+7. **High churn workloads**: ARC under thrashing (miss rate > 50%) creates extreme insert/erase cycling on ghost lists. Tombstone-based open-addressing hash fails here (9x slower). `unordered_map` with `reserve()` handles this correctly.
+
+8. **Thread safety**: None. `ArcFlatLinkedList2` and `BareARC_FlatLL2` are single-threaded. Concurrent access requires external synchronization (production Furrballs wraps in per-node SpinLock).
 
 #### Next Step: REMARC + ARC-FLATLL Hybrid
 
