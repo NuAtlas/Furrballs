@@ -1,9 +1,9 @@
 ---
-title: "REMARC: Reduction-Modeled Adaptive Replacement Cache"
-subtitle: "A Multi-Dimensional Framework for Unified Cache Eviction and Migration"
+title: "REMARC: Reduction-Modeled Adaptive Replacement --- A Composable Policy Framework for Tiered Memory"
+subtitle: "Multi-Dimensional Policy Composition for Asymmetric Memory Systems"
 author: "Hamza Jamil Saied (The Sphynx)"
 date: last-modified
-version: "0.8.0"
+version: "0.9.0"
 doi: "10.5281/zenodo.19794758"
 lang: en
 babel-lang: none
@@ -35,39 +35,40 @@ format:
 ---
 
 **Status:** Research journal (living document). This is not a definitive paper — it documents ongoing work, negative results, and open questions alongside findings. Conclusions may change as experiments progress.
-**Date:** April 2026
+**Date:** May 2026
+**Changelog:** v0.9.0 --- Strategic reframe from "cache replacement policy" to "composable policy framework for tiered memory." Title, subtitle, introduction, contributions, related work, conclusion updated. Asymmetric memory (NUMA, CXL, HBM) as target domain. Single-tier policies reframed as special cases.
 
 ---
 
 ## Introduction
 
-Cache replacement policies make a single decision: keep or evict. This is fundamentally a one-dimensional problem — policies like ARC, LRU, and LIRS classify items along one axis (recency, frequency, or reuse distance) and draw a threshold.
+Tiered and asymmetric memory systems require policies that simultaneously decide eviction, migration, promotion, and demotion --- yet existing policies reduce all decisions to a single keep-or-evict axis. Cache replacement policies like ARC, LRU, and LIRS classify items along one axis (recency, frequency, or reuse distance) and draw a threshold.
 
-Real cache systems face multi-dimensional decisions:
-- **Eviction:** should this item stay in cache?
+Real tiered memory systems face multi-dimensional decisions:
+- **Eviction:** should this item remain in the memory hierarchy?
 - **Migration:** should this item move to a different tier/node?
 - **Promotion:** should this item move to a faster tier?
 - **Demotion:** should this item move to a slower tier?
 
 These are independent questions that existing policies answer with separate mechanisms bolted together. ARC handles eviction. A separate policy handles migration. Another handles tiering. Each adds its own data structures, its own tracking overhead, its own tuning parameters.
 
-**REMARC** (Reduction-Modeled Adaptive Replacement Cache) unifies all of these into a single framework. The key insight is **dimensional reduction**: K access signals (recency, locality, tier pressure, ...) are reduced into a compact state space, and M decision scores (evict, migrate, promote, ...) are derived from that space via precomputed projection functions.
+**REMARC** (Reduction-Modeled Adaptive Replacement) is a composable policy framework for tiered memory that unifies eviction, migration, promotion, and demotion through dimensional reduction. The key insight is **dimensional reduction**: K access signals (recency, locality, tier pressure, ...) are reduced into a compact state space, and M decision scores (evict, migrate, promote, ...) are derived from that space via precomputed projection functions.
 
 ### Contributions
 
-1. A formal framework for multi-dimensional cache policy based on switched linear systems and linear projection, with a representation theorem showing coverage of 9 existing policies.
-2. REMARC: an instantiation of this framework for NUMA-aware caching (K=2, M=2) with **desire encoding** — a mechanism for threshold-free migration using per-node desire scores.
-3. Comprehensive evaluation: 24 single-node variants, 2-node and 3-node NUMA simulation with 30 findings, demonstrating 3--4× cost reduction from desire encoding over value-based migration, 99.33% hit rate on adversarial looping workloads via self-tuning structured eviction, and the elimination of the delivery--quota tradeoff through adaptive feedback control.
-4. An independence theorem: desire encoding preserves per-node independence for n nodes, while value encoding does not. Global state is O(1) per decision.
+1. A formal framework for composable tiered memory policy based on switched linear systems and linear projection, with a representation theorem showing coverage of 9 existing policies.
+2. REMARC: an instantiation of this framework for topology-aware tiered memory management (K=2, M=2) with **desire encoding** --- a mechanism for threshold-free migration using per-domain desire scores.
+3. Comprehensive evaluation: 24 single-node variants, 2-node and 3-node NUMA simulation with 30 findings, demonstrating 3--4x cost reduction from desire encoding over value-based migration, 99.33% hit rate on adversarial looping workloads via self-tuning structured eviction, and the elimination of the delivery--quota tradeoff through adaptive feedback control.
+4. An independence theorem: desire encoding preserves per-domain independence for n domains, while value encoding does not. Global state is O(1) per decision.
 5. SIMD-optimized implementation using precomputed lookup tables (256 entries, SSE2 direct arithmetic, O(1) amortized per 16 keys).
-6. A companion systems paper validates REMARC's NUMA placement signal on real hardware, confirming the architectural motivation for the migration axis.
-7. Generalization to K>2 for tiered storage, heterogeneous memory, and distributed caching.
+6. A companion systems paper validates REMARC's cross-domain placement signal on real hardware (NUMA instance), confirming the architectural motivation for the migration axis.
+7. Generalization to K>2 for CXL-attached memory, heterogeneous memory, and distributed caching.
 
 ---
 
 ## Background and Motivation
 
-### Existing Cache Policies Are One-Dimensional
+### Existing Memory Management Policies Are One-Dimensional
 
 | Policy | Dimension | Output | Data Structure |
 |---|---|---|---|
@@ -91,7 +92,7 @@ This is the **dimensional conflation problem**: a 1D policy (ARC) is asked to ha
 
 ### What We Need: Multi-Dimensional Policy
 
-A cache policy that:
+A composable tiered memory policy that:
 1. Accepts K input signals (recency, frequency, locality, tier pressure, ...)
 2. Produces M action scores (evict, migrate, promote, demote, ...)
 3. Uses a single shared state space (not K×M separate mechanisms)
@@ -233,7 +234,7 @@ Each factor satisfies $0 < d_i(j_k) < 1$. Therefore $P_{ii} \to 0$ as $t \to \in
 | Adversarial (worst case) | State stays bounded, homogeneous transient decays to 0 at rate $O(\rho^t)$ |
 | Non-stationary (changing frequencies) | State tracks the changing frequencies with lag determined by $\alpha_j$ and $\lambda$ |
 
-For the cache application, workloads have empirical access frequencies (limiting $p_j$ exists), so convergence to the steady-state formula is guaranteed. But the guarantee does not depend on this — the state remains well-behaved under any access pattern.
+For the tiered memory management application, workloads have empirical access frequencies (limiting $p_j$ exists), so convergence to the steady-state formula is guaranteed. But the guarantee does not depend on this — the state remains well-behaved under any access pattern.
 
 #### Separability
 
@@ -489,7 +490,7 @@ We evaluate REMARC through a comprehensive simulation study across three regimes
 
 #### Full Variant Comparison
 
-We tested 24 cache policies: LRU, ARC, 16 page-batch REMARC variants, 4 augmented ARC variants (AUG-TS4, AUG-PRED, AUG-HEAP, AUG-BOTHEND), AUG-ADAPT (self-tuning), and QuotaFree (pure predictive, no ARC structure), all under identical conditions.
+We tested 24 policy variants: LRU, ARC, 16 page-batch REMARC variants, 4 augmented ARC variants (AUG-TS4, AUG-PRED, AUG-HEAP, AUG-BOTHEND), AUG-ADAPT (self-tuning), and QuotaFree (pure predictive, no ARC structure), all under identical conditions.
 
 **Results (cap=1000, universe=10000, ops=300k):**
 
@@ -650,7 +651,7 @@ Note: This study uses a page-batch simulation (ops=200k) which differs from the 
 
 ### Implementation Architecture
 
-This section describes the practical architecture for deploying desire-encoded REMARC in a NUMA-aware cache. The design targets a shared-memory NUMA system with per-node page allocation and lazy migration.
+This section describes the practical architecture for deploying desire-encoded REMARC in a tiered memory system. The design targets a shared-memory NUMA system with per-node page allocation and lazy migration.
 
 #### Architecture
 
@@ -905,7 +906,7 @@ REMARC's current instantiations (§4–§6) use the competitive regime exclusive
 
 ## Related Work
 
-### Cache Replacement Policies
+### Single-Tier Eviction Policies
 
 - **ARC** (Megiddo & Modha, 2003): Adaptive replacement with ghost lists. 1D (recency+frequency blend). No migration.
 - **LIRS** (Jiang & Zhang, 2002): Low inter-reference recency set. 1D (reuse distance). No migration.
@@ -918,7 +919,7 @@ REMARC's current instantiations (§4–§6) use the competitive regime exclusive
 
 ### NUMA-Aware Systems
 
-- **TCMalloc / jemalloc:** NUMA-aware allocation, no cache policy.
+- **TCMalloc / jemalloc:** Topology-aware allocation, no adaptive tier placement policy.
 - **CacheLib (Meta):** Static per-node sharding. No adaptive migration.
 - **PostgreSQL / InnoDB:** Buffer pool with partition locks. Not standalone cache.
 
@@ -933,7 +934,7 @@ REMARC's current instantiations (§4–§6) use the competitive regime exclusive
 - **Fisher's Linear Discriminant** (Fisher, 1936): A linear projection from K-dimensional observation space onto a lower-dimensional space that maximally separates classes. REMARC's projection is structurally analogous — a domain-defined (rather than data-driven) discriminant that maps K-dimensional state to M action scores. The key difference: LDA is batch and requires labeled data; REMARC is online, sequential, and uses no labels.
 - **Information Bottleneck** (Tishby et al., 1999): Finds a compressed representation $T$ of input $X$ that preserves information about output $Y$: minimize $I(X;T)$ subject to $I(T;Y) \geq$ constraint. REMARC's correlation condition (§3.4) is a deterministic algebraic analog of this constraint — every input dimension must carry non-zero information about at least one output discriminator. The Information Bottleneck requires knowing the joint distribution $P(X,Y)$; REMARC achieves compression without distributional assumptions, through algebraic structure alone. Whether REMARC's deterministic construction achieves information-bottleneck-optimal compression for specific discrimination problems is an open question.
 - **Sufficient Statistics** (Fisher, 1922; Neyman, 1935): The concept that a compressed representation retains all decision-relevant information. REMARC's state vector is a sufficient statistic for the discrimination (under the Weak REMARC condition). Classical sufficient statistics are defined probabilistically; REMARC's version is algebraic — no distribution required.
-- **Switched Linear Systems** (Sun & Ge, 2005): Convergence of systems that switch between linear update rules. The joint spectral radius (JSR) characterizes stability. REMARC applies this to cache policy analysis for the first time — the diagonal structure of $M_j$ makes the JSR computable in closed form (§3.3).
+- **Switched Linear Systems** (Sun & Ge, 2005): Convergence of systems that switch between linear update rules. The joint spectral radius (JSR) characterizes stability. REMARC applies this to tiered memory policy analysis for the first time — the diagonal structure of $M_j$ makes the JSR computable in closed form (§3.3).
 
 ---
 
@@ -1173,13 +1174,13 @@ This tension suggests three research directions:
 
 - **Direction 3 (AUG-ADAPT): Success.** Workload-adaptive switching via a feedback controller (population CV + prediction regret) achieves 99.33% on Looping while exactly matching ARC on all other workloads. The delivery--quota tension is resolved by conservative default (LRU) with workload-driven heap activation (Finding 30).
 
-**Finding 31 (Pure Prediction Is Insufficient Without Structural Scan Detection).** The QuotaFree experiment demonstrates that Belady-style prediction ($predictedNext = lastEpoch + avgGap$) cannot replace ARC's structural machinery. The bottleneck is cold keys with no access history: without future knowledge, a key's first access provides zero information about whether it will be re-accessed. ARC's ghost lists solve this by observing eviction outcomes (ghost hit vs ghost miss)---a one-step-delayed form of future information. Any cache policy that must handle workloads with cold-key scans (Zipfian long tail, sequential scans) requires some form of structural scan detection; prediction alone is insufficient.
+**Finding 31 (Pure Prediction Is Insufficient Without Structural Scan Detection).** The QuotaFree experiment demonstrates that Belady-style prediction ($predictedNext = lastEpoch + avgGap$) cannot replace ARC's structural machinery. The bottleneck is cold keys with no access history: without future knowledge, a key's first access provides zero information about whether it will be re-accessed. ARC's ghost lists solve this by observing eviction outcomes (ghost hit vs ghost miss)---a one-step-delayed form of future information. Any tiered memory policy that must handle workloads with cold-key scans (Zipfian long tail, sequential scans) requires some form of structural scan detection; prediction alone is insufficient.
 
 ---
 
 ## Conclusion
 
-REMARC reframes cache replacement as a dimensional reduction problem: multiple access signals are compressed into a compact state space, and action scores are derived via precomputed projection functions. This unified framework handles eviction, migration, and tiering from a single mechanism, with O(1) amortized cost per decision via SIMD lookup tables.
+REMARC reframes tiered memory management as a dimensional reduction problem: multiple access signals are compressed into a compact state space, and action scores are derived via precomputed projection functions. This unified framework handles eviction, migration, and tiering from a single mechanism, with O(1) amortized cost per decision via SIMD lookup tables.
 
 The evaluation (Sections 5, 8, 9) establishes five principal results across single-node (24 variants, 4 workloads), 2-node (desire encoding experiments, 4 workloads), 3-node (3 variants, 4 workloads), augmentation (8 findings), and structured eviction (6 findings) configurations:
 
@@ -1263,7 +1264,7 @@ These three axes are independent:
 
 Increasing K does not require increasing bit width. Increasing bit width does not require increasing K. Refactoring the instance graph does not require changing either. A system builder selects a point in this three-dimensional design space based on their hardware constraints (cache sizes, SIMD support) and workload requirements (number of tiers, required precision).
 
-This design space is the natural generalization of REMARC beyond a single cache policy into a family of related policies, connected by the shared mathematical structure of competitive coupling and linear projection.
+This design space is the natural generalization of REMARC beyond a single-tier eviction policy into a family of related policies, connected by the shared mathematical structure of competitive coupling and linear projection.
 
 ### Toward an Algebra of Sequential Decision Functions
 
@@ -1348,7 +1349,7 @@ The following questions are ranked by dependency: each question depends on the o
 
 *Approach:* given the error metric from Q1, define a loss function over the parameter space and apply online convex optimization (if the loss is convex in the parameters) or bandit methods (if only noisy feedback is available). The convergence rate of the learning algorithm depends on the geometry of the parameter space (§3.4, geometric interpretation).
 
-**5. Cooperative regime (independent of Q1–Q4).** Are there domains (beyond caching) where cooperative dimensions produce useful policies? What does a cooperative cache policy look like?
+**5. Cooperative regime (independent of Q1–Q4).** Are there domains (beyond caching) where cooperative dimensions produce useful policies? What does a cooperative tiered memory policy look like?
 
 *Approach:* the cooperative regime ($f(\delta) + f(-\delta) = 2f(\delta)$, evidence reinforces evidence) is a genuinely unexplored region of the REMARC design space. No existing policy exploits it. Identify domains where signal agreement (rather than signal competition) is the decision-relevant structure. Candidates: sensor fusion, anomaly detection, consensus protocols.
 
@@ -1360,7 +1361,7 @@ The following questions are ranked by dependency: each question depends on the o
 
 ## Appendix A: Implementation Details
 
-This appendix documents the reference implementation architecture for desire-encoded REMARC in a NUMA-aware cache.
+This appendix documents the reference implementation architecture for desire-encoded REMARC in a tiered memory system.
 
 ### Infrastructure Layer
 
@@ -1406,7 +1407,7 @@ The migration budget is rate-limited (one migration per 64 ops) to prevent thras
 
 ### Applicability Beyond NUMA Caches
 
-The generalization in §6 shows that REMARC's policy framework is independent of any specific cache infrastructure. Any cache system with per-item state storage can adopt REMARC. The desire encoding mechanism requires only:
+The generalization in §6 shows that REMARC's policy framework is independent of any specific memory infrastructure. Any tiered memory system with per-item state storage can adopt REMARC. The desire encoding mechanism requires only:
 1. Per-key state storage for the shadow desire map (2 bytes per key)
 2. A mechanism to query remote nodes' desire scores (for n ≥ 3)
 3. A capacity limit per node for the top-K cache selection

@@ -1,6 +1,6 @@
 ---
-title: "Furrballs: A NUMA-Aware, High-Performance Caching Library"
-subtitle: "Technical Report v1.17.0"
+title: "Furrballs: Topology-Aware, High-Performance Resource Placement for Asymmetric Memory Systems"
+subtitle: "Technical Report v1.18.0"
 author: "Hamza Jamil Saied (The Sphynx)"
 date: last-modified
 doi: "10.5281/zenodo.19794753"
@@ -44,6 +44,7 @@ format:
 ---
 
 ## Status
+v1.18.0 --- Strategic reframe from "NUMA-aware cache" to "topology-aware resource placement for asymmetric memory systems." Title, abstract, problem statement, architecture, evaluation, related work, conclusion updated. NUMA framed as first validation instance, CXL/HBM tiers as target. ~90 mechanical substitutions across all sections.
 v1.17.0 --- §5.22 ARC-FLATLL2 limits documented and tested (15/15 pass): uint32_t capacity bound (2.1B), per-list 2×cap occupancy, cap=1 edge case, pure scan, single-key, high churn, thread safety. --limits mode added to PolicyBench.
 v1.16.0 --- §5.22 updated with ARC-FLATLL2 optimized variant: uint32_t indices (Slot 32→20 bytes), pre-allocated arena, removed redundant cached_ set. ARC-FLATLL2 beats ARC by +87--172% throughput, ranked #2 KPI (71.60) vs ARC #7 (59.78). Hit rates identical.
 v1.15.0 --- §5.22 ARC-Flat: Data Structure Improvement to ARC. Three variants compared (ARC/ARC-FLAT/ARC-FLATLL), all produce identical hit rates. ARC-FLATLL (flat-linked-list) beats ARC-linked on every workload (+1.5% to +34%), ranked #3 overall vs ARC #6. Free-list eliminates all per-operation heap allocation. Implementation details, optimization opportunities, REMARC+ARC hybrid design outlined.
@@ -52,19 +53,19 @@ v1.13.0 --- Phase 2b benchmark data collected on c6i.metal (commit 6e734ad). §5
 v1.12.0 --- REMARC paper v0.8.0 with Finding 31 (QuotaFree: pure prediction insufficient without structural scan detection). Consistency pass on both papers (53 issues: heading numbers, cross-refs, stale data, variant counts, Furrballs refs removed from REMARC paper). Whitepaper updated: QuotaFree in taxonomy, Related Work "two-level ARC"→"REMARC unified policy", §2.1.1 future tense fixed.
 
 ## Abstract
-Furrballs is a NUMA-aware caching library that uses NUMA topology as a first-class input to cache placement and eviction decisions. The core contribution is per-page allocation on specific NUMA nodes, with REMARC (Reduction-Modeled Adaptive Replacement Cache) as the unified eviction and migration policy. REMARC reduces three access dimensions (recency, frequency, locality) into a 2D state space (S_local, S_remote), producing dual action scores (Evict, Migrate) via precomputed lookup tables scored with SSE2 SIMD arithmetic. The per-key Evict scores aggregate to per-page eviction decisions, collapsing the key-level and page-level policies into a single mechanism with one scanner and two thresholds. Pages are pre-allocated at initialization via one physical allocation per NUMA node, subdivided into logical pages filled by a bump allocator. Key routing supports round-robin distribution and thread-local placement (via a runtime config flag). The library is implemented in C++20, uses a platform abstraction layer (Numatic) for NUMA operations, and integrates a custom synchronization library (StreamLine) for thread coordination.
+Furrballs is a topology-aware resource placement library for asymmetric memory systems. Asymmetric memory --- where memory domains have different access latencies (NUMA, CXL-attached memory, HBM tiers) --- is the defining characteristic of modern server memory hierarchies. Furrballs uses memory topology as a first-class input to per-page placement and eviction decisions. The core contribution is per-page allocation on specific memory domains, with REMARC (Reduction-Modeled Adaptive Replacement Cache) as the unified eviction and migration policy. REMARC reduces three access dimensions (recency, frequency, locality) into a 2D state space (S_local, S_remote), producing dual action scores (Evict, Migrate) via precomputed lookup tables scored with SSE2 SIMD arithmetic. The per-key Evict scores aggregate to per-page eviction decisions, collapsing the key-level and page-level policies into a single mechanism with one scanner and two thresholds. Pages are pre-allocated at initialization via one physical allocation per memory domain (NUMA node in the current implementation), subdivided into logical pages filled by a bump allocator. Key routing supports round-robin distribution and thread-local placement (via a runtime config flag). The library is implemented in C++20, uses a platform abstraction layer (Numatic) for memory topology operations, and integrates a custom synchronization library (StreamLine) for thread coordination.
 
 Phase 1 validated the core architecture using lock-free reads via SeqLock on per-node sharded KeyMeta. Phase 2a replaces the Phase 1 data structures with CMap, a lock-free-read concurrent Swiss table with SSE2 SIMD probing and per-slot seqlock concurrency, wrapped by ConcurrentARC which provides ARC eviction policy with hash-keyed O(1) list tracking and deferred promotions via a lock-free MPSC buffer (PromoteBuf). Phase 2a results show a 58% improvement in concurrent Set throughput (per-slot CAS eliminates shared_mutex serialization), safe concurrent reads during writes (resolving Phase 1's unordered_map data race), and a 6--41% single-threaded latency regression (architectural cost of concurrent data structures). A cross-VM baseline comparison shows Furrballs maintains a 2.60x concurrent Set advantage through lock partitioning via per-node CMaps.
 
-Real hardware validation on AWS c6i.metal (Intel Xeon Platinum 8375C, 2 sockets, 128 vCPUs, NUMA distance 10/20) confirms the NUMA signal: 4.5--7.0% p50 cross-node overhead, thread-local routing provides +60--65% improvement over round-robin, and ablation step D (thread-local routing) is the primary driver of the cross-node signal (+21.0--38.9% Cross-OH). Get throughput scales +72% from 4→64 threads, validating the lock partitioning thesis for reads. Set throughput degrades -79% at 64 threads due to per-node SpinLock contention, identifying striped SpinLocks or per-bucket ARC locks as the next optimization target.
+Real hardware validation on AWS c6i.metal (Intel Xeon Platinum 8375C, 2 sockets, 128 vCPUs, NUMA distance 10/20) confirms the cross-domain signal on this NUMA instance: 4.5--7.0% p50 cross-domain overhead, thread-local routing provides +60--65% improvement over round-robin, and ablation step D (thread-local routing) is the primary driver of the cross-domain signal (+21.0--38.9% Cross-OH). Get throughput scales +72% from 4→64 threads, validating the lock partitioning thesis for reads. Set throughput degrades -79% at 64 threads due to per-domain SpinLock contention, identifying striped SpinLocks or per-bucket ARC locks as the next optimization target.
 
-Phase 1 benchmark results on a QEMU NUMA simulation (2 nodes, 4 vCPUs) demonstrated that lock-free reads expose an 11.7% p50 and 13.3% p99 cross-node overhead---more than double the signal visible under shared_mutex (5.1% p50). Thread-local routing achieves 26--30% p50 and 31--41% p99 improvement over round-robin with lock-free reads, confirming that NUMA-aware placement provides compound benefits in both memory locality and synchronization reduction. A cross-VM baseline comparison reveals that per-node sharding provides a 3x concurrent Set and 1.2x concurrent Get throughput advantage through natural lock partitioning, at a mixed single-threaded cost (Set +3%, Get +17%). A five-step ablation study isolates each architectural decision: NUMA-aware allocation produces no signal in QEMU, per-node sharding serves as an architectural enabler, thread-local routing creates the first measurable locality signal (+18.3% cross-node overhead), and a shared-nothing variant using an MPSC slot queue adds +114% cross-node overhead (~1,500ns queue round-trip) with a break-even at ~21 cache misses per operation on Xeon hardware.
+Phase 1 benchmark results on a QEMU NUMA simulation (2 nodes, 4 vCPUs) demonstrated that lock-free reads expose an 11.7% p50 and 13.3% p99 cross-domain overhead---more than double the signal visible under shared_mutex (5.1% p50). Thread-local routing achieves 26--30% p50 and 31--41% p99 improvement over round-robin with lock-free reads, confirming that topology-aware placement provides compound benefits in both memory locality and synchronization reduction. A cross-VM baseline comparison reveals that per-domain sharding provides a 3x concurrent Set and 1.2x concurrent Get throughput advantage through natural lock partitioning, at a mixed single-threaded cost (Set +3%, Get +17%). A five-step ablation study isolates each architectural decision: topology-aware allocation produces no signal in QEMU, per-domain sharding serves as an architectural enabler, thread-local routing creates the first measurable locality signal (+18.3% cross-domain overhead), and a shared-nothing variant using an MPSC slot queue adds +114% cross-domain overhead (~1,500ns queue round-trip) with a break-even at ~21 cache misses per operation on Xeon hardware.
 
 ## 1. Problem Statement
 
-Modern multi-socket servers expose NUMA topology where memory access latency depends on which socket the data resides on. Remote NUMA access (cross-socket) can be 1.2-2x slower than local access. Existing caching systems either ignore NUMA topology entirely (Redis, Memcached) or handle it at coarse granularity (Meta's CacheLib uses static per-node sharding). To our knowledge, no published system combines NUMA topology as an adaptive input to per-page cache placement decisions.
+Modern servers expose asymmetric memory topologies --- NUMA, CXL-attached memory, HBM tiers, persistent memory --- where memory access latency depends on which domain the data resides on. Cross-domain access can be 1.2--10x slower than local access, with the asymmetry increasing as CXL and far-memory technologies deploy. NUMA is the most widespread instance of this asymmetry today (2-socket servers, 1.2--2x latency ratio); CXL-attached memory (3--5x) and tiered memory architectures (5--10x) represent the emerging and more challenging cases. Existing caching systems either ignore memory topology entirely (Redis, Memcached) or handle it at coarse granularity (Meta's CacheLib uses static per-domain sharding). To our knowledge, no published system combines asymmetric memory topology as an adaptive input to per-page cache placement decisions.
 
-Furrballs targets this gap: allocate cache pages on the NUMA node of the thread that accesses them, measure the locality benefit, and provide a structured architecture for evolving the policy.
+Furrballs targets this gap: allocate cache pages on the memory domain closest to the thread that accesses them, measure the locality benefit, and provide a structured architecture for evolving the policy across topology types.
 
 ## 2. Design
 
@@ -82,7 +83,7 @@ Phase 2a: CMap-based concurrent key store with ARC policy via ConcurrentARC. Pag
 
 The **page** is the atomic locality unit in Furrballs. All NUMA placement decisions operate at page granularity: a page is allocated on a specific NUMA node via `Numatic::AllocateOnNode()`, and all data within that page shares the same NUMA affinity. Keys are packed into pages via the bump allocator (§2.4), and each key's `KeyMeta` records which page it belongs to (`PageIndex`) and which node the page resides on (`NodeID`).
 
-The separation of locality unit (page) from access unit (key) is deliberate: it allows the eviction policy (Phase 2) to make decisions at page granularity---evicting an entire page reclaims memory and resets the bump allocator---while the application operates at key granularity via `Set`/`Get`. Phase 2b replaced the planned two-level ARC hierarchy (L1 key-level + L2 page-level) with a single unified REMARC policy (§3.29), where per-key REMARC scores drive both key-level and page-level decisions from the same state. The NUMA signal flows through the unified policy: a page with many cross-node key accesses accumulates higher remote scores, making it a preferred eviction candidate.
+The separation of locality unit (page) from access unit (key) is deliberate: it allows the eviction policy (Phase 2) to make decisions at page granularity---evicting an entire page reclaims memory and resets the bump allocator---while the application operates at key granularity via `Set`/`Get`. Phase 2b replaced the planned two-level ARC hierarchy (L1 key-level + L2 page-level) with a single unified REMARC policy (§3.29), where per-key REMARC scores drive both key-level and page-level decisions from the same state. The locality signal flows through the unified policy: a page with many cross-domain key accesses accumulates higher remote scores, making it a preferred eviction candidate.
 
 ### 2.1.2 Cross-Node Access Behavior
 
@@ -121,7 +122,7 @@ Error Set(const std::string& key, void* data, size_t size);
 Error Get(const std::string& key, void* outBuf, size_t bufSize, size_t& outSize);
 ```
 
-Key routing supports two strategies, selectable at runtime via `NumaConfig::UseThreadLocalRouting`: round-robin distribution via `AtomicRoundRobin` (default), and thread-local placement via `Numatic::GetCurrentNode()`. Both strategies are NUMA-aware: round-robin distributes keys evenly across nodes, while thread-local places keys on the requesting thread's node for maximum locality. The trade-off is that `Get()` must search all node shards when the key's location is unknown---a cost that will be eliminated by a key routing table in Phase 4.
+Key routing supports two strategies, selectable at runtime via `NumaConfig::UseThreadLocalRouting`: round-robin distribution via `AtomicRoundRobin` (default), and thread-local placement via `Numatic::GetCurrentNode()`. Both strategies are topology-aware: round-robin distributes keys evenly across domains, while thread-local places keys on the requesting thread's domain for maximum locality. The trade-off is that `Get()` must search all node shards when the key's location is unknown---a cost that will be eliminated by a key routing table in Phase 4.
 
 ### 2.4 Bump Allocator
 
@@ -203,7 +204,7 @@ CMap is a lock-free-read, CAS-based-write concurrent hash map that replaces the 
 - No stored keys: 128-bit hash split into H1 (64-bit, group index) + H2 (64-bit, fingerprint). Collision = cache miss, acceptable for a cache. 64-bit fingerprint collision probability: ~2^-64 per pair.
 - Fixed capacity, no resize (Phase 2a)
 - No iteration (ARC tracks entries externally)
-- NUMA-blind: memory provided by caller at construction
+- Topology-blind: memory provided by caller at construction
 - Value must be trivially copyable (required for seq-based memcpy reads) and move constructible (required for future resize)
 
 #### 2.7.2 Data Layout
@@ -316,7 +317,7 @@ Deleted slots (`0xFE`) are reused on subsequent inserts. The probe records the f
 
 #### 2.7.7 Allocator Interface
 
-CMap uses `CMapAllocFn = void*(*)(size_t)` and `CMapFreeFn = void(*)(void*, size_t)` function pointers, defaulting to `::operator new` / `::operator delete` with `std::align_val_t{64}`. For NUMA-aware allocation, callers pass `Numatic::AllocateLocal` and `Numatic::FreeNUMA`. This keeps CMap NUMA-blind --- memory placement is the caller's responsibility.
+CMap uses `CMapAllocFn = void*(*)(size_t)` and `CMapFreeFn = void(*)(void*, size_t)` function pointers, defaulting to `::operator new` / `::operator delete` with `std::align_val_t{64}`. For topology-aware allocation, callers pass `Numatic::AllocateLocal` and `Numatic::FreeNUMA`. This keeps CMap topology-blind --- memory placement is the caller's responsibility.
 
 #### 2.7.8 Fail-Fast Contention Model
 
@@ -585,7 +586,7 @@ cross_node_migrate(hashPair, destNode):
 
 **Failure handling:** If the dest insert fails (CAS contention), the value data occupies dead space on the dest page (reclaimed on page eviction). If the source erase fails (CAS contention), the retry loop eventually succeeds. During retries, the key is on both nodes --- dual ownership is invisible to readers and correct for Gets. A concurrent `Set()` targeting this key during the dual-ownership window would hit the source (pre-erase) or the dest (post-insert) --- both correct.
 
-The CMap entry fully relocates to the destination node, restoring the sole-owner invariant after the erase completes. Cross-node migration is rare (high threshold) and represents the thesis's NUMA-aware placement contribution: data moves to where the threads that access it are.
+The CMap entry fully relocates to the destination node, restoring the sole-owner invariant after the erase completes. Cross-domain migration is rare (high threshold) and represents the thesis's topology-aware placement contribution: data moves to where the threads that access it are.
 
 #### 2.9.5 Whole-Page Persistent Storage
 
@@ -644,7 +645,7 @@ Evicted pages accumulate in RocksDB. For the thesis, cleanup strategies:
 
 - **TTL per page:** Each evicted page gets a timestamp. After N seconds, RocksDB compaction deletes it. Access after TTL = true `KEY_NOT_FOUND`.
 - **On shutdown:** Full RocksDB cleanup/compaction. Speed is irrelevant at shutdown.
-- **Separate process:** Persistent storage maintenance is orthogonal to the thesis contribution (NUMA-aware in-memory caching). Could be a standalone tool that compacts and prunes RocksDB independently of Furrballs.
+- **Separate process:** Persistent storage maintenance is orthogonal to the thesis contribution (topology-aware in-memory caching). Could be a standalone tool that compacts and prunes RocksDB independently of Furrballs.
 
 The `evictedKeyIndex_` (H2 → PageId) is in-memory only. If the process restarts, the index is lost --- but this is a cache, not a database. Cold restart warms up from scratch, which is the expected behavior for a caching layer.
 
@@ -663,12 +664,12 @@ The `evictedKeyIndex_` (H2 → PageId) is in-memory only. If the process restart
 ### 3.3 Key Routing Strategy
 **Decision:** Keys are routed via either `AtomicRoundRobin` (default) or `Numatic::GetCurrentNode()` (thread-local), selected at runtime by a `NumaConfig::UseThreadLocalRouting` flag. The dispatch uses a ternary operator: `ThreadLocalRoute ? Numatic::GetCurrentNode() : rr.Get()`.
 
-**Rationale:** Round-robin provides uniform distribution. Thread-local routing places keys on the requesting thread's node, maximizing read-after-write locality. Both strategies are NUMA-aware---placement decisions consider topology. The cost is that `Get()` must iterate all node shards when the key's location is not known, which adds overhead proportional to the node count. Hash-based routing (`hash(key) % nodeCount`) was evaluated as an alternative that eliminates shard iteration, but it is NUMA-blind (placement ignores topology) and was rejected for the thesis because it weakens the NUMA-aware placement claim. A future key routing table (Phase 4) will provide O(1) lookup while preserving topology-aware placement.
+**Rationale:** Round-robin provides uniform distribution. Thread-local routing places keys on the requesting thread's node, maximizing read-after-write locality. Both strategies are topology-aware---placement decisions consider topology. The cost is that `Get()` must iterate all node shards when the key's location is not known, which adds overhead proportional to the node count. Hash-based routing (`hash(key) % nodeCount`) was evaluated as an alternative that eliminates shard iteration, but it is topology-blind (placement ignores topology) and was rejected for the thesis because it weakens the topology-aware placement claim. A future key routing table (Phase 4) will provide O(1) lookup while preserving topology-aware placement.
 
 ### 3.4 All-or-Nothing NUMA Init
 **Decision:** If any node fails to allocate during `CreateBall()`, all successful allocations are freed and `nullptr` is returned.
 
-**Rationale:** Partial NUMA topology (e.g., one node fails, fallback to single-node) eliminates the NUMA variable from benchmarks. One node = uniform memory access = no NUMA effect to measure.
+**Rationale:** Partial topology (e.g., one domain fails, fallback to single-domain) eliminates the asymmetry variable from benchmarks. One domain = uniform memory access = no cross-domain effect to measure.
 
 ### 3.5 WaitGroup for Parallel Init
 **Decision:** NodeJob workers allocate their node's physical block in parallel, synchronized by StreamLine's `WaitGroup`.
@@ -800,7 +801,7 @@ This section documents the full decision-making process from the Phase 2b design
 | CMap entry relocation | Move CMap entry from source to dest node (preserves sole-owner invariant) | Keep CMap entry on source, update KeyMeta to point to dest page data (breaks sole-owner invariant, concurrent Gets hit source node first anyway) |
 | Migration ordering | Insert into dest CMap first, then erase from source (insert-before-erase) | Erase from source first, then insert into dest (creates transient miss window where key exists in no CMap, returning wrong KEY_NOT_FOUND) |
 | Transient miss mitigation | Insert-before-erase eliminates the window entirely | MIGRATING ctrl byte forwarding tombstone (correct but unnecessary complexity); `std::unordered_map<uint64_t, uint8_t>` inflight migration table (correct but extra data structure for a solved problem) |
-| Defer cross-node migration | Include in Phase 2b design | Defer to later phase (rejected because cross-node migration is the thesis's NUMA-aware placement contribution) |
+| Defer cross-node migration | Include in Phase 2b design | Defer to later phase (rejected because cross-domain migration is the thesis's topology-aware placement contribution) |
 
 #### Compactor trigger
 
@@ -847,13 +848,13 @@ This section documents the full decision-making process from the Phase 2b design
 
 ### 3.28 ARC Dimensionality: Recency is One Axis, Locality is Another
 
-**Context:** The Phase 2b design (§2.9, §3.27) uses ConcurrentARC (key-level ARC, §2.8) as the eviction policy and bolts cross-node migration on top via TempCtrl state bits (REMOTE = 0x04) and CrossNodeAccesses thresholds (§2.9.4). During design refinement, this approach produced persistent friction: "who sets REMOTE, when?" "What if a key is HOT but REMOTE?" "ARC says keep it, but NUMA says move it." The design session produced six categories of decisions (§3.27) but the cross-node migration category felt fundamentally ad hoc compared to the others. This section documents the insight that explains the friction and the architectural direction that resolves it.
+**Context:** The Phase 2b design (§2.9, §3.27) uses ConcurrentARC (key-level ARC, §2.8) as the eviction policy and bolts cross-node migration on top via TempCtrl state bits (REMOTE = 0x04) and CrossNodeAccesses thresholds (§2.9.4). During design refinement, this approach produced persistent friction: "who sets REMOTE, when?" "What if a key is HOT but REMOTE?" "ARC says keep it, but locality says move it." The design session produced six categories of decisions (§3.27) but the cross-node migration category felt fundamentally ad hoc compared to the others. This section documents the insight that explains the friction and the architectural direction that resolves it.
 
 #### The dimensionality mismatch
 
 ARC classifies cache entries along exactly one dimension: **recency** (how recently was this entry accessed?). The ARC state machine has two inputs (access frequency, access recency) but produces one output (hot → cold → ghost → evicted). The `p_` tuning parameter adjusts where the boundary falls, but it's always a single boundary on a single axis.
 
-Cross-node migration requires classification along a **second dimension: NUMA locality** (is this key on the node that accesses it?). This produces four quadrants:
+Cross-domain migration requires classification along a **second dimension: memory locality** (is this key on the node that accesses it?). This produces four quadrants:
 
 | | LOCAL (correct node) | REMOTE (wrong node) |
 |---|---|---|
@@ -907,13 +908,13 @@ The Phase 2b redesign separates concerns into three co-equal mechanisms, each ha
 - Separate from ARC entirely. Not a recency policy; a locality policy.
 - Driven by CrossNodeAccesses threshold in KeyMeta (already designed, §3.27).
 - When threshold exceeded: migrate key to the accessing node (insert-before-erase, §2.9.4).
-- This is Furrballs' NUMA-aware placement contribution. It doesn't compete with ARC — it's orthogonal. A key can be HOT+REMOTE (ARC says keep, migration says move) or COLD+LOCAL (ARC says evict, migration says fine where it is). The two policies produce independent signals that are AND-ed, not OR-ed.
+- This is Furrballs' topology-aware placement contribution. It doesn't compete with ARC — it's orthogonal. A key can be HOT+REMOTE (ARC says keep, migration says move) or COLD+LOCAL (ARC says evict, migration says fine where it is). The two policies produce independent signals that are AND-ed, not OR-ed.
 
 #### Implications for ConcurrentARC
 
 Under this model, ConcurrentARC's role narrows:
 
-- **CMap** — still needed. Concurrent key storage with seqlock reads. NUMA-blind component. Unchanged.
+- **CMap** — still needed. Concurrent key storage with seqlock reads. Topology-blind component. Unchanged.
 - **ArcList** — still needed if key-level ARC tracking is preserved for intra-node compaction (ARC evicts key → callback sets TempCtrl = COLD → compactor migrates to cold page). But key-level ARC is now strictly an intra-node mechanism, not the eviction authority.
 - **PromoteBuf** — still needed for deferred promotions out of the read path.
 - **SpinLock** — still needed for ARC list mutations.
@@ -1193,7 +1194,7 @@ where `A_i` are **atoms** (access signal extractors like recency, frequency, per
 - The delivery--quota tension (Finding 27): more accurate eviction selection requires bypassing ARC's list structure, but this corrupts ARC's p-adaptation. AUG-ADAPT resolves this via self-tuning rather than architectural change.
 - QuotaFree (pure prediction, no ARC structure) collapses on scan workloads (11.38% Zipfian, 12.01% ScanRes vs ARC's 35.17%/88.90%) because cold keys with no access history cannot be predicted (Finding 31). Ghost lists provide delayed future observation that pure prediction cannot replicate.
 
-The companion paper [Sphynx2025] provides the full evaluation, theory, and algorithmic details. Furrballs serves as the implementation platform and target for real-NUMA deployment.
+The companion paper [Sphynx2025] provides the full evaluation, theory, and algorithmic details. Furrballs serves as the implementation platform for real-hardware deployment on NUMA and other asymmetric memory topologies.
 
 ### 3.31 Engineering Decisions (Phase 2b Development)
 
@@ -1214,20 +1215,20 @@ The PolicyBench simulation harness and REMARC paper evaluation drove several eng
 
 ## 4. Related Work
 
-| System | NUMA Approach | Difference from Furrballs |
+| System | Memory Topology Approach | Difference from Furrballs |
 |---|---|---|
-| TCMalloc | NUMA-aware allocation | Allocator only; no cache eviction or page management |
-| jemalloc | NUMA-aware arenas | Allocator only; no cache policy |
+| TCMalloc | Topology-aware allocation | Allocator only; no cache eviction or page management |
+| jemalloc | Topology-aware arenas | Allocator only; no cache policy |
 | CacheLib (Meta) | Static sharding per node | Coarse-grained; entire cache instance per node |
 | PostgreSQL | Shared buffers with partition locks | Database buffer pool; not a standalone cache |
 | InnoDB | Buffer pool instances | Database storage; not a cache library |
-| Redis | No NUMA awareness | Baseline comparison point |
+| Redis | No topology awareness | Baseline comparison point |
 | Rayhan & Aref (2025) | Custom `move_pages2` kernel syscall | Kernel-level page migration optimization for DBMS; no cache placement policy |
 | US11561834B2 (Rambus) | ML-based metablock placement via RL | External optimizer using reinforcement learning; no per-page cache eviction |
-| Sphynx (2025) [Sphynx2025] | General cache policy framework (REMARC) | Algorithm-level policy framework; no NUMA awareness, no systems implementation |
-| Furrballs | Per-page placement + REMARC unified policy | Fine-grained, adaptive, page-level NUMA locality as policy input |
+| Sphynx (2025) [Sphynx2025] | General cache policy framework (REMARC) | Algorithm-level policy framework; no topology awareness, no systems implementation |
+| Furrballs | Per-page placement + REMARC unified policy | Fine-grained, adaptive, page-level memory locality (NUMA in current implementation) as policy input |
 
-To our knowledge, no published system implements page-level cache eviction policy informed by NUMA placement and cross-node access frequency. NUMA-aware allocators (TCMalloc, jemalloc) handle placement but not eviction; NUMA-aware caches (CacheLib) use static sharding without adaptive per-page locality decisions. Rayhan & Aref's `move_pages2` syscall improves kernel-level page migration efficiency for DBMS workloads (up to 1.84x query throughput improvement) but does not address user-space cache placement policy---it is complementary to Furrballs' approach, which avoids runtime page migration entirely via track-and-defer eviction. Rambus's US11561834B2 patent describes an ML-based reinforcement learning system for adaptive metablock placement across NUMA tiers, operating as an external optimizer above the OS rather than as a user-space caching library with integrated NUMA-aware eviction. The companion REMARC paper [Sphynx2025] (DOI: 10.5281/zenodo.19794758) formalizes the policy framework and evaluates 24 variants across five workloads; Furrballs provides the systems platform for NUMA-aware deployment of that framework.
+To our knowledge, no published system implements page-level cache eviction policy informed by asymmetric memory placement and cross-domain access frequency. Topology-aware allocators (TCMalloc, jemalloc) handle placement but not eviction; topology-aware caches (CacheLib) use static sharding without adaptive per-page locality decisions. Rayhan & Aref's `move_pages2` syscall improves kernel-level page migration efficiency for DBMS workloads (up to 1.84x query throughput improvement) but does not address user-space cache placement policy---it is complementary to Furrballs' approach, which avoids runtime page migration entirely via track-and-defer eviction. Rambus's US11561834B2 patent describes an ML-based reinforcement learning system for adaptive metablock placement across NUMA tiers, operating as an external optimizer above the OS rather than as a user-space caching library with integrated topology-aware eviction. The companion REMARC paper [Sphynx2025] (DOI: 10.5281/zenodo.19794758) formalizes the policy framework and evaluates 24 variants across five workloads; Furrballs provides the systems platform for topology-aware deployment of that framework.
 
 ## 5. Evaluation
 
@@ -1237,9 +1238,9 @@ Benchmarks run on two platforms:
 - **Host (baseline):** Single NUMA node, VPS, Ubuntu 24.04, x86_64, GCC 14, CMake Release
 - **QEMU VM (NUMA simulation):** 2 NUMA nodes, 4 vCPUs (2 per node), 4GB RAM, Ubuntu 24.04
 
-Each scenario is repeated 3--10 times depending on section (QEMU sections: 3--5 runs; real hardware sections: 10 runs). Reported values are averages across iterations. The QEMU VM adds approximately 600ns of emulation overhead per operation. To isolate the NUMA effect, we compare local vs cross-node reads under identical conditions within the VM.
+Each scenario is repeated 3--10 times depending on section (QEMU sections: 3--5 runs; real hardware sections: 10 runs). Reported values are averages across iterations. The QEMU VM adds approximately 600ns of emulation overhead per operation. To isolate the asymmetric memory effect (NUMA in this case), we compare local vs cross-domain reads under identical conditions within the VM.
 
-**Thread placement:** Multi-threaded benchmarks pin each worker thread to a specific NUMA node via `PinCurrentThreadToNode()` (wrapping `numa_run_on_node()`). This is strictly a measurement concession to isolate local vs cross-node latencies without scheduler migration confounds. It is not part of the library's contract — Furrballs treats NUMA as a first-class internal concern: per-node allocation, key routing, and eviction are all handled by the library without requiring callers to be NUMA-aware or to pin threads. The internal `NodeJob` workers are the only permanently pinned threads. In production, callers run unmodified; the library detects and adapts to the topology at initialization.
+**Thread placement:** Multi-threaded benchmarks pin each worker thread to a specific NUMA node via `PinCurrentThreadToNode()` (wrapping `numa_run_on_node()`). This is strictly a measurement concession to isolate local vs cross-node latencies without scheduler migration confounds. It is not part of the library's contract — Furrballs treats memory topology as a first-class internal concern: per-domain allocation, key routing, and eviction are all handled by the library without requiring callers to be topology-aware or to pin threads. The internal `NodeJob` workers are the only permanently pinned threads. In production, callers run unmodified; the library detects and adapts to the topology at initialization.
 
 **Simulated NUMA latency:** Since QEMU does not simulate real cross-node memory access latency, we optionally inject a calibrated busy-wait delay via the compile flag `-DSIMULATE_NUMA_LATENCY_NS=VALUE`. When enabled, `Get()` detects whether the calling thread is on a different NUMA node than the target key's placement node, and spins for `VALUE` nanoseconds using `rdtsc`-based busy-wait with runtime TSC calibration. The delay is placed before the `SeqLock::Read()` call to model the cost of accessing remote memory. Default values are sourced from published hardware specifications: Intel Xeon cross-socket ~70ns, AMD EPYC Milan ~50ns. This simulation validates that the architecture responds correctly to NUMA latency signals, but does not substitute for real hardware measurement.
 
@@ -1273,7 +1274,7 @@ cmake --build . --target Benchmark
 
 Host-to-VM ratio: approximately 5-6x slower in the VM due to QEMU emulation overhead.
 
-### 5.4 NUMA Effect (QEMU VM, 2 threads, 5 iterations averaged)
+### 5.4 Cross-Domain Effect (NUMA Instance) (QEMU VM, 2 threads, 5 iterations averaged)
 
 Two threads, each pinned to a different NUMA node. One thread writes keys to its local node, the other reads them from the remote node. Results compare shared_mutex reads (v0.5) vs SeqLock lock-free reads (v0.6).
 
@@ -1286,9 +1287,9 @@ Two threads, each pinned to a different NUMA node. One thread writes keys to its
 | 512B (v0.6, SeqLock) | p50 | 1,252 | 1,299 | 3.8% |
 | 512B (v0.6, SeqLock) | p99 | 2,199 | 2,243 | 2.0% |
 
-**Key finding:** Lock-free reads (SeqLock) expose a cross-node p50 overhead of 11.7%, more than double the 5.1% visible under `shared_mutex`. The lock was masking the true NUMA memory latency signal. The p99 overhead increased from 11.0% to 13.3%, confirming the effect is consistent across latency percentiles. The 512-byte results remain noisy due to QEMU scheduling artifacts---real hardware validation is expected to show a cleaner signal at all value sizes.
+**Key finding:** Lock-free reads (SeqLock) expose a cross-node p50 overhead of 11.7%, more than double the 5.1% visible under `shared_mutex`. The lock was masking the true cross-domain memory latency signal. The p99 overhead increased from 11.0% to 13.3%, confirming the effect is consistent across latency percentiles. The 512-byte results remain noisy due to QEMU scheduling artifacts---real hardware validation is expected to show a cleaner signal at all value sizes.
 
-This result validates the thesis methodology: synchronization overhead must be eliminated from the read path to measure the true NUMA effect.
+This result validates the thesis methodology: synchronization overhead must be eliminated from the read path to measure the true cross-domain effect.
 
 ### 5.5 Concurrent Throughput (QEMU VM, 4 threads, 5 iterations averaged)
 
@@ -1327,11 +1328,11 @@ Two threads, each pinned to a different NUMA node (node 0 and node 1). Each thre
 | Cross-Get p50 | 1,292 | 901 | **30.3%** |
 | Cross-Get p99 | 2,677 | 1,582 | **40.9%** |
 
-Lock-free reads amplify the thread-local routing improvement from 8-10% p50 to **26-30% p50**. The lock was masking not only the NUMA effect but also the routing strategy benefit. Thread-local routing with SeqLock achieves 26-41% improvement across all Get metrics, confirming that the compound benefit of NUMA-aware placement (memory locality + reduced synchronization) is genuine and measurable.
+Lock-free reads amplify the thread-local routing improvement from 8-10% p50 to **26-30% p50**. The lock was masking not only the cross-domain effect but also the routing strategy benefit. Thread-local routing with SeqLock achieves 26-41% improvement across all Get metrics, confirming that the compound benefit of topology-aware placement (memory locality + reduced synchronization) is genuine and measurable.
 
 ### 5.7 Baseline Comparison: Cross-VM Isolation (3 runs each)
 
-To isolate the NUMA contribution, Furrballs runs in the NUMA VM (2 nodes) and the BaselineCache runs in a separate non-NUMA VM (1 node, same QEMU overhead, no NUMA topology). The BaselineCache uses identical mechanisms (SeqLock reads, CAS bump allocator, per-op timing) but eliminates all NUMA-specific design choices: single `malloc`-backed allocation, single `unordered_map` (no per-node shards), single `shared_mutex`.
+To isolate the topology contribution, Furrballs runs in the NUMA VM (2 nodes) and the BaselineCache runs in a separate non-NUMA VM (1 node, same QEMU overhead, no NUMA topology). The BaselineCache uses identical mechanisms (SeqLock reads, CAS bump allocator, per-op timing) but eliminates all topology-specific design choices: single `malloc`-backed allocation, single `unordered_map` (no per-node shards), single `shared_mutex`.
 
 **Single-threaded 64B (3 runs averaged):**
 
@@ -1406,18 +1407,18 @@ To isolate the individual contribution of each architectural decision, we constr
 | Step | Configuration | ST Set p50 (ns) | ST Get p50 (ns) | Self-Get p50 (ns) | Cross-Get p50 (ns) | Cross-OH |
 |---|---|---:|---:|---:|---:|---:|
 | A | Baseline: `malloc`, single map, single mutex | 811 | 755 | 869 | 870 | 0.0% |
-| B | + NUMA-aware allocation (per-node pages, single map) | 827 | 750 | 854 | 842 | -1.4% |
+| B | + Topology-aware allocation (per-domain pages, single map) | 827 | 750 | 854 | 842 | -1.4% |
 | C | + Per-node sharding (separate maps + mutexes per node) | 830 | 831 | 1,070 | 1,050 | -1.9% |
 | D | + Thread-local routing (`GetCurrentNode()` placement) | 1,113 | 1,061 | 1,193 | 1,411 | **18.3%** |
 | E | + Shared-nothing cross-node reads (MPSC queue) | 1,189 | 1,134 | 1,399 | 2,989 | **113.9%** |
 
 **Step-by-step analysis:**
 
-**A→B (NUMA-aware allocation):** Replacing `malloc` with `Numatic::AllocateOnNode()` for page data produces negligible overhead: ST Set +2% (811→827ns), ST Get -0.7% (755→750ns). This is the expected result in QEMU, which does not simulate hardware NUMA latency---all memory accesses have identical latency regardless of NUMA node. The allocation change is architecturally invisible without genuine cross-node latency differentiation. Cross-OH remains flat (0.0% → -1.4%), confirming that per-node allocation alone does not create a measurable locality signal in this environment.
+**A→B (Topology-aware allocation):** Replacing `malloc` with `Numatic::AllocateOnNode()` for page data produces negligible overhead: ST Set +2% (811→827ns), ST Get -0.7% (755→750ns). This is the expected result in QEMU, which does not simulate hardware NUMA latency---all memory accesses have identical latency regardless of NUMA node. The allocation change is architecturally invisible without genuine cross-node latency differentiation. Cross-OH remains flat (0.0% → -1.4%), confirming that per-node allocation alone does not create a measurable locality signal in this environment.
 
-**B→C (Per-node sharding):** Set performance is unchanged (827→830ns), confirming that the single-lock bottleneck in B was not a factor at this thread count. Get p50 increases by 10.8% (750→831ns) due to shard iteration overhead: `Get()` must now search per-node shards when the key's location is unknown, adding map lookup indirection. MT Self/Cross latencies increase proportionally (854→1,070 and 842→1,050) from the same shard search. Cross-OH remains flat (-1.4% → -1.9%), confirming sharding alone does not produce a NUMA signal. The purpose of this step is architectural (enabling per-node isolation for subsequent routing decisions), not a performance optimization at 2 threads. The lock partitioning benefit of sharding becomes significant at higher thread counts (see §5.7: 3x concurrent Set throughput with 4 threads).
+**B→C (Per-node sharding):** Set performance is unchanged (827→830ns), confirming that the single-lock bottleneck in B was not a factor at this thread count. Get p50 increases by 10.8% (750→831ns) due to shard iteration overhead: `Get()` must now search per-node shards when the key's location is unknown, adding map lookup indirection. MT Self/Cross latencies increase proportionally (854→1,070 and 842→1,050) from the same shard search. Cross-OH remains flat (-1.4% → -1.9%), confirming sharding alone does not produce a cross-domain signal. The purpose of this step is architectural (enabling per-node isolation for subsequent routing decisions), not a performance optimization at 2 threads. The lock partitioning benefit of sharding becomes significant at higher thread counts (see §5.7: 3x concurrent Set throughput with 4 threads).
 
-**C→D (Thread-local routing):** Cross-node overhead jumps from -1.9% to **18.3%** --- the first measurable NUMA signal in the ablation. Under round-robin (C), keys are distributed uniformly across nodes, so self-Get and cross-Get have similar latency regardless of the accessing thread's NUMA node. Thread-local routing concentrates keys on the writing thread's node, creating genuine locality: self-Get finds the key on the local shard (fast path via optimistic local-first lookup), while cross-Get must search the remote shard. ST latency increases (Set +34%, Get +28%) due to `Numatic::GetCurrentNode()` syscall overhead per Set and the less uniform key distribution. This step is where the architecture transitions from NUMA-agnostic infrastructure to NUMA-aware behavior.
+**C→D (Thread-local routing):** Cross-node overhead jumps from -1.9% to **18.3%** --- the first measurable cross-domain signal in the ablation. Under round-robin (C), keys are distributed uniformly across nodes, so self-Get and cross-Get have similar latency regardless of the accessing thread's domain. Thread-local routing concentrates keys on the writing thread's domain, creating genuine locality: self-Get finds the key on the local shard (fast path via optimistic local-first lookup), while cross-Get must search the remote shard. ST latency increases (Set +34%, Get +28%) due to `Numatic::GetCurrentNode()` syscall overhead per Set and the less uniform key distribution. This step is where the architecture transitions from topology-agnostic infrastructure to topology-aware behavior.
 
 **D→E (Shared-nothing):** Cross-Get p50 increases by 112% (1,411→2,989ns), while local operations see a modest increase (Set +7%, Get +7%). The ~1,578ns cross-node penalty is the MPSC slot queue round-trip: claim → fill → submit → worker processes → complete → read response. Local operations bypass the queue entirely; the small overhead comes from CPU competition with spin-polling worker threads (2 benchmark threads + 2 workers on 4 vCPUs). On real hardware with dedicated cores, this local overhead would approach zero.
 
@@ -1425,9 +1426,9 @@ To isolate the individual contribution of each architectural decision, we constr
 
 | Design Decision | Contribution | Evidence |
 |---|---|---|
-| NUMA-aware allocation | **No signal in QEMU** (+2% Set, within noise) | Requires real hardware NUMA latency to manifest |
+| Topology-aware allocation | **No signal in QEMU** (+2% Set, within noise) | Requires real hardware NUMA latency to manifest |
 | + Per-node sharding | **Architectural enabler** (+11% Get from shard search) | Lock partitioning benefit visible at higher thread counts (§5.7) |
-| + Thread-local routing | **Exposes NUMA signal** (+20pp cross-OH) | Locality creates measurable local/remote gap |
+| + Thread-local routing | **Exposes cross-domain signal** (+20pp cross-OH) | Locality creates measurable local/remote gap |
 | + Shared-nothing queue | **Eliminates cross-node reads** (+112% cross-Get) | Queue cost > direct cross-node access for small values |
 
 ### 5.11 Variant Comparison: Shared Memory vs Shared-Nothing (QEMU VM, 3 runs averaged)
@@ -1590,18 +1591,18 @@ The same five-step ablation structure as §5.10, re-measured with Phase 2a's CMa
 | Step | Configuration | ST Set p50 (ns) | ST Get p50 (ns) | Self-Get p50 (ns) | Cross-Get p50 (ns) | Cross-OH |
 |---|---|---:|---:|---:|---:|---:|
 | A | Baseline: `malloc`, single CMap, single SpinLock | 817 | 824 | 850 | 844 | -0.8% |
-| B | + NUMA-aware allocation (per-node pages, single CMap) | 934 | 795 | 977 | 915 | -6.3% |
+| B | + Topology-aware allocation (per-domain pages, single CMap) | 934 | 795 | 977 | 915 | -6.3% |
 | C | + Per-node sharding (separate CMaps per node) | 984 | 938 | 1,032 | 1,007 | -2.5% |
 | D | + Thread-local routing (`GetCurrentNode()` with `thread_local` cache) | 924 | 859 | 1,049 | 1,020 | -2.8% |
 | E | + Shared-nothing cross-node reads (MPSC queue) | 1,020 | 919 | 934 | 2,354 | +152.1% |
 
 **Step-by-step analysis:**
 
-**A→B (NUMA-aware allocation):** ST Set increases by 14% (817→934ns) --- larger than Phase 1's +2% --- because CMap's allocator interface calls `Numatic::AllocateLocal` for both ctrl and slot arrays, adding NUMA allocation overhead on top of the baseline's `malloc`. ST Get actually *improves* by 3.5% (824→795ns), likely due to QEMU scheduling artifacts.
+**A→B (Topology-aware allocation):** ST Set increases by 14% (817→934ns) --- larger than Phase 1's +2% --- because CMap's allocator interface calls `Numatic::AllocateLocal` for both ctrl and slot arrays, adding NUMA allocation overhead on top of the baseline's `malloc`. ST Get actually *improves* by 3.5% (824→795ns), likely due to QEMU scheduling artifacts.
 
 **B→C (Per-node sharding):** ST Set +5% (934→984ns), ST Get +18% (795→938ns). The sharding overhead is larger than Phase 1's +11% Get because CMap's Swiss table probe is more expensive per-shard than `unordered_map::find()`, and the shard iteration now probes N separate CMaps.
 
-**C→D (Thread-local routing):** Unlike Phase 1's +34% Set increase from `GetCurrentNode()` syscall overhead, Step D shows a *decrease* in both Set (-6%, 984→924ns) and Get (-8%, 938→859ns). The `thread_local` cache (§3.15) eliminated the syscall, and thread-local routing provides better cache locality for the Swiss table's ctrl array when keys are concentrated on one node. Cross-OH remains flat (-2.5% → -2.8%), confirming the NUMA signal is still invisible in QEMU.
+**C→D (Thread-local routing):** Unlike Phase 1's +34% Set increase from `GetCurrentNode()` syscall overhead, Step D shows a *decrease* in both Set (-6%, 984→924ns) and Get (-8%, 938→859ns). The `thread_local` cache (§3.15) eliminated the syscall, and thread-local routing provides better cache locality for the Swiss table's ctrl array when keys are concentrated on one node. Cross-OH remains flat (-2.5% → -2.8%), confirming the cross-domain signal is still invisible in QEMU.
 
 **D→E (Shared-nothing):** Cross-Get p50 increases by 130% (1,020→2,354ns), consistent with Phase 1's +112% from the MPSC queue round-trip. The absolute overhead is lower (1,334ns vs 1,578ns) because CMap's lock-free local read is faster than Phase 1's SeqLock read.
 
@@ -1612,11 +1613,11 @@ The same five-step ablation structure as §5.10, re-measured with Phase 2a's CMa
 | B→C Get overhead | +11% | +18% | CMap probe cost > unordered_map::find per shard |
 | C→D Set delta | +34% | -6% | `thread_local` cache eliminates syscall |
 | C→D Get delta | +28% | -8% | Same as above |
-| Cross-OH at step D | +18.3% | -2.8% | Thread-local cache makes routing cheap; NUMA signal remains invisible |
+| Cross-OH at step D | +18.3% | -2.8% | Thread-local cache makes routing cheap; cross-domain signal remains invisible |
 
 ### 5.18 Real Hardware Validation (c6i.metal, AWS, 10 iterations averaged)
 
-All previous evaluation (§5.2--§5.17) was conducted on a QEMU VM with 2 NUMA nodes and 4 vCPUs. QEMU does not simulate real cross-node memory latency (§5.9); the measured NUMA effects reflected scheduling artifacts rather than hardware memory access costs. This section presents results from real multi-socket hardware.
+All previous evaluation (§5.2--§5.17) was conducted on a QEMU VM with 2 NUMA nodes and 4 vCPUs. QEMU does not simulate real cross-node memory latency (§5.9); the measured effects reflected scheduling artifacts rather than hardware memory access costs. This section presents results from real multi-socket hardware.
 
 **Platform:** AWS c6i.metal (spot), Intel Xeon Platinum 8375C @ 2.90GHz, 2 sockets, 32 cores/socket, 128 vCPUs (HT), ~257 GB RAM, NUMA distance matrix 10/20 (2:1 local:remote ratio). Ubuntu 24.04, GCC 14.2.0, Release build, no simulated NUMA latency. 10 iterations averaged per test.
 
@@ -1638,7 +1639,7 @@ Real hardware is **6.8x faster (Set)** and **7.9x faster (Get)** than QEMU at p5
 | 64B | p50 | 504 | 527 | **+4.5%** |
 | 512B | p50 | 551 | 589 | **+7.0%** |
 
-Real hardware confirms the NUMA signal exists at p50 (4.5--7.0% cross-node overhead). The QEMU measurement of 11.7% (§5.4) was inflated by scheduling artifacts; real hardware shows a smaller but genuine signal. The 64B result is noisier due to OS jitter on the bare-metal instance.
+Real hardware confirms the cross-domain signal exists at p50 (4.5--7.0% cross-node overhead). The QEMU measurement of 11.7% (§5.4) was inflated by scheduling artifacts; real hardware shows a smaller but genuine signal. The 64B result is noisier due to OS jitter on the bare-metal instance.
 
 #### Routing Strategy (2 threads, one per node, 64B)
 
@@ -1680,9 +1681,9 @@ The concurrent Set ratio of **1.74x** is the fair comparison: both implementatio
 | D: + Thread-local | 141 | 128 | 512 | 619 | **+21.0%** |
 | E: + Shared-nothing | 135 | 111 | 434 | 1604 | +270.0% |
 
-Step D (thread-local routing) produces **+21.0% Cross-OH on real hardware** — the largest single contributor to the NUMA signal. This confirms the thesis: thread-local routing ensures that self-reads hit the local NUMA node, making the cross-node penalty measurable. The absolute Cross-OH varies between runs (+21.0% vs +38.9% in Run 1) due to EC2 spot instance hardware sharing, but the qualitative pattern (Step D is the largest positive contributor) is stable.
+Step D (thread-local routing) produces **+21.0% Cross-OH on real hardware** — the largest single contributor to the cross-domain signal. This confirms the thesis: thread-local routing ensures that self-reads hit the local domain, making the cross-node penalty measurable. The absolute Cross-OH varies between runs (+21.0% vs +38.9% in Run 1) due to EC2 spot instance hardware sharing, but the qualitative pattern (Step D is the largest positive contributor) is stable.
 
-**Real hardware vs QEMU (ablation step D):** QEMU showed -2.8% Cross-OH at step D (NUMA signal invisible). Real hardware shows +21.0% to +38.9%. This is the definitive validation that the architecture's NUMA benefit requires real cross-node memory latency to manifest.
+**Real hardware vs QEMU (ablation step D):** QEMU showed -2.8% Cross-OH at step D (NUMA signal invisible). Real hardware shows +21.0% to +38.9%. This is the definitive validation that the architecture's topology-aware benefit requires real cross-domain memory latency to manifest.
 
 #### Zipfian Workload (theta=0.99)
 
@@ -1691,7 +1692,7 @@ Step D (thread-local routing) produces **+21.0% Cross-OH on real hardware** — 
 | Round-robin | 383ns | 382ns | -0.2% | 0.0% |
 | Thread-local | 209ns | 232ns | **+10.8%** | 50.0% |
 
-Thread-local routing under skewed access produces a 10.8% cross-node overhead, confirming the NUMA signal persists under realistic workload distributions. The 50% optimistic hit rate means half of all cache hits land on the local node.
+Thread-local routing under skewed access produces a 10.8% cross-node overhead, confirming the cross-domain signal persists under realistic workload distributions. The 50% optimistic hit rate means half of all cache hits land on the local node.
 
 ### 5.19 Thread Scaling (c6i.metal, 10 iterations averaged)
 
@@ -1756,7 +1757,7 @@ Step D's stddev (3.8pp) confirms that the thread-local routing signal is statist
 
 #### Raw Data
 
-**A1: NUMA Cross-Node Overhead** (ARC, thread-local routing, 500 distinct keys, 10 iterations)
+**A1: Cross-Domain Overhead (NUMA Instance)** (ARC, thread-local routing, 500 distinct keys, 10 iterations)
 
 | Metric | Mean | Range |
 |--------|------|-------|
@@ -1930,7 +1931,7 @@ Level 2: PagePolicy (per-page REMARC instance / super-policy)
 
 Level 2's inputs come FROM Level 1's outputs. A page's "health" is the aggregate of its keys' scores. EPage already computes this (RemarcComputeEPage). The two levels compose: KeyPolicy decides which keys survive; PagePolicy decides where pages live and when they're recycled.
 
-This is analogous to Memcached's model: slab = allocation unit (our page), item = eviction unit (our key), slab reclamation = lazy/when-empty (our Level 2 recycle). Furrballs adds REMARC scoring at both levels plus NUMA-aware placement.
+This is analogous to Memcached's model: slab = allocation unit (our page), item = eviction unit (our key), slab reclamation = lazy/when-empty (our Level 2 recycle). Furrballs adds REMARC scoring at both levels plus topology-aware placement.
 
 #### Per-Key Eviction Implementation
 
@@ -2174,7 +2175,7 @@ Phase 1 delivered artifacts:
 - WaitGroup-synchronized parallel init
 - Full Numatic platform abstraction (13 functions, CRTP PMR allocators, Linux + Windows stubs)
 - Shared-nothing variant (MPSC slot queue, per-node workers) for cross-node read isolation
-- Comprehensive benchmark harness (single-threaded, multi-threaded NUMA effect, concurrent throughput, routing comparison, ablation study, variant comparison, simulated NUMA latency, 3--5 iterations with stddev)
+- Comprehensive benchmark harness (single-threaded, multi-threaded cross-domain effect, concurrent throughput, routing comparison, ablation study, variant comparison, simulated NUMA latency, 3--5 iterations with stddev)
 - Cross-VM baseline isolation methodology (NUMA VM vs non-NUMA VM)
 - Five-step ablation study isolating each architectural decision
 - 7/7 unit tests passing
@@ -2191,11 +2192,11 @@ Phase 2a delivered artifacts:
 - Phase 2a benchmark suite (ST, concurrent, routing, inline baseline, cross-VM baseline, ablation)
 
 Phase 1 validated:
-1. **SeqLock exposes the true NUMA signal** (11.7% p50 cross-node overhead vs 5.1% under shared_mutex)
+1. **SeqLock exposes the true cross-domain signal** (11.7% p50 cross-node overhead vs 5.1% under shared_mutex)
 2. **Thread-local routing + SeqLock = 26--41% improvement** over round-robin
 3. **Per-node sharding = 3x concurrent Set throughput** through lock partitioning
-4. **NUMA-aware allocation without sharding is architecturally invisible** in QEMU (+2%, within noise)
-5. **Per-node sharding is an architectural prerequisite** for NUMA-aware allocation to be viable
+4. **Topology-aware allocation without sharding is architecturally invisible** in QEMU (+2%, within noise)
+5. **Per-domain sharding is an architectural prerequisite for topology-aware allocation to be viable
 6. **Shared-nothing MPSC queue adds ~1,500ns per cross-node read**, with a break-even at ~21 cache misses per operation on Xeon hardware
 7. **Single-threaded cost: Set +3%, Get +17%** (shard iteration overhead)
 
@@ -2207,12 +2208,12 @@ Phase 2a validated:
 5. **`thread_local` GetCurrentNode cache eliminates syscall overhead** --- thread-local routing becomes faster than round-robin (ablation D < C)
 6. **Single-threaded latency regression (+6--41%)** is the architectural cost of concurrent data structures --- expected to be offset by ARC eviction benefit on real hardware with genuine NUMA latency
 7. **Cross-VM concurrent Set advantage maintained (2.60x)** --- lock partitioning via per-node CMaps still effective
-8. **The NUMA signal remains invisible in QEMU** --- CMap's SpinLock noise + QEMU's uniform memory latency obscure it. Real hardware validation is critical.
+8. **The cross-domain signal remains invisible in QEMU** --- CMap's SpinLock noise + QEMU's uniform memory latency obscure it. Real hardware validation is critical.
 
 Real hardware (c6i.metal) validated:
-1. **NUMA signal confirmed on real hardware** --- 4.5--7.0% p50 cross-node overhead (vs QEMU's scheduling-artifact inflated 11.7%)
+1. **Cross-domain signal confirmed on real hardware (NUMA instance)** --- 4.5--7.0% p50 cross-node overhead (vs QEMU's scheduling-artifact inflated 11.7%)
 2. **Thread-local routing: +60--65% improvement on real hardware** (vs QEMU's +3.3%). Phase 1 routing findings are environment-specific, not architectural.
-3. **Ablation step D (thread-local routing) is the NUMA signal's primary driver** --- +21.0% to +38.9% Cross-OH on real hardware (vs -2.8% in QEMU)
+3. **Ablation step D (thread-local routing) is the cross-domain signal's primary driver** --- +21.0% to +38.9% Cross-OH on real hardware (vs -2.8% in QEMU)
 4. **Concurrent Set advantage maintained (1.74x)** on real hardware through lock partitioning
 5. **Get throughput scales +72% from 4→64 threads** --- lock partitioning prevents cross-node read contention (§5.19)
 6. **Set throughput degrades -79% from 4→64 threads** --- SpinLock bottleneck at 32 threads/node (documented upgrade path: striped SpinLocks or per-bucket ARC locks)
@@ -2222,8 +2223,8 @@ The project is on the `numa-focus` branch. Licensed under MIT. Build and test ar
 
 ## 7. Risks and Open Questions
 
-- ~~Can lock-free reads (seqlock) reduce contention enough to expose NUMA effects at 4+ threads?~~ **Answered: yes.** SeqLock increased the measurable cross-node p50 overhead from 5.1% to 11.7%.
-- ~~Can the 11.7% p50 NUMA overhead measured on QEMU be replicated on real hardware with larger NUMA distances?~~ **Answered: partially.** Real hardware shows 4.5--7.0% p50 cross-node overhead (smaller than QEMU's 11.7%, which was inflated by scheduling artifacts). The NUMA signal is genuine but smaller than QEMU suggested.
+- ~~Can lock-free reads (seqlock) reduce contention enough to expose cross-domain effects at 4+ threads?~~ **Answered: yes.** SeqLock increased the measurable cross-domain p50 overhead from 5.1% to 11.7%.
+- ~~Can the 11.7% p50 cross-domain overhead measured on QEMU be replicated on real hardware with larger NUMA distances?~~ **Answered: partially.** Real hardware shows 4.5--7.0% p50 cross-domain overhead (smaller than QEMU's 11.7%, which was inflated by scheduling artifacts). The cross-domain signal is genuine but smaller than QEMU suggested.
 - Will Phase 2's L2 page eviction (ARC eviction) introduce latency spikes during page flush?
 - How does the bump allocator's fragmentation ratio evolve under real workloads?
 - ~~Will the per-key `unique_ptr<SeqLock>` allocation overhead become a bottleneck at scale?~~ **Answered: eliminated in Phase 2a.** CMap stores values inline in cacheline-aligned slots with no per-key heap allocation.
@@ -2234,7 +2235,7 @@ The project is on the `numa-focus` branch. Licensed under MIT. Build and test ar
 
 ## 8. Roadmap
 
-### Phase 1: NUMA-Aware Core (Complete)
+### Phase 1: Topology-Aware Core (Complete)
 - [x] Per-node physical block allocation with manual subdivision
 - [x] Bump allocator with padding waste tracking
 - [x] Key-based Set/Get with round-robin + thread-local routing
@@ -2244,8 +2245,8 @@ The project is on the `numa-focus` branch. Licensed under MIT. Build and test ar
 - [x] Statistics with cache-line-aligned atomics
 - [x] Benchmark harness
 - [x] Thread-local routing comparison (round-robin vs `Numatic::GetCurrentNode()`)
-- [x] SeqLock isolation of NUMA memory latency signal
-- [x] Baseline comparison (non-NUMA cache, concurrent throughput analysis)
+- [x] SeqLock isolation of cross-domain memory latency signal
+- [x] Baseline comparison (single-domain cache, concurrent throughput analysis)
 - [x] Simulated NUMA latency (compile-time flag, rdtsc busy-wait)
 - [x] Ablation study (5-step incremental, per-design-decision isolation)
 - [x] Shared-nothing variant (MPSC slot queue, per-node workers)
@@ -2369,7 +2370,7 @@ Applying broadcast-race to the shared-nothing model eliminates the queue entirel
 
 The resulting model is a third variant combining shared-nothing data access with broadcast-race discovery. Workers still access only local memory (shared-nothing property preserved), but key discovery uses parallel probing instead of point-to-point queue communication. Projected cross-node latency: ~1 shard lookup + WaitGroup dispatch overhead, vs ~1,500ns for the MPSC queue.
 
-- [x] Implement shared-nothing + broadcast-race variant (implemented, evaluated in QEMU, deferred: CV wake overhead ~24us in QEMU masks any real NUMA effect; requires real hardware to validate)
+- [x] Implement shared-nothing + broadcast-race variant (implemented, evaluated in QEMU, deferred: CV wake overhead ~24us in QEMU masks any real cross-domain effect; requires real hardware to validate)
 - [ ] Three-way ablation on real hardware: MPSC queue vs broadcast-race vs shared-nothing + broadcast-race
 
 ### Phase 5: Publication
@@ -2379,9 +2380,9 @@ The resulting model is a third variant combining shared-nothing data access with
 
 ## 9. Conclusion
 
-Phase 1 of Furrballs demonstrates that NUMA topology can serve as a meaningful input to cache placement decisions. The architecture---per-node physical allocation, bump-packed multi-value pages, and REMARC's unified eviction/migration policy---provides a structured foundation for NUMA-aware caching where the **page** is the locality unit and the **key** is the access unit.
+Phase 1 of Furrballs demonstrates that asymmetric memory topology (NUMA being the most widespread instance) can serve as a meaningful input to cache placement decisions. The architecture---per-node physical allocation, bump-packed multi-value pages, and REMARC's unified eviction/migration policy---provides a structured foundation for topology-aware caching where the **page** is the locality unit and the **key** is the access unit.
 
-The critical Phase 1 finding is that synchronization overhead masks the true NUMA memory latency signal: under `shared_mutex`, cross-node overhead was 5.1% at p50; under SeqLock lock-free reads, it is 11.7%---more than double. Thread-local routing with SeqLock achieves 26--41% improvement over round-robin, confirming that NUMA-aware placement provides compound benefits. Per-node sharding provides 3x concurrent Set throughput through natural lock partitioning at a mixed single-threaded cost (Set +3%, Get +17%).
+The critical Phase 1 finding is that synchronization overhead masks the true cross-domain memory latency signal: under `shared_mutex`, cross-domain overhead was 5.1% at p50; under SeqLock lock-free reads, it is 11.7%---more than double. Thread-local routing with SeqLock achieves 26--41% improvement over round-robin, confirming that topology-aware placement provides compound benefits. Per-domain sharding provides 3x concurrent Set throughput through natural lock partitioning at a mixed single-threaded cost (Set +3%, Get +17%).
 
 Phase 2a replaces the Phase 1 data structures with a concurrent Swiss table (CMap) and ARC policy (ConcurrentARC). The results reveal a tradeoff: single-threaded latency increases by 6--41% (architectural cost of CAS-based concurrency and ARC list management), but concurrent Set throughput improves by 58% (per-slot CAS eliminates shared_mutex serialization). CMap resolves the Phase 1 data race on `unordered_map::find()` during concurrent reads, making the system safe under mixed read/write workloads. PromoteBuf recovers concurrent Get from 0.56x to 0.80x vs baseline by deferring ARC promotions out of the critical read path. Hash-keyed ArcList eliminates all string copies from ARC tracking, and a `thread_local` cache in `GetCurrentNode()` eliminates ~1000ns VM exit per routing decision.
 
@@ -2389,7 +2390,7 @@ Phase 2b implements REMARC (Reduction-Modeled Adaptive Replacement Cache), repla
 
 During Phase 2b development, REMARC evolved into a general policy framework formalized in a companion paper [Sphynx2025] (DOI: 10.5281/zenodo.19794758). The framework expresses cache policies as compositions `E = P(A1, ..., An)` where atoms extract access signals and projections map them to eviction decisions. Twenty-four variants were evaluated across five workloads (Zipfian, ScanResistant, Temporal, Looping, Uniform). Key results: (1) page-level eviction imposes a structural ~24.5% Zipfian ceiling absent per-key scoring, (2) ARC is a strict subset of the framework (setting demote threshold to minimum reproduces ARC exactly), and (3) AUG-ADAPT, a self-tuning variant combining heap-based eviction with ARC's quota structure via a feedback controller (population CV + prediction regret), achieves 99.33% hit rate on adversarial looping workloads while matching ARC on Zipfian/ScanRes/Temporal. The delivery--quota tension---where accurate eviction selection corrupts ARC's self-tuning---is resolved by the controller's conservative default (LRU) with workload-driven activation of heap eviction.
 
-The five-step ablation study (§5.10, §5.17) isolates the contribution of each architectural decision across both phases. The Phase 2a ablation reveals that the `thread_local` cache fundamentally changed the routing dynamics: thread-local routing is now *faster* than round-robin (ablation D < C), unlike Phase 1 where the `GetCurrentNode()` syscall made it 34% slower. This has a methodological implication: Phase 1's routing overhead findings (26--41% improvement from thread-local routing, ablation C→D +34% Set increase) are **environment-specific** rather than architectural. They reflect QEMU's VM exit cost on `sched_getcpu()`, not an inherent property of NUMA-aware routing. On real hardware where `GetCurrentNode()` costs ~1--10ns via VDSO, the Phase 1 routing story would resemble Phase 2a's.
+The five-step ablation study (§5.10, §5.17) isolates the contribution of each architectural decision across both phases. The Phase 2a ablation reveals that the `thread_local` cache fundamentally changed the routing dynamics: thread-local routing is now *faster* than round-robin (ablation D < C), unlike Phase 1 where the `GetCurrentNode()` syscall made it 34% slower. This has a methodological implication: Phase 1's routing overhead findings (26--41% improvement from thread-local routing, ablation C→D +34% Set increase) are **environment-specific** rather than architectural. They reflect QEMU's VM exit cost on `sched_getcpu()`, not an inherent property of topology-aware routing. On real hardware where `GetCurrentNode()` costs ~1--10ns via VDSO, the Phase 1 routing story would resemble Phase 2a's.
 
 Real hardware validation on AWS c6i.metal (Intel Xeon Platinum 8375C, 2 sockets, 128 vCPUs) confirms the architecture's NUMA benefit: a genuine 4.5--7.0% p50 cross-node overhead (§5.18), thread-local routing providing +60--65% improvement over round-robin, and ablation step D (thread-local routing) as the primary driver of the cross-node signal (+21.0--38.9% Cross-OH). Get throughput scales +72% from 4→64 threads (§5.19), validating the lock partitioning thesis for reads. Set throughput degrades -79% at 64 threads due to per-node SpinLock contention, identifying striped SpinLocks or per-bucket ARC locks as the next optimization target. The QEMU results validated the methodology and architecture; the real hardware results validate the performance claims.
 
