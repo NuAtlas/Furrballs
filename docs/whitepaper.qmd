@@ -2110,11 +2110,13 @@ The flat-linked-list is a drop-in replacement for `std::list` in any ARC impleme
 
 #### ARC-FLATLL2: Optimized Variant
 
-Three further optimizations were applied to ARC-FLATLL:
+ARC-FLATLL already eliminated heap allocation and matched ARC's hit rates exactly. The remaining bottlenecks in ARC-FLATLL were: (a) bloated Slot struct (32 bytes due to `size_t` indices), (b) dynamic `vector` growth, and (c) redundant cache membership tracking. Three optimizations were applied:
 
-1. **`uint32_t` indices** instead of `size_t`: Slot shrinks from 32 to 20 bytes (8 key + 4 prev + 4 next + 1 active + 3 padding). 60% denser packing → better cache line utilization. For capacity ≤ 4B entries, `uint32_t` suffices.
-2. **Pre-allocated arena**: Each list pre-allocates 2×capacity slots at construction (ARC allows any individual list to hold up to 2×cap entries in pathological cases). Free-list chains inactive slots. Zero malloc/free after construction.
-3. **Removed redundant `cached_` set**: The original ARC implementation tracks cache membership in a separate `unordered_set<uint64_t>`. Since T1∪T2 IS the cache, membership is `t1_.contains(k) || t2_.contains(k)` — one redundant hash lookup eliminated per access.
+1. **`uint32_t` indices** instead of `size_t`: Slot shrinks from 32 to 20 bytes (8 key + 4 prev + 4 next + 1 active + 3 padding). 60% denser packing → better cache line utilization. For capacity ≤ 4B entries, `uint32_t` suffices. This was the dominant optimization: reducing Slot from 32→20 bytes means 3 slots per 64-byte cache line instead of 2, a 1.5x improvement in cache line efficiency for list traversal operations (splice, erase).
+2. **Pre-allocated arena**: Each list pre-allocates 2×capacity slots at construction. Free-list chains inactive slots. Zero malloc/free after construction. Note: the 2× factor is necessary because ARC does not bound individual lists to cap — only the total across all four lists is bounded to 2×cap. A single list (e.g., T2 after sustained ghost-list pressure) can hold up to 2×cap entries. This was discovered via a crash during verification when lists were pre-allocated at exactly cap.
+3. **Removed redundant `cached_` set**: The original BareARC implementation tracks cache membership in a separate `unordered_set<uint64_t>`. Since T1∪T2 IS the cache, membership is `t1_.contains(k) || t2_.contains(k)` — one redundant hash lookup eliminated per access.
+
+**Failed attempt: flat open-addressing hash.** We also tried replacing `unordered_map` with a hand-rolled open-addressing hash table (linear probing, tombstone deletion). This made throughput **9x worse** (615K vs 5.6M ops/s on Zipfian). The cause: ARC under thrashing workloads (65% miss rate, 63K evictions per 100K ops) creates extreme churn — constant insert/erase cycling. Tombstones accumulate with no rehash path, degrading probe chains to near-linear. `unordered_map` with `reserve()` avoids this because its bucket-based design handles churn without tombstone pollution. The hash table was never the bottleneck; the Slot struct density was.
 
 Hit rates remain identical (verified across all 4 workloads). Throughput results:
 
@@ -2127,7 +2129,7 @@ Hit rates remain identical (verified across all 4 workloads). Throughput results
 
 KPI scoreboard: ARC-FLATLL2 ranked **#2** (71.60), behind only AUG-ADAPT (72.87, which benefits from 98% looping hit rate via ARC-specific detection). ARC-FLATLL ranked #4 (61.73), ARC ranked #7 (59.78).
 
-The dominant optimization is the `uint32_t` compaction: reducing Slot from 32→20 bytes means 5 slots per 64-byte cache line instead of 2, a 2.5x improvement in cache line efficiency for list traversal operations (splice, erase). The pre-allocation eliminates vector growth overhead. Removing `cached_` saves one hash lookup per access (2 probes instead of 3 for cache membership check).
+The uint32_t compaction is responsible for the bulk of the improvement (denser cache lines), with pre-allocation and `cached_` removal contributing incrementally. The flat hash experiment confirms that `unordered_map` is not a bottleneck under ARC's churn pattern.
 
 #### Next Step: REMARC + ARC-FLATLL Hybrid
 
