@@ -8,15 +8,21 @@
 
 namespace NuAtlas
 {
+    struct FreeSlot {
+        uint32_t offset;
+        uint32_t size;
+    };
+
     struct Page {
         static constexpr uint8_t GROUP_SIZE = 16;
-        static constexpr uint8_t MAX_GROUPS = 16; // 256 keys max
+        static constexpr uint8_t MAX_GROUPS = 16;
 
         void* Data = nullptr;
         size_t PageIndex = 0;
         size_t PageSize = 0;
         std::atomic<size_t> UsedBytes{0};
         std::atomic<size_t> DataWastedByPadding{0};
+        std::atomic<size_t> DeadBytes{0};
         bool Dirty = false;
 
         std::atomic<PageTier> Tier{PageTier::Hot};
@@ -24,8 +30,9 @@ namespace NuAtlas
         std::vector<uint8_t> TempCtrl;
         std::vector<HashPair> KeyIndex;
         std::vector<uint8_t> HotNodes;
+        std::vector<FreeSlot> FreeSlots;
 
-        uint16_t GroupMask = 0; // bit i = group i has at least one live key
+        uint16_t GroupMask = 0;
         uint32_t Generation = 0;
         uint8_t DeadAge = 0;
         SpinLock CompactLock;
@@ -40,10 +47,12 @@ namespace NuAtlas
         Page(Page&& other) noexcept
             : Data(other.Data), PageIndex(other.PageIndex), PageSize(other.PageSize), Dirty(other.Dirty),
               TempCtrl(std::move(other.TempCtrl)), KeyIndex(std::move(other.KeyIndex)),
-              HotNodes(std::move(other.HotNodes)), GroupMask(other.GroupMask)
+              HotNodes(std::move(other.HotNodes)), FreeSlots(std::move(other.FreeSlots)),
+              GroupMask(other.GroupMask)
         {
             UsedBytes.store(other.UsedBytes.load(std::memory_order_relaxed), std::memory_order_relaxed);
             DataWastedByPadding.store(other.DataWastedByPadding.load(std::memory_order_relaxed), std::memory_order_relaxed);
+            DeadBytes.store(other.DeadBytes.load(std::memory_order_relaxed), std::memory_order_relaxed);
             Tier.store(other.Tier.load(std::memory_order_relaxed), std::memory_order_relaxed);
             ActiveKeys.store(other.ActiveKeys.load(std::memory_order_relaxed), std::memory_order_relaxed);
             other.Data = nullptr;
@@ -57,11 +66,13 @@ namespace NuAtlas
                 Dirty = other.Dirty;
                 UsedBytes.store(other.UsedBytes.load(std::memory_order_relaxed), std::memory_order_relaxed);
                 DataWastedByPadding.store(other.DataWastedByPadding.load(std::memory_order_relaxed), std::memory_order_relaxed);
+                DeadBytes.store(other.DeadBytes.load(std::memory_order_relaxed), std::memory_order_relaxed);
                 Tier.store(other.Tier.load(std::memory_order_relaxed), std::memory_order_relaxed);
                 ActiveKeys.store(other.ActiveKeys.load(std::memory_order_relaxed), std::memory_order_relaxed);
                 TempCtrl = std::move(other.TempCtrl);
                 KeyIndex = std::move(other.KeyIndex);
                 HotNodes = std::move(other.HotNodes);
+                FreeSlots = std::move(other.FreeSlots);
                 GroupMask = other.GroupMask;
                 other.Data = nullptr;
             }
@@ -88,6 +99,41 @@ namespace NuAtlas
         size_t GetUsedSize() const noexcept { return UsedBytes.load(std::memory_order_relaxed); }
         size_t GetDataSize() const noexcept { return UsedBytes.load(std::memory_order_relaxed) - DataWastedByPadding.load(std::memory_order_relaxed); }
         size_t GetTotalPaddingBytes() const noexcept { return DataWastedByPadding.load(std::memory_order_relaxed); }
+        size_t GetDeadBytes() const noexcept { return DeadBytes.load(std::memory_order_relaxed); }
+        size_t GetLiveBytes() const noexcept { return GetDataSize() - DeadBytes.load(std::memory_order_relaxed); }
+
+        void AddFreeSlot(uint32_t offset, uint32_t size) noexcept {
+            CompactLock.lock();
+            FreeSlots.push_back({offset, size});
+            CompactLock.unlock();
+            DeadBytes.fetch_add(size, std::memory_order_relaxed);
+            Dirty = true;
+        }
+
+        void* TryAllocFromFree(size_t size, size_t align = 8) noexcept {
+            if (Tier.load(std::memory_order_relaxed) != PageTier::Hot) return nullptr;
+            CompactLock.lock();
+            for (size_t i = 0; i < FreeSlots.size(); i++) {
+                uint32_t origOffset = FreeSlots[i].offset;
+                uint32_t origEnd = FreeSlots[i].offset + FreeSlots[i].size;
+                uint32_t aligned = static_cast<uint32_t>(padded_size_to(origOffset, align));
+                uint32_t end = aligned + static_cast<uint32_t>(size);
+                if (end <= origEnd) {
+                    void* ptr = static_cast<char*>(Data) + aligned;
+                    if (end == origEnd) {
+                        FreeSlots.erase(FreeSlots.begin() + static_cast<ptrdiff_t>(i));
+                    } else {
+                        FreeSlots[i] = {end, origEnd - end};
+                    }
+                    CompactLock.unlock();
+                    DeadBytes.fetch_sub(end - aligned, std::memory_order_relaxed);
+                    Dirty = true;
+                    return ptr;
+                }
+            }
+            CompactLock.unlock();
+            return nullptr;
+        }
 
         void AddKeyEntry(const HashPair& hp, uint8_t initialTC = PackTempCtrl(REMARC_MAX, 0), uint8_t hotNode = 0) {
             CompactLock.lock();
@@ -239,10 +285,12 @@ namespace NuAtlas
             KeyIndex.clear();
             TempCtrl.clear();
             HotNodes.clear();
+            FreeSlots.clear();
             GroupMask = 0;
             DeadAge = 0;
             CompactLock.unlock();
             ActiveKeys.store(0, std::memory_order_relaxed);
+            DeadBytes.store(0, std::memory_order_relaxed);
             ResetBump();
             Generation++;
             Tier.store(PageTier::Empty, std::memory_order_release);

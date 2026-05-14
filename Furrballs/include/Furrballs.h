@@ -76,6 +76,7 @@ namespace NuAtlas {
         alignas(64) std::atomic<size_t> UsedMemory{0};
         alignas(64) std::atomic<size_t> TotalAllocated{0};
         alignas(64) std::atomic<unsigned int> EvictionCount{0};
+        alignas(64) std::atomic<unsigned int> PerKeyEvictionCount{0};
         alignas(64) std::atomic<unsigned int> HitCount{0};
         alignas(64) std::atomic<unsigned int> MissCount{0};
         alignas(64) std::atomic<size_t> BytesWritten{0};
@@ -355,6 +356,8 @@ namespace NuAtlas {
         PageManageResult ManagePages(int nodeID, bool simulateIO = true) noexcept;
 
         void UpdateMinDesire(int nodeID) noexcept;
+
+        size_t EvictOneKey(int nodeID) noexcept;
 
         void* Get(void* vAddress) noexcept;
         bool Set(void* data, size_t size, size_t vAddress) noexcept;

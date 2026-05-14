@@ -406,6 +406,94 @@ bool NuAtlas::FurrBall<Policy>::MigrateKey(const std::string& key, const HashPai
 }
 
 // =====================================================================
+//  EvictOneKey: per-key eviction for capacity pressure
+//  Scans all Hot pages for the key with minimum EvictScore (REMARC)
+//  or first-available key (non-REMARC), removes it, adds to free-list.
+//  Returns the size of the freed slot, or 0 if nothing to evict.
+// =====================================================================
+
+template<typename Policy>
+size_t NuAtlas::FurrBall<Policy>::EvictOneKey(int nodeID) noexcept {
+    if (!DataMembers || !DataMembers->privateNumaState) return 0;
+    if (nodeID < 0 || nodeID >= Detail::globalNumaState.NumaNodeCount) return 0;
+
+    auto* details = DataMembers->privateNumaState->NodeDetails[nodeID];
+    if (!details) return 0;
+
+    size_t bestPageIdx = SIZE_MAX;
+    size_t bestKeyIdx = SIZE_MAX;
+    uint8_t bestScore = 0;
+
+    for (size_t p = 0; p < details->NodePages.size(); p++) {
+        Page& page = details->NodePages[p];
+        if (page.Tier.load(std::memory_order_relaxed) != PageTier::Hot) continue;
+        size_t keyCount = page.TempCtrl.size();
+        if (keyCount == 0) continue;
+
+        if constexpr (Policy::HasPerKeyState) {
+            for (size_t k = 0; k < keyCount; k++) {
+                uint8_t es = Policy::EvictScore(page.TempCtrl[k]);
+                if (es > bestScore) {
+                    bestScore = es;
+                    bestPageIdx = p;
+                    bestKeyIdx = k;
+                }
+            }
+        } else {
+            if (bestPageIdx == SIZE_MAX) {
+                bestPageIdx = p;
+                bestKeyIdx = 0;
+            }
+        }
+    }
+
+    if (bestPageIdx == SIZE_MAX || bestKeyIdx == SIZE_MAX) return 0;
+
+    Page& page = details->NodePages[bestPageIdx];
+    HashPair victimHp = page.KeyIndex[bestKeyIdx];
+
+    HashPair swappedHp = page.RemoveKeyEntry(bestKeyIdx);
+    if (swappedHp.h2 != victimHp.h2 && swappedHp.h2 != 0) {
+        details->FrozenLock.lock();
+        auto it = details->KeyNames.find(swappedHp.h2);
+        details->FrozenLock.unlock();
+        if (it != details->KeyNames.end()) {
+            details->KeyStore.UpdateInPlace(it->second,
+                [idx = bestKeyIdx](KeyMeta& m) {
+                    m.TempCtrlIdx = static_cast<uint8_t>(idx);
+                });
+        }
+    }
+
+    auto eraseResult = details->KeyStore.EraseByHash(victimHp);
+    size_t freedSize = 0;
+    if (eraseResult.err == NO_ERR && eraseResult.value.has_value()) {
+        const KeyMeta& meta = eraseResult.value.value();
+        size_t offset = reinterpret_cast<size_t>(meta.DataOffset) -
+                        reinterpret_cast<size_t>(page.Data);
+        size_t sz = meta.DataSize;
+        page.AddFreeSlot(static_cast<uint32_t>(offset), static_cast<uint32_t>(sz));
+        freedSize = sz;
+
+        if (page.ActiveKeys.load(std::memory_order_relaxed) == 0) {
+            page.Recycle();
+            page.Tier.store(PageTier::Hot, std::memory_order_release);
+            Stats.PagesReclaimed.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+
+    Stats.EvictionCount.fetch_add(1, std::memory_order_relaxed);
+    Stats.PerKeyEvictionCount.fetch_add(1, std::memory_order_relaxed);
+
+    details->FrozenLock.lock();
+    details->KeyNames.erase(victimHp.h2);
+    details->FrozenIndex.erase(victimHp.h2);
+    details->FrozenLock.unlock();
+
+    return freedSize;
+}
+
+// =====================================================================
 //  ScanAndExecute (policy-gated)
 // =====================================================================
 
@@ -1232,10 +1320,22 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
         }
         Loc = details->NodePages[pageIdx].TryBump(size);
         if (Loc) break;
+        Loc = details->NodePages[pageIdx].TryAllocFromFree(size);
+        if (Loc) break;
         size_t nextIdx = pageIdx + 1;
         if (nextIdx >= details->NodePages.size()) {
-            pageIdx = details->NodePages.size();
-            continue;
+            size_t evictedSz = EvictOneKey(targetNode);
+            if (evictedSz > 0) {
+                for (size_t r = 0; r < details->NodePages.size(); r++) {
+                    Loc = details->NodePages[r].TryAllocFromFree(size);
+                    if (Loc) { pageIdx = r; break; }
+                }
+            }
+            if (!Loc) {
+                pageIdx = details->NodePages.size();
+                continue;
+            }
+            break;
         }
         if (!details->CurrentPage.compare_exchange_weak(pageIdx, nextIdx, std::memory_order_relaxed)) {
             pageIdx = details->CurrentPage.load(std::memory_order_relaxed);
