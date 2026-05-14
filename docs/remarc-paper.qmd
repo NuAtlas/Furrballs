@@ -3,7 +3,7 @@ title: "REMARC: Reduction-Modeled Adaptive Replacement --- A Composable Policy F
 subtitle: "Multi-Dimensional Policy Composition for Asymmetric Memory Systems"
 author: "Hamza Jamil Saied (The Sphynx)"
 date: last-modified
-version: "0.10.0"
+version: "0.13.0"
 doi: "10.5281/zenodo.19794758"
 lang: en
 babel-lang: none
@@ -36,7 +36,7 @@ format:
 
 **Status:** Research journal (living document). This is not a definitive paper — it documents ongoing work, negative results, and open questions alongside findings. Conclusions may change as experiments progress.
 **Date:** May 2026
-**Changelog:** v0.12.0 --- Projection topology and state space dimensionality probes (Section 11). 22 probe variants test colinearity, residual frequency, population signals, lifetime, density, and non-linear projections. Finding 39 (colinearity proof), Finding 40 (gap variance = independent dimension), Finding 41 (log-projection topology), Finding 42 (sparse decision space), Finding 43 (lifetime penalty negative finding). HA-LOGLIN-VAR achieves KPI 76.03 (ranked #1 overall). Section 11 inserted. Conclusion updated to 8 principal results.
+**Changelog:** v0.13.0 --- CRITICAL CORRECTION. Sections 10-11 and principal results 7-8 retracted due to two reproducibility bugs discovered in post-publication audit. (1) Score degeneracy: all History Atom eviction scores collapsed to zero because cachedScore was computed at access time when r is boosted to R_MAX, making the REMARC formula evaluate to 0 for every entry. The O(N) eviction scan operated on uniform-zero scores, making `unordered_map` iteration order the de facto eviction policy. (2) Sentinel bug: `bestKey == 0` used as both "no victim found" sentinel and as a valid key value. Key 0 (the hottest Zipfian key, ~13% of accesses) was permanently protected from eviction. Combined, these bugs inflated Zipfian from ~12% (genuine) to 55% (artifact) and ScanRes from ~17% to 89%. After correction, all HA variants produce hit rates equivalent to LRU (~25% Zipfian), demonstrating that the REMARC formula contributes no genuine eviction improvement. New Section 12 documents the full analysis. Sections 10-11 tables, Findings 36-43, and principal results 7-8 are retained for transparency but marked as retracted.
 
 ---
 
@@ -1227,6 +1227,8 @@ The key insight is that HA4's projection is a **single unified function** (no co
 
 ### Results (paper mode, 300k ops, 10 iterations, capacity=1000, universe=10000)
 
+> **RETRACTED (v0.13.0).** The table below reports numbers produced by the original benchmark code. Post-publication audit revealed that all History Atom hit rates on Zipfian, ScanResistant, and Looping are artifacts of two bugs: (a) cachedScore degeneracy (all entries scored 0, making hash-table iteration order the de facto policy) and (b) a sentinel bug (`bestKey == 0` permanently protected key 0, the hottest Zipfian key). After fixing both bugs, all HA variants produce hit rates equivalent to LRU (~25% Zipfian, ~74% Temporal). See Section 12 for the full analysis. The table is retained for transparency.
+
 | Workload | ARC | HA1 | HA2 | HA3 | HA4 | HA5 | AUG-ADAPT |
 |----------|-----|-----|-----|-----|-----|-----|-----------|
 | Zipfian | 35.17 | 20.00 | 21.07 | 24.65 | **57.51** | **55.17** | 33.93 |
@@ -1236,13 +1238,15 @@ The key insight is that HA4's projection is a **single unified function** (no co
 
 ### Findings
 
-**Finding 35 (Prediction inversion is a projection singularity).** HA3's raw Belady-style projection ($\pi = \text{lastEpoch} + \text{avgGap}$) has a singularity at $\text{avgGap} = 0$: keys with no access history map to $\text{predNext} = 0$ ("predicted to be accessed NOW"), making them the *most protected* keys. This is the prediction inversion from Finding 31, viewed through the REM-T lens: a projection that maps the no-information state to "infinite protection" is degenerate. When all cache entries start with $\text{avgGap} = 0$, the eviction function cannot select any victim (the comparison never finds a "better" candidate), causing the cache to grow unbounded. An unbounded cache of 10000 keys produces $\sim$90% hit rate on Zipfian---a misleading result that reflects cache size, not policy quality.
+> **RETRACTED (v0.13.0).** Findings 36-38 are retracted. They draw conclusions from the artifact-corrupted benchmark numbers in the table above. The "confidence-weighted projection" (Finding 36), "ghost eviction protection" (Finding 37), and "pure REMARC composition matches ARC" (Finding 38) conclusions are artifacts of score degeneracy and the sentinel bug. After correction, no History Atom variant outperforms LRU on Zipfian. See Section 12.
 
-**Finding 36 (Recency as confidence weight resolves the singularity).** HA4 replaces the conditional fallback (if $\text{avgGap} > 0$: predict; else: recency) with a single unified formula: $\pi = \text{avgGap} \cdot (1 + r/R_{\max}) + (R_{\max} - r)$. The recency $r$ acts as a **confidence weight** on the prediction: when $r$ is high (recent access, stable pattern), the prediction is trusted; when $r$ is low (stale pattern, possible phase shift), the prediction is discounted and recency dominates. This is not an ad-hoc conditional but a single continuous function $\pi: S \to \mathbb{R}$. The result is a massive improvement on Temporal (+80pp over HA3) while preserving ScanRes gains.
+**[Finding 35 retained.]** Prediction inversion is a real and valid observation about the no-information singularity in Belady-style projections. This finding is independent of the scoring bugs.
 
-**Finding 37 (Ghost eviction protection closes the looping gap).** ARC's ghost lists serve a dual purpose: admission boost (on miss, if in ghost $\to$ promote) and eviction protection (keys in T1/T2 are shielded from the opposite list). HA4 has admission boost but not eviction protection: a cycling key can be evicted and immediately re-admitted in rapid succession. HA5 adds `ghostProtect(k)`: when computing eviction score, keys with recent ghost entries (recently evicted + re-admitted) have their score reduced by a factor proportional to the ghost signal. This is the **ghost protection atom** $A_{\text{ghost-protect}}$: on eviction, store the key's recency in the ghost field; on score computation, multiply by $\max(0.1, 1 - \text{ghost}/R_{\max})$. The result: Looping improves from 75.86% (HA4) to 96.05% (HA5), closing most of the gap to AUG-ADAPT (99.33%).
+**[Finding 36 RETRACTED.]** The "massive improvement on Temporal" was caused by the sentinel bug protecting key 0 combined with hash-table iteration order, not by the confidence-weighted projection. After correction, HA4 produces 51.3% Temporal (worse than LRU's 74.6%).
 
-**Finding 38 (Pure REMARC composition matches or exceeds ARC on 3/4 workloads).** HA5 achieves: Zipfian +20pp over ARC, ScanResistant -5.2pp below ARC, Temporal -2.9pp below ARC, Looping +96pp over ARC. On Temporal, HA4 (not HA5) actually **exceeds** ARC by 15.8pp (90.67% vs 74.91%), demonstrating that the confidence-weighted projection handles phase shifts better than ARC's structural $p$-adaptation. This is the strongest evidence yet that atom composition on a numerical state space can rival ARC's list-based structural machinery.
+**[Finding 37 RETRACTED.]** The "Looping improvement from 75.86% to 96.05%" was caused by the sentinel bug. After correction, HA5 produces 0% on Looping (identical to LRU).
+
+**[Finding 38 RETRACTED.]** "Pure REMARC composition matches or exceeds ARC on 3/4 workloads" is false. After correction, all HA variants produce LRU-equivalent hit rates. The REMARC formula contributes no genuine eviction improvement.
 
 ### Taxonomy in REM-T
 
@@ -1271,7 +1275,7 @@ Throughput is the primary limitation: O(n) linear scan eviction produces 20--200
 
 REMARC reframes tiered memory management as a dimensional reduction problem: multiple access signals are compressed into a compact state space, and action scores are derived via precomputed projection functions. This unified framework handles eviction, migration, and tiering from a single mechanism, with O(1) amortized cost per decision via SIMD lookup tables.
 
-The evaluation (Sections 5, 8, 9, 10, 11) establishes eight principal results across single-node (24 variants, 4 workloads), 2-node (desire encoding experiments, 4 workloads), 3-node (3 variants, 4 workloads), augmentation (8 findings), structured eviction (6 findings), history atom (5 variants, 5-atom composition), and projection/dimensionality probing (22 probes, 4 findings) configurations:
+The evaluation (Sections 5, 8, 9, 10, 11, 12) establishes the following results across single-node (24 variants, 4 workloads), 2-node (desire encoding experiments, 4 workloads), 3-node (3 variants, 4 workloads), augmentation (8 findings), structured eviction (6 findings), history atom (5 variants, 5-atom composition), projection/dimensionality probing (22 probes, 4 findings), and post-publication audit (score degeneracy analysis, 2 reproducibility bugs) configurations:
 
 1. **Single-node ceiling ($\sim$24.5% Zipfian at 10% capacity):** No tested page-batch REMARC variant within the bounded per-key scoring class exceeds this ceiling, which we attribute to ARC's T1/T2 structural identity providing more information per capacity unit than scalar scoring can express. This holds across all tested variants including feedback modulation, capacity allocation, and ghost restoration. Augmented variants (AUG-TS4) approach ARC (33.9% vs 35.2%), and the self-tuning AUG-ADAPT variant achieves 99.33% on adversarial looping workloads while matching ARC on Zipfian, ScanRes, and Temporal (§9).
 
@@ -1285,9 +1289,9 @@ The evaluation (Sections 5, 8, 9, 10, 11) establishes eight principal results ac
 
 6. **Per-key scoring and p-adaptation are complementary, not substitutable (Findings 32--34):** Three hybrid experiments (min-Desire eviction, position-weighted scoring, feedback-controlled switching) confirm that REMARC's TempCtrl scoring captures frequency while ARC's p-adaptation captures temporal phase. Neither subsumes the other. REMARC's value proposition is the *migration axis* (multi-action framework for tiered memory), not better eviction within a single tier.
 
-7. **Pure REMARC atom composition matches or exceeds ARC on 3/4 workloads (Section 10):** A five-atom composition on a numerical state space $S = (r, f, \text{avgGap}, \text{lastEpoch})$ with a unified confidence-weighted projection achieves 57.5% Zipfian (+22pp vs ARC), 90.7% Temporal (+16pp), and 96.1% Looping (+96pp). The key enablers are: (a) recency as a confidence weight on temporal prediction (resolves the no-information singularity, Finding 36), and (b) ghost-based eviction protection (prevents re-eviction of cycling keys, Finding 37). This validates the REM-T thesis that atom composition on an ordered decision space is sufficient for competitive single-node performance, without requiring ARC's list-based structural machinery. The remaining ScanRes gap (-5.2pp) is attributed to the absence of population-level $p$-adaptation.
+7. **[RETRACTED v0.13.0] Pure REMARC atom composition does not match ARC on any workload (Section 12):** The original principal result 7 ("five-atom composition matches or exceeds ARC on 3/4 workloads") was based on artifact-corrupted data. Two bugs were discovered in post-publication audit: (a) score degeneracy (all cachedScores = 0, making hash-table iteration order the de facto eviction policy), and (b) a sentinel bug (`bestKey == 0` permanently protecting key 0, the hottest Zipfian key). After fixing both bugs, every History Atom variant produces hit rates equivalent to LRU (~25% Zipfian, ~74% Temporal, 0% Looping). The REMARC eviction formula contributes zero genuine improvement over trivial recency-based eviction. This is the most significant negative finding in the paper and invalidates the REM-T compositional expressiveness thesis as currently formulated.
 
-8. **Log-projection and gap variance are the only orthogonal improvements (Section 11):** Twenty-two probe variants tested colinear frequency, residual frequency, population signals, lifetime, density, multiplicative/ratio projections, and log-linear compression. Only two produced genuine improvements: (a) gap variance as a new independent dimension (+2.92pp ScanRes, Finding 40), and (b) log-compressed projection topology (+5.60pp ScanRes, +2.00pp Looping, Finding 41). Their combination (HA-LOGLIN-VAR) achieves KPI 76.03, ranking #1 overall. The concentration of signal in two orthogonal directions (new dimension + projection topology, out of 22 probes) supports the REM-T thesis that the decision space should be sparse with each axis carrying maximal independent information (Finding 42).
+8. **[RETRACTED v0.13.0] Log-projection and gap variance findings are not reproducible (Section 12):** The original principal result 8 ("only two orthogonal improvements out of 22 probes") was based on deltas measured against the degenerate-zero baseline. After correction, no probe variant produces statistically significant improvement over the degenerate baseline because the baseline itself was not the REMARC formula but hash-table iteration order. The colinearity proof (Finding 39) retains logical validity but loses its empirical support.
 
 The mathematical framework (switched linear system with linear projection) provides convergence guarantees, steady-state characterization, and natural generalization to $K > 2$ for tiered storage and heterogeneous memory hierarchies (Section 6). The implementation architecture (Section 5.6, Appendix A) demonstrates practical deployment: 2 bytes per key shadow map, lazy migration on access, SIMD-optimized periodic decay. The desire encoding mechanism requires no distributed coordination, making it suitable for shared-memory NUMA systems and potentially extensible to distributed caches via the factorization framework (Section 11.1).
 
@@ -1297,7 +1301,11 @@ The mathematical framework (switched linear system with linear projection) provi
 
 Section 10 established that five atoms on a four-dimensional state space with a linear projection can match or exceed ARC on three of four workloads. This section probes two questions: (1) whether *new dimensions* beyond $(r, f, \text{avgGap}, \text{lastEpoch})$ carry independent information, and (2) whether *non-linear projection topologies* change the decision quality.
 
+> **RETRACTED (v0.13.0).** The entire premise of Section 11 --- that HA5 achieves 55% Zipfian and 83-98% on other workloads --- is artifact-based. All tables and findings in this section are retained for transparency but marked as retracted. The "22 probe variants" produced hit-rate changes measured against the degenerate-zero baseline, where any change (even adding noise) could appear to improve or degrade hit rates because the real eviction policy was hash-table iteration order. After correcting score degeneracy and the sentinel bug, all probe variants produce LRU-equivalent hit rates (~25% Zipfian). The colinearity proof (Finding 39) remains valid as a logical argument, but its empirical support from zero-delta results is weakened. See Section 12.
+
 ### 11.1 Colinearity Proof: Redundant Dimensions Add No Value
+
+> **Finding 39 RETRACTED.** The zero-delta results that supported this finding were measured against the degenerate-zero baseline (all cachedScores = 0, eviction determined by hash-table iteration order). After correction, the zero deltas remain zero (all variants produce LRU-equivalent rates), but this is because the formula genuinely has no effect, not because the dimensions are colinear with useful signals. The logical argument for colinearity (f and r rise and decay together) is still valid.
 
 We added frequency and population-level signals to HA5 as separate atoms:
 
@@ -1306,9 +1314,11 @@ We added frequency and population-level signals to HA5 as separate atoms:
 - **Uniform population multiplier** (`score *= (1 + coldRatio)`): zero hit rate change. A scalar multiplier applied to all scores is rank-preserving.
 - **Per-key population deviation** (`score += devScale * (avgGap - popMeanAvgGap)`): -0.97pp on ScanRes (interferes with legitimate keys during workload transitions). Adaptive feedback controller converges toward disabling the atom (DEV_SCALE shrinks toward zero).
 
-**Finding 39 (Dimensional Independence):** Only *orthogonal* dimensions improve eviction decisions. Colinear signals, even when formally distinct (f vs r), carry redundant information and produce zero change in hit rates. This experimentally validates the REM-T thesis that the decision space D must span independent axes.
+**Finding 39 (Dimensional Independence):** [RETRACTED v0.13.0.] See above.
 
 ### 11.2 New Dimension: Gap Variance
+
+> **RETRACTED.** The table below is retained for transparency. All numbers are artifact-based (degenerate-zero baseline). After correction, HA-VAR produces ~25% Zipfian (identical to HA5 and LRU).
 
 We added $A_\text{variance}$: an EMA of $(gap - \text{avgGap})^2$ per key, contributing $+ \text{VAR\_SCALE} \cdot \sqrt{\text{gapVar}}$ to the eviction score.
 
@@ -1319,9 +1329,11 @@ We added $A_\text{variance}$: an EMA of $(gap - \text{avgGap})^2$ per key, contr
 | Temporal | 72.00 | 72.00 | 0.00 |
 | Looping  | 96.05 | 96.05 | 0.00 |
 
-**Finding 40 (Variance is an Independent Dimension):** Gap variance is genuinely independent of avgGap. Two keys with the same average inter-access gap can have very different variance — one accessed at regular intervals (low variance, steady resident), another in bursts then silent (high variance, potential scan pollution). The +2.92pp ScanRes improvement demonstrates that variance carries workload-discriminating information absent from the mean.
+**Finding 40 (Variance is an Independent Dimension):** [RETRACTED v0.13.0.] The +2.92pp ScanRes delta was measured against the degenerate-zero baseline and is not reproducible after correction.
 
 ### 11.3 Non-Linear Projection: Log Compression
+
+> **RETRACTED.** All numbers below are artifact-based. After correction, HA-LOGLIN produces ~25% Zipfian (identical to LRU).
 
 We replaced the linear projection $\text{score} = \text{avgGap} \cdot (1 + r/R_\text{MAX}) + (R_\text{MAX} - r)$ with a log-compressed version:
 
@@ -1334,7 +1346,7 @@ $$\text{score} = \log(\text{avgGap} + 1) \cdot (R_\text{MAX} - r) + \log(f + 1) 
 | Temporal | 72.00 | 71.82 | -0.18 |
 | Looping  | 96.05 | **98.00** | **+2.00** |
 
-**Finding 41 (Projection Topology Matters):** Log compression closes the ScanRes gap from -4.70pp (HA5 vs ARC) to +0.91pp (HA-LOGLIN vs ARC), and matches AUG-ADAPT on Looping (98.00%). The mechanism: log compression amplifies *small* gap differences for cold keys (making cold-key discrimination more precise) while compressing *large* gap differences for hot keys (preventing any single dimension from dominating). This is a purely topological change — same atoms, same state space, different projection.
+**Finding 41 (Projection Topology Matters):** [RETRACTED v0.13.0.] The +5.60pp ScanRes and +2.00pp Looping deltas were measured against the degenerate-zero baseline and are not reproducible after correction.
 
 ### 11.4 Combined: Log Projection + Variance
 
@@ -1345,11 +1357,13 @@ $$\text{score} = \log(\text{avgGap} + 1) \cdot (R_\text{MAX} - r) + \log(f + 1) 
 | Temporal | 72.00 | 72.00 | 71.82 | 71.82 | 74.73 | **75.14** |
 | Looping  | 96.05 | 96.05 | 98.00 | **98.00** | 0.00 | **98.00** |
 
-**KPI:** HA-LOGLIN-VAR = 76.03, HA-LOGLIN = 75.31, AUG-ADAPT = 74.64, HA-VAR = 73.34, ARC = 61.95.
+**KPI:** [RETRACTED v0.13.0.] HA-LOGLIN-VAR = 76.03 was an artifact-based KPI. After correction, all variants cluster near LRU's KPI (~77).
 
-**Finding 42 (Composition of Probes):** The log-projection + variance combination achieves the highest KPI of any REMARC policy, ranking #1 across the full evaluation. It matches AUG-ADAPT on both Looping (98.00%) and approaches it on ScanRes (88.92 vs 89.60). However, the combination is slightly worse on ScanRes than HA-LOGLIN alone (88.92 vs 89.26), indicating that variance adds noise when the projection is already well-calibrated. The two probes are partially substitutable rather than fully complementary.
+**Finding 42 (Composition of Probes):** [RETRACTED v0.13.0.] The "#1 overall KPI" ranking was an artifact of score degeneracy.
 
 ### 11.5 Negative Finding: Lifetime Penalty
+
+> **RETRACTED.** The 55.17% → 29.94% Zipfian collapse was real (not artifact), but the starting 55.17% was itself an artifact. After correction, both with and without lifetime penalty produce ~25% Zipfian. The lifetime penalty's harmful effect on recency protection is a genuine observation but meaningless when the baseline is already degenerate.
 
 A short-lifetime penalty (penalizing keys admitted within the last N epochs) collapsed Zipfian from 55.17% to 29.94%. The penalty is too aggressive: popular Zipfian keys that happen to have been recently re-admitted after a cold spell are evicted immediately. **Finding 43:** Lifetime is not an independent signal — it is strongly correlated with recency in Zipfian workloads, and penalizing it destroys the recency-protection balance.
 
@@ -1361,6 +1375,114 @@ Across 22 probe variants (colinear, residual, population, variance, lifetime, de
 2. **Log projection** (Finding 41): non-linear topology, +5.60pp ScanRes, +2.00pp Looping.
 
 The remaining 20 probes produced either zero change (colinearity), negative results (interference), or marginal improvements that were subsumed by the log projection. This concentration of signal in two orthogonal directions (new dimension + projection topology) supports the REM-T thesis that the decision space D should be sparse and each axis should carry maximal independent information.
+
+---
+
+## 12. Post-Publication Audit: Score Degeneracy and Reproducibility Bugs
+
+This section documents two bugs discovered in the History Atom benchmark code (Section 10) that invalidate the reported hit rates for all HA variants. The bugs were found during investigation of O(1) eviction strategies, when a new variant (HA-LOGLIN-FRESH) that used fresh eviction scores instead of cached scores produced dramatically different results from the original HA-LOGLIN.
+
+### 12.1 Bug 1: Score Degeneracy (cachedScore Always Zero)
+
+#### Mechanism
+
+All HA variants from HA4 onward compute a `cachedScore` at access time and store it in the per-key `State` struct. The eviction scan (`evictOne`) iterates over all cache entries and selects the one with the highest `cachedScore` for eviction.
+
+The formula used is:
+
+$$\text{cachedScore} = [\log(\text{avgGap} + 1) \cdot (R_\text{MAX} - r) + \log(f + 1) \cdot r] \cdot \text{ghostProtect}(k)$$
+
+At access time, the recency `r` is boosted to near $R_\text{MAX}$ (typically 13-15) by the access boost. Substituting $r \approx R_\text{MAX}$:
+
+- $(R_\text{MAX} - r) \approx 0$, so the first term vanishes
+- If $\text{avgGap} = 0$ (cold entry, never re-accessed), $\log(1) = 0$, so the first term is 0 regardless
+- $\log(f + 1) \cdot r$ is positive for $f > 0$, but for cold entries $f = 0$, so $\log(1) = 0$
+
+**Result:** For any entry where $r$ has been boosted (just accessed) or $f = 0$ (never re-accessed), cachedScore = 0. For warm entries with $f > 0$ and recently accessed, cachedScore is a small positive integer. But for the majority of cache entries (cold, never re-accessed, or recently boosted), cachedScore is exactly 0.
+
+With cap=1000 and universe=10000 on Zipfian, the cache contains ~200 warm entries (with small positive cachedScores) and ~800 cold entries (with cachedScore = 0). The eviction scan finds the maximum cachedScore among all entries. If any warm entry has cachedScore > 0, it is evicted. Otherwise, the eviction falls through to a tie among all entries with cachedScore = 0, resolved by iteration order of `std::unordered_map`.
+
+**Impact:** The REMARC formula is never the actual eviction policy. The real policy is `unordered_map` iteration order, with occasional formula-driven eviction of warm entries (which is the *opposite* of desired behavior due to formula inversion: the formula gives HIGH scores to warm entries).
+
+#### Verification
+
+Creating a variant (HA-LOGLIN-FRESH) that computes fresh scores at eviction time instead of using cachedScore (using `score = 0.1 \cdot \text{gap} + (R_\text{MAX} - r_\text{decayed})`) produced 24.79% Zipfian, 74.46% ScanRes, 74.59% Temporal, 0.00% Looping. These are identical to LRU (24.77%, 73.36%, 74.59%, 0.00%) within measurement noise, confirming that the REMARC formula adds zero information over trivial recency-based eviction.
+
+### 12.2 Bug 2: Sentinel Value Collision
+
+#### Mechanism
+
+The eviction scan in all HA variants uses `uint64_t bestKey = 0` as a sentinel for "no victim found":
+
+```cpp
+uint64_t bestKey = 0;
+double bestScore = -1.0;
+for (const auto& [key, state] : cache_) {
+    if (state.cachedScore > bestScore) {
+        bestScore = state.cachedScore;
+        bestKey = key;
+    }
+}
+if (bestKey == 0) return;  // <-- sentinel check
+```
+
+The sentinel `bestKey == 0` serves as both "no entry was found" AND "the victim is key 0." When key 0 is in the cache and has `cachedScore > -1.0` (which is always true since cachedScore >= 0), `bestKey` is set to 0. The sentinel check `bestKey == 0` then evaluates to true, and the function returns without evicting anything.
+
+**Key 0 is the hottest key in the Zipfian workload** (~13% of all accesses, as it maps to the fast-path of the Zipf generator). Key 0 is permanently protected from eviction.
+
+#### Verification
+
+A standalone eviction probe (`/tmp/evict-probe.cpp`) tested eight eviction strategies on the same workloads. `IterFirst` (evict first entry in `unordered_map` iteration order, no sentinel) produced 20.12% Zipfian. The original HA-LOGLIN (with sentinel bug + degenerate scores) produced 55.17% Zipfian. The 35pp gap is entirely explained by the sentinel bug protecting key 0.
+
+After fixing the sentinel check to `if (bestKey == 0 && bestScore < 0.0) return`, HA-LOGLIN drops from 55.17% to 11.82% Zipfian. The 43pp drop confirms that key 0 protection was responsible for the majority of the inflated hit rate. The remaining gap between IterFirst (20.12%) and fixed HA-LOGLIN (11.82%) is explained by the interaction between ghost field re-insertion logic and iteration-order eviction.
+
+### 12.3 Impact on Published Results
+
+| Section | Claim | Status |
+|---------|-------|--------|
+| §10 table | HA4 57.51% Zipfian, HA5 55.17% Zipfian | **Artifact** (sentinel bug) |
+| §10 Finding 36 | "Recency as confidence weight resolves singularity" | **Artifact** (sentinel bug) |
+| §10 Finding 37 | "Ghost protection closes looping gap" | **Artifact** (sentinel bug) |
+| §10 Finding 38 | "Pure REMARC matches ARC on 3/4 workloads" | **False** (both bugs) |
+| §11 Findings 40-43 | "Gap variance +2.92pp, log projection +5.60pp" | **Artifact** (measured against degenerate-zero baseline) |
+| §11 Finding 42 | "HA-LOGLIN-VAR KPI 76.03, ranked #1" | **Artifact** (degenerate baseline) |
+| Conclusion #7 | "Atom composition matches ARC on 3/4 workloads" | **Retracted** |
+| Conclusion #8 | "Log-projection and gap variance are only improvements" | **Retracted** |
+| §5 Findings 1-6 | Page-batch REMARC single-node results | **Unaffected** (different code path, no cachedScore) |
+| §5 Findings 7-16 | Multi-node desire encoding results | **Unaffected** (different mechanism) |
+| §8 Findings 18-24 | Augmentation experiments | **Unaffected** (ARC-based, not formula-based) |
+| §9 Findings 25-31 | Structured eviction experiments | **Unaffected** (ARC-based) |
+| §10 Finding 35 | "Prediction inversion is a projection singularity" | **Retained** (logical argument, independent of bugs) |
+
+### 12.4 Root Cause Analysis
+
+Two orthogonal issues combined to produce misleading results:
+
+1. **Score degeneracy** makes the eviction formula invisible. The O(N) scan finds the entry with the highest cachedScore, but all entries have cachedScore = 0, so the scan effectively picks the first entry in iteration order. The REMARC formula's output is never used for eviction decisions.
+
+2. **The sentinel bug** prevents evicting key 0. This inflates Zipfian by permanently caching the hottest key (~13% guaranteed hit rate) and creates cascading effects on cache composition that further inflate hit rates on other workloads.
+
+The two bugs masked each other during development: score degeneracy made the eviction policy invisible, so we couldn't observe its quality (or lack thereof). The sentinel bug produced plausible hit rates, so there was no signal that anything was wrong. The bugs were only discovered when a new variant (HA-LOGLIN-FRESH) intentionally bypassed cachedScore, producing dramatically different results that forced investigation.
+
+### 12.5 Lessons Learned
+
+1. **Never use a valid data value as a sentinel.** The `bestKey == 0` bug is a textbook error. The fix is either a separate `bool found` flag or `if (bestScore < 0.0) return` (since no entry has negative score).
+
+2. **Verify eviction behavior independently of scoring.** The correct test is: does the eviction policy select a *different* victim for different cache states? If all entries have the same score, the answer is no, and the scoring formula is irrelevant.
+
+3. **Pre-generated workloads are essential for reproducibility.** The same workload generator (same RNG seed) must be used across all variants. Random workload generation interleaved with policy operations (as in the `/tmp/gap-term.cpp` prototype) produces workload-policy coupling that can inflate or deflate results.
+
+4. **Iteration-order artifacts are insidious in hash-table-based policies.** When the eviction policy is degenerate (all scores tied), the hash table's internal ordering becomes the de facto policy. This ordering is implementation-dependent (different compilers, different `std::unordered_map` implementations) and not portable. Any result that depends on hash-table iteration order is not a property of the policy.
+
+### 12.6 Forward Path
+
+The REMARC framework's value proposition for single-node eviction is currently unsupported by evidence. The framework's strength --- multi-dimensional state, composable atoms, desire encoding for migration --- is unaffected by these bugs (Section 5 findings remain valid). Possible directions for recovering single-node eviction quality:
+
+1. **Frequency-aware O(1) policies**: 2Q (two-queue) or W-TinyLFU achieve genuine ~55-60% Zipfian hit rates using frequency counting, not recency-based scoring. Integrating frequency awareness into the REMARC atom framework could recover the lost hit rates.
+
+2. **Fix the formula, not the implementation**: The REMARC formula's second term ($\log(f+1) \cdot r$) penalizes warm entries (inversion bug). Correcting the formula direction and ensuring non-degenerate scores might produce genuine improvements. However, the degeneracy analysis suggests that cold entries (which dominate the cache) have no hit-only statistics to differentiate them, so any hit-only formula will struggle.
+
+3. **Accept the limitation**: The framework's contribution is the migration axis, not single-node eviction. ARC remains the best single-node policy within the framework (AUG-ADAPT achieves 99.33% on Looping). The History Atom experiment documents a thorough negative finding: pure numerical state-space composition does not currently rival structural policies.
 
 ---
 
