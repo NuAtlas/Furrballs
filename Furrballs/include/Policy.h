@@ -111,6 +111,63 @@ namespace NuAtlas {
         }
     };
 
+    // --- SimpleMigrate: ARC eviction + counting migration ---
+    //
+    // Per-key state is two 4-bit saturating counters: local (lo) and remote (hi).
+    // OnLocalAccess: boost local, decay remote.
+    // OnRemoteAccess: boost remote, decay local.
+    // EvictScore = remote count (high = cold = evictable).
+    // ShouldHotNode = remote count >= threshold.
+    //
+    // No SIMD scanner. Migration swap driven by EvictScore cold mask.
+
+    struct SimpleMigratePolicy {
+        template<typename Value> using Store = ConcurrentARC<Value>;
+
+        struct Config {
+            uint8_t MigrateThreshold = 10;
+        };
+
+        static constexpr bool HasPerKeyState   = true;
+        static constexpr bool HasMigration     = true;
+        static constexpr bool HasScanner       = false;
+        static constexpr bool HasDesire        = true;
+        static constexpr bool HasStoreEviction = false;
+        static constexpr bool HasRemarcConfig  = false;
+
+        static Config MakeConfig(const RemarcConfig&) noexcept { return {}; }
+
+        static uint8_t InitialState() noexcept {
+            return PackTempCtrl(15, 0);
+        }
+
+        static uint8_t OnLocalAccess(uint8_t tc, const Config&) noexcept {
+            uint8_t loc = std::min<uint8_t>(UnpackSLocal(tc) + 2, 15);
+            uint8_t rem = UnpackSRemote(tc) > 0 ? UnpackSRemote(tc) - 1 : 0;
+            return PackTempCtrl(loc, rem);
+        }
+
+        static uint8_t OnRemoteAccess(uint8_t tc, const Config&) noexcept {
+            uint8_t rem = std::min<uint8_t>(UnpackSRemote(tc) + 2, 15);
+            uint8_t loc = UnpackSLocal(tc) > 0 ? UnpackSLocal(tc) - 1 : 0;
+            return PackTempCtrl(loc, rem);
+        }
+
+        static void TimeDecayKey(uint8_t& tc, const Config&) noexcept {
+            uint8_t loc = UnpackSLocal(tc) / 2;
+            uint8_t rem = UnpackSRemote(tc) / 2;
+            tc = PackTempCtrl(loc, rem);
+        }
+
+        static uint8_t EvictScore(uint8_t tc) noexcept {
+            return UnpackSRemote(tc);
+        }
+
+        static bool ShouldHotNode(uint8_t tc, const Config& cfg) noexcept {
+            return UnpackSRemote(tc) >= cfg.MigrateThreshold;
+        }
+    };
+
     // --- Standard 2-node REMARC: s_local (recency) + s_remote (frequency) ---
 
     using StandardRemarc = RemarcPolicy<AtomSLocal, AtomSRemote>;

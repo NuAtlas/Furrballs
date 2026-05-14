@@ -809,8 +809,10 @@ FurrBall<Policy>::ManagePages(int nodeID, bool simulateIO) noexcept {
 
             if constexpr (!Policy::HasStoreEviction) {
                 float& thresh = details->EvictThresh;
-                if (policyConfig.StaticEvictThresh >= 0.0f)
-                    thresh = policyConfig.StaticEvictThresh;
+                if constexpr (Policy::HasRemarcConfig) {
+                    if (policyConfig.StaticEvictThresh >= 0.0f)
+                        thresh = policyConfig.StaticEvictThresh;
+                }
 
                 size_t evictBudget = std::max(size_t(1),
                     static_cast<size_t>(scored.size() * pressure * 0.25f));
@@ -828,10 +830,25 @@ FurrBall<Policy>::ManagePages(int nodeID, bool simulateIO) noexcept {
                     newDeadKeys += scored[i].keyCount;
                 }
 
-                if (policyConfig.StaticEvictThresh < 0.0f) {
-                    size_t revivals = Stats.GetMigrationCount() - details->PrevMigrationCount;
-                    details->PrevMigrationCount = Stats.GetMigrationCount();
+                if constexpr (Policy::HasRemarcConfig) {
+                    if (policyConfig.StaticEvictThresh < 0.0f) {
+                        size_t revivals = Stats.GetMigrationCount() - details->PrevMigrationCount;
+                        details->PrevMigrationCount = Stats.GetMigrationCount();
+                        if (details->PrevDeadKeys > 0) {
+                            float revivalRate = static_cast<float>(revivals) / static_cast<float>(details->PrevDeadKeys);
+                            float error = revivalRate - 0.15f;
+                            details->EvictThresh += details->AdaptiveStep * error;
+                            details->EvictThresh = std::clamp(details->EvictThresh, 0.1f, 0.9f);
+                        } else if (newDeadKeys == 0 && pressure > 0.5f) {
+                            details->EvictThresh = std::max(details->EvictThresh - 0.1f, 0.1f);
+                        }
+                        details->AdaptiveStep = std::clamp(0.05f + 0.05f * pressure, 0.02f, 0.15f);
+                        details->PrevDeadKeys = newDeadKeys;
+                    }
+                } else {
                     if (details->PrevDeadKeys > 0) {
+                        size_t revivals = Stats.GetMigrationCount() - details->PrevMigrationCount;
+                        details->PrevMigrationCount = Stats.GetMigrationCount();
                         float revivalRate = static_cast<float>(revivals) / static_cast<float>(details->PrevDeadKeys);
                         float error = revivalRate - 0.15f;
                         details->EvictThresh += details->AdaptiveStep * error;
@@ -1610,5 +1627,6 @@ NuAtlas::FurrBall<Policy>::~FurrBall() noexcept {
 
 template class FurrBall<StandardRemarc>;
 template class FurrBall<ArcPolicy>;
+template class FurrBall<SimpleMigratePolicy>;
 template class FurrBall<AugAdaptPolicy>;
 template class FurrBall<NativeRemarcPolicy>;

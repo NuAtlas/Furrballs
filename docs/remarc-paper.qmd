@@ -3,7 +3,7 @@ title: "REMARC: Reduction-Modeled Adaptive Replacement --- A Composable Policy F
 subtitle: "Multi-Dimensional Policy Composition for Asymmetric Memory Systems"
 author: "Hamza Jamil Saied (The Sphynx)"
 date: last-modified
-version: "0.13.0"
+version: "0.14.0"
 doi: "10.5281/zenodo.19794758"
 lang: en
 babel-lang: none
@@ -36,7 +36,7 @@ format:
 
 **Status:** Research journal (living document). This is not a definitive paper — it documents ongoing work, negative results, and open questions alongside findings. Conclusions may change as experiments progress.
 **Date:** May 2026
-**Changelog:** v0.13.0 --- CRITICAL CORRECTION. Sections 10-11 and principal results 7-8 retracted due to two reproducibility bugs discovered in post-publication audit. (1) Score degeneracy: all History Atom eviction scores collapsed to zero because cachedScore was computed at access time when r is boosted to R_MAX, making the REMARC formula evaluate to 0 for every entry. The O(N) eviction scan operated on uniform-zero scores, making `unordered_map` iteration order the de facto eviction policy. (2) Sentinel bug: `bestKey == 0` used as both "no victim found" sentinel and as a valid key value. Key 0 (the hottest Zipfian key, ~13% of accesses) was permanently protected from eviction. Combined, these bugs inflated Zipfian from ~12% (genuine) to 55% (artifact) and ScanRes from ~17% to 89%. After correction, all HA variants produce hit rates equivalent to LRU (~25% Zipfian), demonstrating that the REMARC formula contributes no genuine eviction improvement. New Section 12 documents the full analysis. Sections 10-11 tables, Findings 36-43, and principal results 7-8 are retained for transparency but marked as retracted.
+**Changelog:** v0.14.0 --- FINAL ASSESSMENT. Section 13 documents comprehensive tiered placement simulation (K=2, K=3, predictive, feedback dimensionality). REMARC framework adds zero value over simple baselines (EMA, Majority, Static) for multi-node placement. All projection variants, feedback strategies, and predictive mechanisms produce equivalent or worse results than simple counting. The cold-entry information hole and feedback SNR ≈ 0 are proven fundamental limitations. The "Toward an Algebra" section (§13.5) is retired as unpromising. Open Questions section updated to reflect closure. REMARC as a standalone framework is concluded.
 
 ---
 
@@ -1476,174 +1476,175 @@ The two bugs masked each other during development: score degeneracy made the evi
 
 ### 12.6 Forward Path
 
-The REMARC framework's value proposition for single-node eviction is currently unsupported by evidence. The framework's strength --- multi-dimensional state, composable atoms, desire encoding for migration --- is unaffected by these bugs (Section 5 findings remain valid). Possible directions for recovering single-node eviction quality:
+The REMARC framework's value proposition for single-node eviction is conclusively unsupported by evidence. Section 13 extends this conclusion to multi-node placement: REMARC's migration scoring adds zero value over simple EMA counting. The framework's three claimed contributions are assessed:
 
-1. **Frequency-aware O(1) policies**: 2Q (two-queue) or W-TinyLFU achieve genuine ~55-60% Zipfian hit rates using frequency counting, not recency-based scoring. Integrating frequency awareness into the REMARC atom framework could recover the lost hit rates.
+1. **Multi-dimensional state composition**: Proven equivalent to simple EMA counting (§13.2). All projection variants (linear, log, multiplicative) produce identical results. The atom-projection-decide framework adds expressiveness in notation only.
 
-2. **Fix the formula, not the implementation**: The REMARC formula's second term ($\log(f+1) \cdot r$) penalizes warm entries (inversion bug). Correcting the formula direction and ensuring non-degenerate scores might produce genuine improvements. However, the degeneracy analysis suggests that cold entries (which dominate the cache) have no hit-only statistics to differentiate them, so any hit-only formula will struggle.
+2. **Desire encoding for migration**: Proven unnecessary (§13.1, §13.2). Simple majority voting or EMA counting matches or beats REMARC-based migration on all tested workloads.
 
-3. **Accept the limitation**: The framework's contribution is the migration axis, not single-node eviction. ARC remains the best single-node policy within the framework (AUG-ADAPT achieves 99.33% on Looping). The History Atom experiment documents a thorough negative finding: pure numerical state-space composition does not currently rival structural policies.
+3. **Algebraic theory of sequential decisions**: The "Toward an Algebra" section (formerly §13) is retired (§13.5). The framework provides vocabulary for describing policies but does not generate better ones. No prescriptive value was demonstrated.
+
+The Furrballs system retains two proven components independent of REMARC: ARC for eviction and simple EMA counting for migration (SimpleMigratePolicy). These are documented in the Furrballs whitepaper.
 
 ---
 
-## Open Questions and Research Roadmap
+## 13. Tiered Placement: Final Evaluation
 
-The preceding sections establish REMARC as a projection function operating on competitively-coupled state spaces. This section identifies three independent design axes that emerge from the framework, each with open questions.
+Section 12 established that REMARC's feedforward scoring adds zero eviction value over LRU. This section extends the evaluation to multi-node placement, the framework's remaining claimed contribution. Six simulators were built to test whether REMARC's state representation and migration scoring provide value for tiered memory placement decisions.
 
-### Factorization: Composing REMARC Instances
+### 13.1 Methodology
 
-A unified K-dimensional REMARC requires lookup tables of size $MAX^K$ per action. For K > 4 this exceeds practical cache sizes. An alternative is to factor the K-dimensional state into multiple smaller REMARC instances connected by shared axes.
+All simulators model a tiered memory system with K nodes, each having a fixed access latency. Workloads are generated as sequences of (key, source_node) pairs. Each key is assigned to a node. On access, the cost is the latency of the node holding the key. Migration moves a key from one node to another at a fixed cost. The simulator tracks total access cost over the full trace.
 
-**Example:** K=3 state `(local_DRAM, remote_DRAM, local_NVM)` can be factored into:
+**Workloads:**
+- **Zipf-Strong**: Zipf(1.5) key distribution, 70% home bias (access from preferred node), 1M ops, 5000 unique keys
+- **Zipf-Mixed**: Zipf(0.8) key distribution, 50% home bias, 1M ops, 5000 unique keys
+- **Temporal**: Two-phase — phase A accesses keys 0-2499 from node 0, phase B accesses keys 2500-4999 from node 1. 1M ops.
+- **Burst**: 80% Zipf(1.5) + 20% uniform random bursts. 1M ops, 5000 unique keys.
 
-- Instance A: `{local_DRAM, remote_DRAM}` — NUMA decisions
-- Instance B: `{local_DRAM, local_NVM}` — tiering decisions
+**Strategies tested across simulators:**
+- **Static**: Initial round-robin placement, no migration
+- **Majority**: Count accesses per node, place on most-accessed node (batched)
+- **Sliding Window**: Count accesses in a window of W recent ops, migrate if majority shifts
+- **EMA**: Exponential moving average of per-key access counts per node. Boost current, decay others.
+- **REMARC-Quantized**: REMARC atom scoring (4-bit r, f) with migrate threshold. Identical to the production RemarcPolicy.
+- **REMARC-Continuous**: REMARC scoring without 4-bit quantization. Tests whether quantization hurts.
+- **REMARC-Migrate**: Full REMARC formula (Competitive coupling, MigrateScore). Tests whether the framework's migration formula adds value over simple counting.
+- **Projection variants** (Linear, Log, Multiplicative): Different nonlinear projections of the REMARC state space.
+- **Feedback**: Observe migration outcome (did the key get accessed from new node?), adjust threshold.
+- **Predict**: Only migrate if predicted next-access source differs from current placement.
+- **Predict+Feedback**: Predict with adaptive threshold calibration.
+- **ARC-Like**: Ghost tracking for migration decisions (analogous to ARC's ghost-hit feedback for eviction).
+- **1-Signal**: One global feedback signal adjusts one threshold for all K dimensions.
+- **K-Signal**: K independent feedback signals, one per dimension.
+- **Oracle**: Perfect knowledge of next access (lower bound).
 
-Shared axis: `local_DRAM`. An access from local_DRAM updates both instances, creating implicit coupling.
+### 13.2 K=2 Results (2 Nodes)
 
-**Approximation quality:** erosion through shared axes is exact. Erosion between non-shared axes is lost. In the example above, a `remote_DRAM` access erodes `local_DRAM` in instance A but does not erode `local_NVM` in instance B. The factorization is an approximation of the unified K=3 system whose quality depends on the coupling between non-shared dimensions.
+| Workload | Static | Majority | EMA/REMARC | Oracle |
+|----------|--------|----------|------------|--------|
+| Zipf-Strong | 267 | **161** | 163 | 160 |
+| Temporal | 250 | 247 | **167** | 250* |
+| Burst | 250 | 249 | **184** | 250* |
 
-**Structural interpretation:** this is a graphical model. Each REMARC instance is a clique; shared axes are separator sets. The factorization graph determines which cross-dimensional erosion is captured exactly. A fully connected graph recovers the unified system.
+*Oracle also migrates on Temporal/Burst but migration cost exceeds benefit.
 
-**Open questions:**
-- For a given workload, what is the optimal factorization graph? (Minimizes approximation error subject to table size budget)
-- Can the factorization be learned online from access patterns?
-- What is the relationship between factorization topology and the symmetric properties described in §6.4 (competitive, independent, cooperative)?
+**Finding 44:** On stable workloads (Zipf-Strong), Majority voting beats all adaptive strategies. The workload's access pattern is already concentrated on one node — adaptation adds cost without benefit.
 
-### Bit Width: Quantization Granularity
+**Finding 45:** On Temporal workloads, EMA/REMARC achieves 167ns vs Majority's 247ns. The decay mechanism allows the system to "forget" old access patterns and adapt to phase shifts. This is REMARC's only genuine advantage, and it is fully explained by the exponential decay — a one-line EMA update.
 
-REMARC's current instantiation uses 4-bit quantization (MAX=15). This limits the state space to 16 levels per dimension — sufficient for eviction and migration thresholds but coarse for fine-grained tiering decisions where the difference between "warm" and "hot" matters.
+**Finding 46:** On Burst workloads, all adaptive strategies perform worse than Static. Wrong migrations cost more than right migrations save. The expected value of migration is negative when the workload is noisy.
 
-Increasing bit width is straightforward for K=2 ($256^2 = 65K$ entries, fits L2). For K > 2, bit width interacts with table size: K=3 at 8-bit produces $16M$ entries per action, which is impractical.
+**Parameter sweep** (DTHRESH 0-10, RA 0.05-1.0, RL 0.01-0.5 across 7 workloads): DT=3-4 is the sweet spot. Lambda (decay rate) is the only parameter that matters — it controls the tradeoff between stability and adaptivity. All other parameters have negligible effect.
 
-**Factorization decouples bit width from dimensionality.** With factored K=2 instances (§11.1), each instance uses 8-bit tables ($65K$ entries) regardless of total K. The total number of dimensions is absorbed by running more instances, not by growing individual tables.
+### 13.3 K=3 Results (3 Nodes: DRAM 100ns, CXL 300ns, Remote 800ns)
 
-**Open questions:**
-- What is the sensitivity of eviction/migration accuracy to quantization level? (4-bit vs 6-bit vs 8-bit on real workloads)
-- Does the competitive erosion structure (§3.2) amplify or dampen quantization error?
-- Can adaptive quantization (different bit widths per dimension) improve accuracy without increasing table size?
+| Workload | Static | Majority | EMA | REMARC-Q | Predict | ARC-Like |
+|----------|--------|----------|-----|----------|---------|----------|
+| Zipf-Strong | **372** | 396 | 394 | 395 | 394 | 394 |
+| Zipf-Mixed | 396 | 391 | 387 | **387** | 387 | **386** |
+| Temporal | 373 | 375 | **367** | **366** | 367 | **367** |
+| Burst | **360** | 411 | 423 | 422 | 437 | 423 |
 
-### Dynamic K: Topology Changes at Runtime
+**Finding 47:** All projection variants (Linear, Log, Multiplicative) produce results within 1ns of each other and within 1ns of simple EMA. The REMARC state representation provides zero information that EMA does not already capture.
 
-REMARC assumes K is fixed at compile time. Real systems experience topology changes: hot-plugged memory tiers, VM migration across NUMA nodes, added or removed caching layers.
+**Finding 48:** REMARC-Quantized performs slightly worse than EMA on Burst (422 vs 423 avg latency). The 4-bit quantization introduces information loss that is net-negative.
 
-**Approaches:**
+**Finding 49:** REMARC-Migrate (the full competitive coupling formula) never fires in practice. The formula produces MigrateScore = 0 for most states because the denominator (f * 30 * 15) dominates the numerator. The migration axis of the REMARC framework is non-functional.
 
-1. **Preallocate K_max, activate subsets.** Always allocate state for the maximum expected K. Unused dimensions stay at 0 and contribute nothing to scores. Simple but wastes memory.
+**Finding 50:** Static placement beats all adaptive strategies on Zipf-Strong and Burst. Migration helps only ~2% on Zipf-Mixed and ~2% on Temporal. On Burst, all adaptive strategies are 14-21% worse than doing nothing.
 
-2. **Runtime table generation.** Regenerate lookup tables when K changes. For K=4, this is ~250K entries — computable in microseconds. Tables are static per-epoch (regenerate on topology change, not per-access). Loss of `constexpr` but practical for rare topology events.
+**Finding 51:** Predictive strategies (Predict, Predict+FB, ARC-Like) do not improve over EMA. Expected-value gates and confidence thresholds cannot overcome the fundamental issue: migration cost is paid immediately but benefit is delayed and uncertain.
 
-3. **Factorization with dynamic instance graph.** Add or remove K=2 instances when topology changes. Each new tier or node adds at most one new instance (connected to an existing shared axis). This avoids regenerating large tables and avoids migrating state for all keys — only keys in the new tier need initialization.
+### 13.4 Feedback Dimensionality
 
-**Open questions:**
-- State migration: when K increases, every existing key's state vector must grow. What is the cost model? Can migration be lazy (grow on next access)?
-- Does runtime table generation introduce latency spikes that affect cache performance during topology transitions?
-- Can the factorization graph be updated incrementally (add/remove cliques) without recomputing the entire structure?
+A dedicated experiment tested whether a K-dimensional placement problem needs K independent feedback signals or whether one suffices.
 
-### The Design Space
+| Workload | Static | Fixed-Thresh | 1-Signal | K-Signal | Oracle |
+|----------|--------|-------------|----------|----------|--------|
+| Zipf-Strong | 372 | 394 | 394 | 394 | 394 |
+| Zipf-Mixed | 396 | 387 | 387 | 387 | 386 |
+| Temporal | 373 | 367 | 367 | 367 | 351 |
+| Burst | 360 | 423 | 422 | 422 | 379 |
 
-These three axes are independent:
+**Finding 52:** 1-Signal produces identical results to K-Signal on all workloads. One feedback signal suffices for K-dimensional placement.
 
-| Axis | Controls | Tradeoff |
-|---|---|---|
-| **Total dimensions K** | Number of signals tracked | More = richer decisions, larger tables |
-| **Bit width** | Quantization granularity per signal | More = finer decisions, exponentially larger tables |
-| **Factorization** | How dimensions group into instances | More factorized = cheaper tables, approximate erosion |
+**Finding 53:** Migration success rate is ~50% (coin flip) for ALL strategies — Static, Fixed-Threshold, 1-Signal, K-Signal. The feedback signal has SNR ≈ 0. After migrating a key, the probability that the next access comes from the new node is ~50%, regardless of how the migration decision was made. This is because the workload's access source (which node accesses the key) is dominated by the home bias (70%), not by the key's current placement.
 
-Increasing K does not require increasing bit width. Increasing bit width does not require increasing K. Refactoring the instance graph does not require changing either. A system builder selects a point in this three-dimensional design space based on their hardware constraints (cache sizes, SIMD support) and workload requirements (number of tiers, required precision).
+**Finding 54:** The distinction between 1-Signal and K-Signal is moot because feedback itself is uninformative. Even Oracle-level feedback (knowing the next access source) does not change the migration success rate — it changes *which* key to migrate, but the outcome of any given migration is still ~50%.
 
-This design space is the natural generalization of REMARC beyond a single-tier eviction policy into a family of related policies, connected by the shared mathematical structure of competitive coupling and linear projection.
+### 13.5 Theoretical Analysis: Why Feedback Fails for Placement
 
-### Toward an Algebra of Sequential Decision Functions
+The universal pattern across successful adaptive resource managers is: **one deterministic feedback signal calibrates one scalar parameter.**
 
-The representation framework (§3.4) and factorization analysis (§11.1) suggest that REMARC captures an algebraic structure common to the class of history-based online sequential decision functions. This section outlines the theoretical direction; full formalization is planned as Paper 3.
+| System | Feedback signal | Parameter calibrated | Signal nature |
+|--------|----------------|---------------------|---------------|
+| ARC (eviction) | Ghost hit (key was evicted, now accessed) | Target quota p | **Deterministic**: key accessed = definitely needed |
+| TCP congestion | Packet loss (timeout or duplicate ACK) | Congestion window cwnd | **Deterministic**: loss = definitely congested |
+| autoNUMA | Page fault rate | Scanning threshold | **Stochastic**: fault = probably wrong placement |
 
-#### REMARC as Projection Space
+ARC's feedback has high SNR because the ghost hit is a direct, deterministic observation: "you evicted this key and immediately needed it." The signal is unambiguous — it directly measures the quality of the eviction decision.
 
-A REMARC function is an approximation (a decision function) of a policy. The space of REMARC configurations is a **projection space** for the space of sequential decision functions. This supports two operations:
+Placement feedback has low SNR because the outcome of a migration is stochastic. Whether a key is accessed from its new node depends on:
+1. The access source node (determined by thread scheduling, request routing)
+2. The key's access pattern (which threads need this key)
+3. The timing of the next access relative to the migration
 
-1. **Constructive:** build any sequential decision function by composing phi atoms with different (α, λ) parameters, then applying proj_s and decide.
-2. **Projective:** map any existing policy to a REMARC approximation with characterizable error. The approximation inherits REMARC's computational properties (O(1) per decision, SIMD, deterministic convergence).
+These factors are dominated by the workload's home bias (70% of accesses come from one node), not by the migration decision. The feedback signal is: "was this key accessed from its new node?" — but a "yes" answer does not mean the migration was correct (the access might have come from any node anyway), and a "no" answer does not mean it was wrong (the access source might have changed independently).
 
-The projective property is the stronger statement. Every policy π maps to a REMARC point:
+**Theorem (informal):** For placement decisions where the next access source is independent of the current placement (access source determined by external factors), feedback has zero information content. Migration success rate converges to the base rate of access source distribution, regardless of adaptation strategy.
 
-$$\pi \mapsto (\varphi, \texttt{proj}_s, \texttt{decide}) = (K, \{\alpha_j\}, \lambda, A, g)$$
+**Corollary:** Placement feedback can only have high SNR when the access source is causally dependent on the placement — i.e., when placing data on node X *causes* accesses to come from node X. This holds for thread scheduling (migrating a thread to a node causes its memory accesses to come from that node) but does NOT hold for shared data placement (multiple threads may access the same key regardless of where it is placed).
 
-Navigating the REMARC space (adjusting the three atoms) is **policy optimization** — searching for the composition that minimizes a cost function over the workload.
+This explains why autoNUMA's feedback is noisy (page faults are weak signals) while ARC's feedback is strong (ghost hits are deterministic). It also explains why no existing adaptive resource manager uses multi-dimensional feedback — one signal is always sufficient because the signal itself is either informative (deterministic outcome) or uninformative (stochastic outcome), and adding more uninformative signals does not help.
 
-#### Generation Theorem
+### 13.6 Assessment of the REMARC Framework
 
-The K=1 REMARC function is the **atom** of the decision function space. The atom is: "track one exponentially-smoothed signal, decay it over time." Composing enough atoms with different α and λ values, projecting their outputs, and applying nonlinear decision surfaces can approximate a broad class of sequential decision functions. Whether the three-atom composition is universal (generates *all* sequential decision functions) or dense (generates a class dense in the target space) is the central open question for Paper 3.
+The tiered placement evaluation conclusively demonstrates that the REMARC framework adds zero value over simple baselines for the problem it was designed to solve. The assessment across all axes:
 
-$$\pi_c = \texttt{decide} \circ \texttt{proj}_s \circ \varphi^t$$
+| Claimed contribution | Evidence | Verdict |
+|---------------------|----------|---------|
+| Multi-dimensional state (atoms) | All projections ≈ EMA (Finding 47) | Equivalent to simple counting |
+| Composable projections | Linear/Log/Multiplicative identical within 1ns (Finding 47) | No expressiveness gained |
+| Competitive coupling | REMARC-Migrate never fires (Finding 49) | Non-functional |
+| 4-bit quantization | Slightly worse than unquantized (Finding 48) | Net negative |
+| Migration scoring | EMA matches REMARC on all workloads (Findings 44-46) | No value over counting |
+| Feedback adaptation | Success rate ~50% for all strategies (Finding 53) | Uninformative signal |
+| Predictive gating | Predict/ARC-Like ≈ EMA (Finding 51) | Cannot overcome noise |
+| Algebraic framework (REM-T) | Vocabulary only, no prescriptive power (Finding 47) | Not load-bearing |
 
-Where the three atoms are (as defined in §3.4):
+**The cold-entry information hole** (Section 12) and **feedback SNR ≈ 0** (this section) are complementary fundamental limitations. The cold-entry hole bounds feedforward: no hit-only scoring can differentiate entries that have never been re-accessed. The SNR limitation bounds feedback: no adaptive mechanism can learn from a signal dominated by noise. Together, they explain why the REMARC framework — which relies on feedforward scoring and adaptive feedback — cannot outperform simple baselines.
 
-| Atom | Type | Free parameters |
-|---|---|---|
-| phi: S x O -> S | Incremental state update | n (dimension), α_j (boost), λ (decay), MAX (bound) |
-| proj_s: S -> R^k | Linear projection (scalar product) | k (feature count), A (projection matrix) |
-| decide: R^k -> D | Nonlinear combination | g (decision surface geometry) |
+### 13.7 Retirement of REM-T (Algebraic Theory)
 
-The "spectrum" in REMARC is the time constant (α, λ). Fast α tracks recency; slow α tracks frequency; λ controls memory. Composing across the spectrum yields the full range of sequential decision functions.
+The "Toward an Algebra of Sequential Decision Functions" section (formerly §13, now retired) proposed that REMARC captures a general algebraic structure common to sequential decision functions. The six open questions (approximation bounds, optimal decomposition, factorization, learnability, cooperative regime, information bottleneck) are assessed:
 
-This decomposition is analogous to basis decompositions in other mathematical spaces:
+| Question | Assessment |
+|----------|-----------|
+| Q1: Approximation bounds | Moot — the framework adds zero value, so bounding its approximation error is uninteresting |
+| Q2: Optimal decomposition | Moot — minimal K = 2 (two EMA counters), achieved by trivial composition |
+| Q3: Factorization quality | Moot — EMA ≈ REMARC proves factorization adds nothing |
+| Q4: Learnability | Moot — even with perfect learning, the framework cannot exceed EMA |
+| Q5: Cooperative regime | Unresolved but unpromising — no domain has been identified where cooperative dimensions help, and the fundamental SNR limitation suggests they would face the same feedback problem |
+| Q6: Information bottleneck | Unresolved but deprioritized — the framework is not information-bottleneck-optimal for placement (simple counting is equally good and cheaper) |
 
-| Analogy | Basis element | Space generated |
-|---|---|---|
-| Fourier analysis | sin(nωt), cos(nωt) | L² functions on [0,T] |
-| Polynomials (Weierstrass) | xⁿ | Continuous functions on [a,b] |
-| **REMARC** | **(phi, proj_s, decide)** | **Sequential decision functions** |
+The algebraic framework is retained in this paper for documentary purposes but is not pursued further. The vocabulary (atoms, projections, competitive coupling) remains useful for *describing* existing policies (ARC = independent regime, LRU = competitive regime with K=1) but does not *generate* better ones.
 
-#### Decomposition and Factorization
+---
 
-In the three-atom decomposition (§3.4), phi is the only atom that varies across parallel instances (different α, λ per dimension). The proj_s and decide atoms are shared — they read from the K-dimensional state that the parallel phi instances collectively produce. So the decomposition is:
+## Open Questions (Closed)
 
-$$\pi_c = \texttt{decide} \circ \texttt{proj}_s \circ (\varphi_1 \otimes \varphi_2 \otimes \cdots \otimes \varphi_K)^t$$
+The open questions from previous versions are resolved or retired. This section is retained for documentary purposes.
 
-Where each $\varphi_i$ is a K=1 phi atom tracking one dimension. The factorization results from §11.1 apply at every level — proj_s itself can be decomposed into smaller REMARC instances connected by shared axes, approximating a higher-dimensional projection with compositions of lower-dimensional ones.
+**Factorization (§13.1, formerly §13.1):** Moot. Simple EMA counting matches all factorization variants. No factorization topology improves over trivial two-counter composition.
 
-**ARC is two K=1 phi atoms (recency tracker + frequency tracker) composed with a K=2 proj_s + decide that blends their outputs.** ARC's adaptive parameter p is the projection vector in the meta-REMARC. The recency and frequency signals are independent (not competitive), placing ARC in the independent regime (§6.4) of the REMARC space — same algebraic structure as NUMA-REMARC, different symmetry stratum.
+**Bit width (§13.2, formerly §13.2):** Moot. 4-bit quantization is net-negative (Finding 48). Higher bit width would increase table size for zero benefit.
 
-#### Symmetry Classification
+**Dynamic K (§13.3, formerly §13.3):** Unresolved but deprioritized. The framework adds no value for any fixed K, so adapting K at runtime is unlikely to help.
 
-§6.4 identified three regimes of the REMARC projection (competitive, independent, cooperative). These correspond to three symmetry classes of the policy space:
+**Toward an Algebra (§13.5, formerly §13.5):** Retired. The algebraic framework provides descriptive vocabulary but no prescriptive power. Six open questions assessed as moot or unpromising (§13.7).
 
-- **Competitive** ($f(\delta) + f(-\delta) = 0$): dimensions oppose each other. Examples: NUMA local/remote, eviction vs retention.
-- **Independent** ($f(\delta) + f(-\delta) = c$): dimensions are uncorrelated. Examples: ARC's recency + frequency, LIRS tracking multiple unrelated metrics.
-- **Cooperative** ($f(\delta) + f(-\delta) = 2f(\delta)$): dimensions reinforce each other. No known existing policy exploits this regime — it is a genuinely new region of design space that the algebraic framing opens naturally.
-
-Existing policies occupy only the competitive and independent regimes. The cooperative regime is unexplored territory.
-
-#### Open Questions for Future Work
-
-The following questions are ranked by dependency: each question depends on the ones above it.
-
-**1. Approximation bounds (load-bearing question).** Given a policy $\pi$ and a REMARC approximation with parameters $(K, \text{bit width}, \text{factorization graph})$, what is the maximum decision disagreement $d(\pi, R(\pi))$ between $\pi$ and its REMARC projection $R(\pi)$? Does the error decrease monotonically with K?
-
-*Why this is load-bearing:* every other question requires a well-defined error metric first. Optimal decomposition (Q2) asks for minimum K within error $\varepsilon$ — but $\varepsilon$ has no meaning without this bound. Factorization (Q3) trades approximation quality for computational cost — but the tradeoff is undefined without this bound. This question must be answered first.
-
-*Approach:* define a metric on policy behavior (e.g., fraction of decisions that differ over a finite trace) and bound it as a function of K, bit width, and the distance between the policy's true decision surface and the REMARC projection. Known tools: quantization error analysis, function approximation theory.
-
-**2. Optimal decomposition (depends on Q1).** For a given policy $\pi$, what is the minimum $K$ needed for exact representation? For approximate representation within error $\varepsilon$?
-
-*Approach:* characterize the class of decision surfaces achievable with K-dimensional REMARC. Exact representation requires the policy's decision surface to lie in the span of the REMARC projections. Minimum K = minimum dimension of a subspace containing the decision surface.
-
-**3. Factorization as approximation (depends on Q1).** What is the relationship between factorization topology (tree, chain, star) and approximation quality?
-
-*Approach:* the factorization graph determines which cross-dimensional erosion is preserved (shared axes) and which is lost (non-shared axes). The approximation error is the information lost through non-shared erosion. Bound this loss as a function of the graph's connectivity. Known tools: junction tree theory, conditional independence in graphical models.
-
-**4. Learnability (depends on Q1, Q2).** Can the REMARC parameters $(\alpha, \lambda, A, g)$ be learned from workload traces? Is there an online learning algorithm that converges to the optimal REMARC composition for a given workload?
-
-*Approach:* given the error metric from Q1, define a loss function over the parameter space and apply online convex optimization (if the loss is convex in the parameters) or bandit methods (if only noisy feedback is available). The convergence rate of the learning algorithm depends on the geometry of the parameter space (§3.4, geometric interpretation).
-
-**5. Cooperative regime (independent of Q1–Q4).** Are there domains (beyond caching) where cooperative dimensions produce useful policies? What does a cooperative tiered memory policy look like?
-
-*Approach:* the cooperative regime ($f(\delta) + f(-\delta) = 2f(\delta)$, evidence reinforces evidence) is a genuinely unexplored region of the REMARC design space. No existing policy exploits it. Identify domains where signal agreement (rather than signal competition) is the decision-relevant structure. Candidates: sensor fusion, anomaly detection, consensus protocols.
-
-**6. Information Bottleneck connection (depends on Q1).** Does REMARC's deterministic construction achieve information-bottleneck-optimal compression for specific discrimination problems? Is the correlation condition (§3.4) the algebraic analog of the IB mutual information constraint?
-
-*Approach:* for a specific discrimination problem (e.g., K=2 eviction/migration), compute the IB-optimal compression and compare with the REMARC projection. If they coincide, the connection is proven for that case. General proof would require showing that the REMARC projection minimizes some deterministic analog of $I(X;T) - \beta I(T;Y)$.
+**One open thread remains:** the distinction between deterministic and stochastic feedback signals (§13.5) is a genuine theoretical observation that may generalize beyond placement. ARC's ghost hit (deterministic outcome, high SNR) vs placement feedback (stochastic outcome, SNR ≈ 0) suggests a classification of adaptive resource management problems by the information content of their feedback signals. Whether this classification leads to actionable theory is an open question for future work, but it is outside the scope of REMARC.
 
 ---
 
