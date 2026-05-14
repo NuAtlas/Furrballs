@@ -36,7 +36,7 @@ format:
 
 **Status:** Research journal (living document). This is not a definitive paper — it documents ongoing work, negative results, and open questions alongside findings. Conclusions may change as experiments progress.
 **Date:** May 2026
-**Changelog:** v0.11.0 --- History Atom experiment (Section 10). Five policies (HA1--HA5) composing REMARC atoms incrementally demonstrate that pure atom composition on a numerical state space matches or exceeds ARC on 3/4 workloads. Confidence-weighted projection resolves the prediction inversion (Finding 36). Ghost eviction protection closes the looping gap (Finding 37). New findings 35--38.
+**Changelog:** v0.12.0 --- Projection topology and state space dimensionality probes (Section 11). 22 probe variants test colinearity, residual frequency, population signals, lifetime, density, and non-linear projections. Finding 39 (colinearity proof), Finding 40 (gap variance = independent dimension), Finding 41 (log-projection topology), Finding 42 (sparse decision space), Finding 43 (lifetime penalty negative finding). HA-LOGLIN-VAR achieves KPI 76.03 (ranked #1 overall). Section 11 inserted. Conclusion updated to 8 principal results.
 
 ---
 
@@ -1271,7 +1271,7 @@ Throughput is the primary limitation: O(n) linear scan eviction produces 20--200
 
 REMARC reframes tiered memory management as a dimensional reduction problem: multiple access signals are compressed into a compact state space, and action scores are derived via precomputed projection functions. This unified framework handles eviction, migration, and tiering from a single mechanism, with O(1) amortized cost per decision via SIMD lookup tables.
 
-The evaluation (Sections 5, 8, 9, 10) establishes six principal results across single-node (24 variants, 4 workloads), 2-node (desire encoding experiments, 4 workloads), 3-node (3 variants, 4 workloads), augmentation (8 findings), structured eviction (6 findings), and history atom (5 variants, 5-atom composition) configurations:
+The evaluation (Sections 5, 8, 9, 10, 11) establishes eight principal results across single-node (24 variants, 4 workloads), 2-node (desire encoding experiments, 4 workloads), 3-node (3 variants, 4 workloads), augmentation (8 findings), structured eviction (6 findings), history atom (5 variants, 5-atom composition), and projection/dimensionality probing (22 probes, 4 findings) configurations:
 
 1. **Single-node ceiling ($\sim$24.5% Zipfian at 10% capacity):** No tested page-batch REMARC variant within the bounded per-key scoring class exceeds this ceiling, which we attribute to ARC's T1/T2 structural identity providing more information per capacity unit than scalar scoring can express. This holds across all tested variants including feedback modulation, capacity allocation, and ghost restoration. Augmented variants (AUG-TS4) approach ARC (33.9% vs 35.2%), and the self-tuning AUG-ADAPT variant achieves 99.33% on adversarial looping workloads while matching ARC on Zipfian, ScanRes, and Temporal (§9).
 
@@ -1287,7 +1287,80 @@ The evaluation (Sections 5, 8, 9, 10) establishes six principal results across s
 
 7. **Pure REMARC atom composition matches or exceeds ARC on 3/4 workloads (Section 10):** A five-atom composition on a numerical state space $S = (r, f, \text{avgGap}, \text{lastEpoch})$ with a unified confidence-weighted projection achieves 57.5% Zipfian (+22pp vs ARC), 90.7% Temporal (+16pp), and 96.1% Looping (+96pp). The key enablers are: (a) recency as a confidence weight on temporal prediction (resolves the no-information singularity, Finding 36), and (b) ghost-based eviction protection (prevents re-eviction of cycling keys, Finding 37). This validates the REM-T thesis that atom composition on an ordered decision space is sufficient for competitive single-node performance, without requiring ARC's list-based structural machinery. The remaining ScanRes gap (-5.2pp) is attributed to the absence of population-level $p$-adaptation.
 
+8. **Log-projection and gap variance are the only orthogonal improvements (Section 11):** Twenty-two probe variants tested colinear frequency, residual frequency, population signals, lifetime, density, multiplicative/ratio projections, and log-linear compression. Only two produced genuine improvements: (a) gap variance as a new independent dimension (+2.92pp ScanRes, Finding 40), and (b) log-compressed projection topology (+5.60pp ScanRes, +2.00pp Looping, Finding 41). Their combination (HA-LOGLIN-VAR) achieves KPI 76.03, ranking #1 overall. The concentration of signal in two orthogonal directions (new dimension + projection topology, out of 22 probes) supports the REM-T thesis that the decision space should be sparse with each axis carrying maximal independent information (Finding 42).
+
 The mathematical framework (switched linear system with linear projection) provides convergence guarantees, steady-state characterization, and natural generalization to $K > 2$ for tiered storage and heterogeneous memory hierarchies (Section 6). The implementation architecture (Section 5.6, Appendix A) demonstrates practical deployment: 2 bytes per key shadow map, lazy migration on access, SIMD-optimized periodic decay. The desire encoding mechanism requires no distributed coordination, making it suitable for shared-memory NUMA systems and potentially extensible to distributed caches via the factorization framework (Section 11.1).
+
+---
+
+## 11. Projection Topology and State Space Dimensionality
+
+Section 10 established that five atoms on a four-dimensional state space with a linear projection can match or exceed ARC on three of four workloads. This section probes two questions: (1) whether *new dimensions* beyond $(r, f, \text{avgGap}, \text{lastEpoch})$ carry independent information, and (2) whether *non-linear projection topologies* change the decision quality.
+
+### 11.1 Colinearity Proof: Redundant Dimensions Add No Value
+
+We added frequency and population-level signals to HA5 as separate atoms:
+
+- **Raw frequency** (`score -= alpha * f`): zero hit rate change. Frequency is perfectly colinear with recency — both rise together on access and decay together. Adding them as independent dimensions provides no ranking improvement.
+- **Residual frequency** (`f_resid = f - beta * r`, with adaptive beta = population mean_f / mean_r): zero hit rate change. The colinearity is so tight that the residual is near-zero for all keys.
+- **Uniform population multiplier** (`score *= (1 + coldRatio)`): zero hit rate change. A scalar multiplier applied to all scores is rank-preserving.
+- **Per-key population deviation** (`score += devScale * (avgGap - popMeanAvgGap)`): -0.97pp on ScanRes (interferes with legitimate keys during workload transitions). Adaptive feedback controller converges toward disabling the atom (DEV_SCALE shrinks toward zero).
+
+**Finding 39 (Dimensional Independence):** Only *orthogonal* dimensions improve eviction decisions. Colinear signals, even when formally distinct (f vs r), carry redundant information and produce zero change in hit rates. This experimentally validates the REM-T thesis that the decision space D must span independent axes.
+
+### 11.2 New Dimension: Gap Variance
+
+We added $A_\text{variance}$: an EMA of $(gap - \text{avgGap})^2$ per key, contributing $+ \text{VAR\_SCALE} \cdot \sqrt{\text{gapVar}}$ to the eviction score.
+
+| Workload | HA5 (base) | HA-VAR | Delta |
+|----------|-----------|--------|-------|
+| Zipfian  | 55.17 | 55.19 | +0.02 |
+| ScanRes  | 83.66 | **86.58** | **+2.92** |
+| Temporal | 72.00 | 72.00 | 0.00 |
+| Looping  | 96.05 | 96.05 | 0.00 |
+
+**Finding 40 (Variance is an Independent Dimension):** Gap variance is genuinely independent of avgGap. Two keys with the same average inter-access gap can have very different variance — one accessed at regular intervals (low variance, steady resident), another in bursts then silent (high variance, potential scan pollution). The +2.92pp ScanRes improvement demonstrates that variance carries workload-discriminating information absent from the mean.
+
+### 11.3 Non-Linear Projection: Log Compression
+
+We replaced the linear projection $\text{score} = \text{avgGap} \cdot (1 + r/R_\text{MAX}) + (R_\text{MAX} - r)$ with a log-compressed version:
+
+$$\text{score} = \log(\text{avgGap} + 1) \cdot (R_\text{MAX} - r) + \log(f + 1) \cdot r$$
+
+| Workload | HA5 (linear) | HA-LOGLIN (log) | Delta |
+|----------|---------------|-----------------|-------|
+| Zipfian  | 55.17 | 55.15 | -0.02 |
+| ScanRes  | 83.66 | **89.26** | **+5.60** |
+| Temporal | 72.00 | 71.82 | -0.18 |
+| Looping  | 96.05 | **98.00** | **+2.00** |
+
+**Finding 41 (Projection Topology Matters):** Log compression closes the ScanRes gap from -4.70pp (HA5 vs ARC) to +0.91pp (HA-LOGLIN vs ARC), and matches AUG-ADAPT on Looping (98.00%). The mechanism: log compression amplifies *small* gap differences for cold keys (making cold-key discrimination more precise) while compressing *large* gap differences for hot keys (preventing any single dimension from dominating). This is a purely topological change — same atoms, same state space, different projection.
+
+### 11.4 Combined: Log Projection + Variance
+
+| Workload | HA5 | HA-VAR | HA-LOGLIN | **HA-LOGLIN-VAR** | ARC | AUG-ADAPT |
+|----------|-----|--------|-----------|------------------|-----|-----------|
+| Zipfian  | 55.17 | 55.19 | 55.15 | **55.20** | 34.96 | 33.39 |
+| ScanRes  | 83.66 | 86.58 | 89.26 | 88.92 | 88.35 | **89.60** |
+| Temporal | 72.00 | 72.00 | 71.82 | 71.82 | 74.73 | **75.14** |
+| Looping  | 96.05 | 96.05 | 98.00 | **98.00** | 0.00 | **98.00** |
+
+**KPI:** HA-LOGLIN-VAR = 76.03, HA-LOGLIN = 75.31, AUG-ADAPT = 74.64, HA-VAR = 73.34, ARC = 61.95.
+
+**Finding 42 (Composition of Probes):** The log-projection + variance combination achieves the highest KPI of any REMARC policy, ranking #1 across the full evaluation. It matches AUG-ADAPT on both Looping (98.00%) and approaches it on ScanRes (88.92 vs 89.60). However, the combination is slightly worse on ScanRes than HA-LOGLIN alone (88.92 vs 89.26), indicating that variance adds noise when the projection is already well-calibrated. The two probes are partially substitutable rather than fully complementary.
+
+### 11.5 Negative Finding: Lifetime Penalty
+
+A short-lifetime penalty (penalizing keys admitted within the last N epochs) collapsed Zipfian from 55.17% to 29.94%. The penalty is too aggressive: popular Zipfian keys that happen to have been recently re-admitted after a cold spell are evicted immediately. **Finding 43:** Lifetime is not an independent signal — it is strongly correlated with recency in Zipfian workloads, and penalizing it destroys the recency-protection balance.
+
+### 11.6 Summary of Probe Results
+
+Across 22 probe variants (colinear, residual, population, variance, lifetime, density, multiplicative, ratio, log-linear, and combined), only two produced genuine improvements:
+
+1. **Gap variance** (Finding 40): new independent dimension, +2.92pp ScanRes.
+2. **Log projection** (Finding 41): non-linear topology, +5.60pp ScanRes, +2.00pp Looping.
+
+The remaining 20 probes produced either zero change (colinearity), negative results (interference), or marginal improvements that were subsumed by the log projection. This concentration of signal in two orthogonal directions (new dimension + projection topology) supports the REM-T thesis that the decision space D should be sparse and each axis should carry maximal independent information.
 
 ---
 

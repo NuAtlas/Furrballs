@@ -1,6 +1,6 @@
 ---
 title: "Furrballs: Topology-Aware, High-Performance Resource Placement for Asymmetric Memory Systems"
-subtitle: "Technical Report v1.20.0"
+subtitle: "Technical Report v1.23.0"
 author: "Hamza Jamil Saied (The Sphynx)"
 date: last-modified
 doi: "10.5281/zenodo.19794753"
@@ -44,7 +44,7 @@ format:
 ---
 
 ## Status
-**v1.22.0** --- History Atom experiment (REMARC paper §10, Findings 35--38). Pure REMARC atom composition (HA5: 5 atoms on numerical state space) matches or exceeds ARC on 3/4 workloads: Zipfian +20pp, Temporal +16pp, Looping +96pp. Confidence-weighted projection resolves prediction inversion. REMARC paper v0.11.0. PolicyBench now includes 36 variants (4 History Atom + BUG-ADAPT-FLAT hang fix + REMARC-1L/2L lazy buckets). Production per-key eviction not yet smoke-tested.
+**v1.23.0** --- Projection topology and state space dimensionality probes (REMARC paper §11, Findings 39-43). 22 probe variants. Finding 39 proves colinear signals add no value (dimensional independence). Finding 40: gap variance is a genuinely independent dimension (+2.92pp ScanRes). Finding 41: log-compressed projection closes ScanRes gap (+5.60pp). Finding 42: HA-LOGLIN-VAR achieves KPI 76.03, ranked #1 overall. REMARC paper v0.12.0. PolicyBench now includes 46 variants. `--policies` flag added for selective benchmarking.
 
 ## Abstract
 Furrballs is a topology-aware resource placement library for asymmetric memory systems. Asymmetric memory --- where memory domains have different access latencies (NUMA, CXL-attached memory, HBM tiers) --- is the defining characteristic of modern server memory hierarchies. Furrballs uses memory topology as a first-class input to per-page placement and eviction decisions. The core contribution is per-page allocation on specific memory domains, with REMARC (Reduction-Modeled Adaptive Replacement Cache) as the unified eviction and migration policy. REMARC reduces three access dimensions (recency, frequency, locality) into a 2D state space (S_local, S_remote), producing dual action scores (Evict, Migrate) via precomputed lookup tables scored with SSE2 SIMD arithmetic. The per-key Evict scores aggregate to per-page eviction decisions, collapsing the key-level and page-level policies into a single mechanism with one scanner and two thresholds. Pages are pre-allocated at initialization via one physical allocation per memory domain (NUMA node in the current implementation), subdivided into logical pages filled by a bump allocator. Key routing supports round-robin distribution and thread-local placement (via a runtime config flag). The library is implemented in C++20, uses a platform abstraction layer (Numatic) for memory topology operations, and integrates a custom synchronization library (StreamLine) for thread coordination.
@@ -2488,6 +2488,7 @@ QEMU VM:
 
 | Version | Summary |
 |---------|---------|
+| v1.23.0 | Projection topology & state-space dimensionality (REMARC paper §11, Findings 39--43). 22 probe variants. HA-LOGLIN-VAR KPI 76.03 (#1). Log-projection +5.60pp ScanRes, gap variance +2.92pp. Colinearity proof: 4 signals zero change. REMARC paper v0.12.0. PolicyBench 45 variants, `--policies` flag. |
 | v1.22.0 | History Atom experiment (REMARC paper §10, Findings 35--38). HA5: 57.5% Zipfian, 83.7% ScanRes, 90.7% Temporal, 96.1% Looping. REMARC paper v0.11.0. PolicyBench 36 variants. |
 | v1.20.0 | §5.23 HYBRID-POS and HYBRID-FB results. Cross-reference to REMARC paper Findings 32--34. |
 | v1.19.0 | §5.23 ARC-REMARC Hybrid: negative finding. REMARC scoring and ARC p-adaptation are complementary, not substitutable. |

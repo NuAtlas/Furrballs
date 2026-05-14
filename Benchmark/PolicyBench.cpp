@@ -3,6 +3,7 @@
 #include <iostream>
 #include <unordered_map>
 #include <unordered_set>
+#include <set>
 #include <list>
 #include <vector>
 #include <random>
@@ -5565,6 +5566,3194 @@ public:
 };
 // =====================================================================
 
+// =====================================================================
+//  BareREMARC_HistAtom_FreqWeight
+//
+//  HA5 + A_freq_projection: subtract frequency from eviction score.
+//  Popular keys get direct protection proportional to access count.
+//
+//  score = (avgGap * (1 + r/R_MAX) + (R_MAX - r) - FREQ_WEIGHT * f)
+//          * ghostProtect(key)
+//
+//  When f=F_MAX=15: penalty = 15 * FREQ_WEIGHT (substantial protection)
+//  When f=0:        penalty = 0 (no protection from frequency)
+//
+//  Probe target: Zipfian — static popularity distribution rewards
+//  frequency directly.
+// =====================================================================
+
+class BareREMARC_HistAtom_FreqWeight {
+    static constexpr uint8_t R_MAX = 15;
+    static constexpr uint8_t F_MAX = 15;
+    static constexpr uint8_t DECAY_NUM = 7;
+    static constexpr uint8_t DECAY_DEN = 8;
+    static constexpr uint8_t R_BOOST = 2;
+    static constexpr uint8_t F_BOOST = 1;
+    static constexpr double AVG_ALPHA = 0.25;
+    static constexpr double GHOST_BOOST_SCALE = 10.0;
+    static constexpr double GHOST_PROTECT_SCALE = 1.0;
+    static constexpr double GHOST_PROTECT_FLOOR = 0.1;
+    static constexpr double FREQ_WEIGHT = 1.5;
+    static constexpr size_t ADAPT_INTERVAL = 256;
+    static constexpr double HIGH_RATIO = 0.3;
+    static constexpr double LOW_RATIO = 0.05;
+
+    struct State {
+        uint8_t r = R_MAX;
+        uint8_t f = 0;
+        uint32_t avgGap = 0;
+        uint32_t lastEpoch = 0;
+    };
+
+    std::unordered_map<uint64_t, State> cache_;
+    GhostField ghost_;
+    size_t cap_;
+    size_t hits_ = 0, misses_ = 0, evictions_ = 0;
+    uint32_t epoch_ = 0;
+    size_t opCount_ = 0;
+
+    size_t ghostHits_ = 0;
+    size_t totalEvictions_ = 0;
+    double ghostDecayRate_ = (double)DECAY_NUM / DECAY_DEN;
+
+    static uint8_t decayR(uint8_t r) {
+        return (uint8_t)((uint16_t)r * DECAY_NUM / DECAY_DEN);
+    }
+
+    static uint8_t decayF(uint8_t f) {
+        return f > 0 ? f - 1 : 0;
+    }
+
+    void adaptGhostDecay() {
+        if (totalEvictions_ == 0) return;
+        double ratio = (double)ghostHits_ / (double)totalEvictions_;
+        if (ratio > HIGH_RATIO) ghostDecayRate_ *= 0.99;
+        if (ratio < LOW_RATIO) ghostDecayRate_ *= 1.01;
+        ghostDecayRate_ = std::max(0.5, std::min(0.95, ghostDecayRate_));
+        ghostHits_ = 0;
+        totalEvictions_ = 0;
+    }
+
+    double ghostProtectFactor(uint64_t key) const {
+        auto gs = ghost_.peek(key);
+        if (!gs.has_value() || *gs == 0) return 1.0;
+        double protection = 1.0 - GHOST_PROTECT_SCALE * (double)*gs / R_MAX;
+        return std::max(GHOST_PROTECT_FLOOR, protection);
+    }
+
+    uint32_t evictScore(uint64_t key, const State& s) const {
+        uint32_t gap = epoch_ - s.lastEpoch;
+        uint8_t r = s.r;
+        for (uint32_t i = 0; i < gap && r > 0; i++) r = decayR(r);
+        double confidence = 1.0 + (double)r / R_MAX;
+        uint32_t freqPenalty = (uint32_t)(FREQ_WEIGHT * s.f);
+        uint32_t rawScore = s.avgGap * confidence + (uint32_t)(R_MAX - r);
+        if (rawScore > freqPenalty) rawScore -= freqPenalty;
+        else rawScore = 0;
+        return (uint32_t)(rawScore * ghostProtectFactor(key));
+    }
+
+    void evictOne() {
+        uint64_t bestKey = 0;
+        uint32_t bestScore = 0;
+        for (const auto& [key, state] : cache_) {
+            uint32_t score = evictScore(key, state);
+            if (score > bestScore) {
+                bestScore = score;
+                bestKey = key;
+            }
+        }
+        if (bestKey == 0) return;
+        auto it = cache_.find(bestKey);
+        ghost_.upsert(bestKey, it->second.r);
+        cache_.erase(it);
+        evictions_++;
+        totalEvictions_++;
+    }
+
+public:
+    BareREMARC_HistAtom_FreqWeight(size_t capacity, const RemarcConfig& cfg = RemarcConfig{})
+        : ghost_(capacity * 2), cap_(capacity) { (void)cfg; }
+
+    void access(uint64_t key) {
+        epoch_++;
+        opCount_++;
+        if (opCount_ % ADAPT_INTERVAL == 0) adaptGhostDecay();
+
+        auto it = cache_.find(key);
+        if (it != cache_.end()) {
+            uint32_t gap = epoch_ - it->second.lastEpoch;
+            uint8_t r = it->second.r;
+            for (uint32_t i = 0; i < gap && r > 0; i++) r = decayR(r);
+            uint8_t f = it->second.f;
+            for (uint32_t i = 0; i < gap && f > 0; i++) f = decayF(f);
+            if (gap > 0 && it->second.avgGap > 0) {
+                it->second.avgGap = (uint32_t)((double)it->second.avgGap * (1.0 - AVG_ALPHA)
+                    + (double)gap * AVG_ALPHA);
+            } else if (gap > 0) {
+                it->second.avgGap = gap;
+            }
+            it->second.r = std::min(R_MAX, (uint8_t)(r + R_BOOST));
+            it->second.f = std::min(F_MAX, (uint8_t)(f + F_BOOST));
+            it->second.lastEpoch = epoch_;
+            hits_++;
+            return;
+        }
+
+        misses_++;
+        uint8_t r_init = R_MAX;
+        uint8_t f_init = 0;
+        uint32_t avgGap_init = 0;
+        auto gs = ghost_.query(key);
+        if (gs.has_value() && *gs > 0) {
+            ghostHits_++;
+            uint8_t ghostScore = std::max((uint8_t)1,
+                (uint8_t)((double)*gs * ghostDecayRate_));
+            r_init = std::min(R_MAX,
+                (uint8_t)((double)ghostScore * GHOST_BOOST_SCALE / R_MAX));
+            f_init = std::min(F_MAX,
+                (uint8_t)((double)ghostScore * GHOST_BOOST_SCALE / R_MAX));
+            avgGap_init = 0;
+        }
+
+        if (cache_.size() >= cap_) evictOne();
+        cache_[key] = {r_init, f_init, avgGap_init, epoch_};
+    }
+
+    size_t hits() const { return hits_; }
+    size_t misses() const { return misses_; }
+    size_t evictions() const { return evictions_; }
+    size_t scans() const { return 0; }
+};
+// =====================================================================
+
+// =====================================================================
+//  BareREMARC_HistAtom_LogFreq
+//
+//  HA5 + slow-saturating frequency: instead of linear f += 1 capped at
+//  F_MAX, use a logarithmic scale where each additional access contributes
+//  less. This preserves more frequency resolution at high access counts.
+//
+//  f_inc = max(1, F_SAT_FLOOR - ilog2(f + 1))
+//  At f=0:  inc = max(1, 4-0) = 4
+//  At f=1:  inc = max(1, 4-1) = 3
+//  At f=3:  inc = max(1, 4-2) = 2
+//  At f=7:  inc = max(1, 4-3) = 1
+//  At f=15: inc = 1, capped at 15
+//
+//  Score identical to HA5 (f not in score — resolution improvement
+//  matters for tiebreaking in evictOne).
+//
+//  Probe target: Zipfian — better frequency discrimination for top-K keys.
+// =====================================================================
+
+class BareREMARC_HistAtom_LogFreq {
+    static constexpr uint8_t R_MAX = 15;
+    static constexpr uint8_t F_MAX = 15;
+    static constexpr uint8_t DECAY_NUM = 7;
+    static constexpr uint8_t DECAY_DEN = 8;
+    static constexpr uint8_t R_BOOST = 2;
+    static constexpr uint8_t F_SAT_FLOOR = 4;
+    static constexpr double AVG_ALPHA = 0.25;
+    static constexpr double GHOST_BOOST_SCALE = 10.0;
+    static constexpr double GHOST_PROTECT_SCALE = 1.0;
+    static constexpr double GHOST_PROTECT_FLOOR = 0.1;
+    static constexpr size_t ADAPT_INTERVAL = 256;
+    static constexpr double HIGH_RATIO = 0.3;
+    static constexpr double LOW_RATIO = 0.05;
+
+    struct State {
+        uint8_t r = R_MAX;
+        uint8_t f = 0;
+        uint32_t avgGap = 0;
+        uint32_t lastEpoch = 0;
+    };
+
+    std::unordered_map<uint64_t, State> cache_;
+    GhostField ghost_;
+    size_t cap_;
+    size_t hits_ = 0, misses_ = 0, evictions_ = 0;
+    uint32_t epoch_ = 0;
+    size_t opCount_ = 0;
+
+    size_t ghostHits_ = 0;
+    size_t totalEvictions_ = 0;
+    double ghostDecayRate_ = (double)DECAY_NUM / DECAY_DEN;
+
+    static uint8_t decayR(uint8_t r) {
+        return (uint8_t)((uint16_t)r * DECAY_NUM / DECAY_DEN);
+    }
+
+    static uint8_t decayF(uint8_t f) {
+        return f > 0 ? f - 1 : 0;
+    }
+
+    static uint8_t logFreqInc(uint8_t f) {
+        uint32_t floor = (uint32_t)F_SAT_FLOOR;
+        uint32_t ilog = 0;
+        uint32_t v = (uint32_t)f + 1;
+        while (v > 1) { ilog++; v >>= 1; }
+        return (uint8_t)std::max((uint32_t)1, floor - ilog);
+    }
+
+    void adaptGhostDecay() {
+        if (totalEvictions_ == 0) return;
+        double ratio = (double)ghostHits_ / (double)totalEvictions_;
+        if (ratio > HIGH_RATIO) ghostDecayRate_ *= 0.99;
+        if (ratio < LOW_RATIO) ghostDecayRate_ *= 1.01;
+        ghostDecayRate_ = std::max(0.5, std::min(0.95, ghostDecayRate_));
+        ghostHits_ = 0;
+        totalEvictions_ = 0;
+    }
+
+    double ghostProtectFactor(uint64_t key) const {
+        auto gs = ghost_.peek(key);
+        if (!gs.has_value() || *gs == 0) return 1.0;
+        double protection = 1.0 - GHOST_PROTECT_SCALE * (double)*gs / R_MAX;
+        return std::max(GHOST_PROTECT_FLOOR, protection);
+    }
+
+    uint32_t evictScore(uint64_t key, const State& s) const {
+        uint32_t gap = epoch_ - s.lastEpoch;
+        uint8_t r = s.r;
+        for (uint32_t i = 0; i < gap && r > 0; i++) r = decayR(r);
+        double confidence = 1.0 + (double)r / R_MAX;
+        uint32_t rawScore = s.avgGap * confidence + (uint32_t)(R_MAX - r);
+        return (uint32_t)(rawScore * ghostProtectFactor(key));
+    }
+
+    void evictOne() {
+        uint64_t bestKey = 0;
+        uint32_t bestScore = 0;
+        uint32_t bestF = 0;
+        for (const auto& [key, state] : cache_) {
+            uint32_t score = evictScore(key, state);
+            if (score > bestScore || (score == bestScore && state.f < bestF)) {
+                bestScore = score;
+                bestKey = key;
+                bestF = state.f;
+            }
+        }
+        if (bestKey == 0) return;
+        auto it = cache_.find(bestKey);
+        ghost_.upsert(bestKey, it->second.r);
+        cache_.erase(it);
+        evictions_++;
+        totalEvictions_++;
+    }
+
+public:
+    BareREMARC_HistAtom_LogFreq(size_t capacity, const RemarcConfig& cfg = RemarcConfig{})
+        : ghost_(capacity * 2), cap_(capacity) { (void)cfg; }
+
+    void access(uint64_t key) {
+        epoch_++;
+        opCount_++;
+        if (opCount_ % ADAPT_INTERVAL == 0) adaptGhostDecay();
+
+        auto it = cache_.find(key);
+        if (it != cache_.end()) {
+            uint32_t gap = epoch_ - it->second.lastEpoch;
+            uint8_t r = it->second.r;
+            for (uint32_t i = 0; i < gap && r > 0; i++) r = decayR(r);
+            uint8_t f = it->second.f;
+            for (uint32_t i = 0; i < gap && f > 0; i++) f = decayF(f);
+            if (gap > 0 && it->second.avgGap > 0) {
+                it->second.avgGap = (uint32_t)((double)it->second.avgGap * (1.0 - AVG_ALPHA)
+                    + (double)gap * AVG_ALPHA);
+            } else if (gap > 0) {
+                it->second.avgGap = gap;
+            }
+            it->second.r = std::min(R_MAX, (uint8_t)(r + R_BOOST));
+            it->second.f = std::min(F_MAX, (uint8_t)(f + logFreqInc(f)));
+            it->second.lastEpoch = epoch_;
+            hits_++;
+            return;
+        }
+
+        misses_++;
+        uint8_t r_init = R_MAX;
+        uint8_t f_init = 0;
+        uint32_t avgGap_init = 0;
+        auto gs = ghost_.query(key);
+        if (gs.has_value() && *gs > 0) {
+            ghostHits_++;
+            uint8_t ghostScore = std::max((uint8_t)1,
+                (uint8_t)((double)*gs * ghostDecayRate_));
+            r_init = std::min(R_MAX,
+                (uint8_t)((double)ghostScore * GHOST_BOOST_SCALE / R_MAX));
+            f_init = std::min(F_MAX,
+                (uint8_t)((double)ghostScore * GHOST_BOOST_SCALE / R_MAX));
+            avgGap_init = 0;
+        }
+
+        if (cache_.size() >= cap_) evictOne();
+        cache_[key] = {r_init, f_init, avgGap_init, epoch_};
+    }
+
+    size_t hits() const { return hits_; }
+    size_t misses() const { return misses_; }
+    size_t evictions() const { return evictions_; }
+    size_t scans() const { return 0; }
+};
+// =====================================================================
+
+// =====================================================================
+//  BareREMARC_HistAtom_PopCold
+//
+//  HA5 + A_population_cold: track the fraction of cache entries with
+//  avgGap above a threshold. Use this as a multiplier on eviction score.
+//
+//  When most keys are cold (high avgGap) -> scan phase detected ->
+//  multiply all scores by (1 + coldRatio) -> more aggressive eviction ->
+//  faster cache turnover -> less scan pollution.
+//
+//  coldRatio = (count of entries with avgGap > COLD_THRESH) / cache_.size()
+//  score = base * ghostProtect(key) * (1.0 + POP_SCALE * coldRatio)
+//
+//  Probe target: ScanRes — detect scan phases via population statistics.
+// =====================================================================
+
+class BareREMARC_HistAtom_PopCold {
+    static constexpr uint8_t R_MAX = 15;
+    static constexpr uint8_t F_MAX = 15;
+    static constexpr uint8_t DECAY_NUM = 7;
+    static constexpr uint8_t DECAY_DEN = 8;
+    static constexpr uint8_t R_BOOST = 2;
+    static constexpr uint8_t F_BOOST = 1;
+    static constexpr double AVG_ALPHA = 0.25;
+    static constexpr double GHOST_BOOST_SCALE = 10.0;
+    static constexpr double GHOST_PROTECT_SCALE = 1.0;
+    static constexpr double GHOST_PROTECT_FLOOR = 0.1;
+    static constexpr size_t ADAPT_INTERVAL = 256;
+    static constexpr double HIGH_RATIO = 0.3;
+    static constexpr double LOW_RATIO = 0.05;
+    static constexpr double COLD_THRESH = 10.0;
+    static constexpr double POP_SCALE = 1.5;
+    static constexpr size_t POP_INTERVAL = 64;
+
+    struct State {
+        uint8_t r = R_MAX;
+        uint8_t f = 0;
+        uint32_t avgGap = 0;
+        uint32_t lastEpoch = 0;
+    };
+
+    std::unordered_map<uint64_t, State> cache_;
+    GhostField ghost_;
+    size_t cap_;
+    size_t hits_ = 0, misses_ = 0, evictions_ = 0;
+    uint32_t epoch_ = 0;
+    size_t opCount_ = 0;
+
+    size_t ghostHits_ = 0;
+    size_t totalEvictions_ = 0;
+    double ghostDecayRate_ = (double)DECAY_NUM / DECAY_DEN;
+
+    double coldRatio_ = 0.0;
+
+    static uint8_t decayR(uint8_t r) {
+        return (uint8_t)((uint16_t)r * DECAY_NUM / DECAY_DEN);
+    }
+
+    static uint8_t decayF(uint8_t f) {
+        return f > 0 ? f - 1 : 0;
+    }
+
+    void adaptGhostDecay() {
+        if (totalEvictions_ == 0) return;
+        double ratio = (double)ghostHits_ / (double)totalEvictions_;
+        if (ratio > HIGH_RATIO) ghostDecayRate_ *= 0.99;
+        if (ratio < LOW_RATIO) ghostDecayRate_ *= 1.01;
+        ghostDecayRate_ = std::max(0.5, std::min(0.95, ghostDecayRate_));
+        ghostHits_ = 0;
+        totalEvictions_ = 0;
+    }
+
+    void updateColdRatio() {
+        if (cache_.empty()) { coldRatio_ = 0.0; return; }
+        size_t coldCount = 0;
+        for (const auto& [key, s] : cache_) {
+            if (s.avgGap > COLD_THRESH) coldCount++;
+        }
+        coldRatio_ = (double)coldCount / (double)cache_.size();
+    }
+
+    double ghostProtectFactor(uint64_t key) const {
+        auto gs = ghost_.peek(key);
+        if (!gs.has_value() || *gs == 0) return 1.0;
+        double protection = 1.0 - GHOST_PROTECT_SCALE * (double)*gs / R_MAX;
+        return std::max(GHOST_PROTECT_FLOOR, protection);
+    }
+
+    uint32_t evictScore(uint64_t key, const State& s) const {
+        uint32_t gap = epoch_ - s.lastEpoch;
+        uint8_t r = s.r;
+        for (uint32_t i = 0; i < gap && r > 0; i++) r = decayR(r);
+        double confidence = 1.0 + (double)r / R_MAX;
+        uint32_t rawScore = s.avgGap * confidence + (uint32_t)(R_MAX - r);
+        double multiplier = 1.0 + POP_SCALE * coldRatio_;
+        return (uint32_t)(rawScore * ghostProtectFactor(key) * multiplier);
+    }
+
+    void evictOne() {
+        uint64_t bestKey = 0;
+        uint32_t bestScore = 0;
+        for (const auto& [key, state] : cache_) {
+            uint32_t score = evictScore(key, state);
+            if (score > bestScore) {
+                bestScore = score;
+                bestKey = key;
+            }
+        }
+        if (bestKey == 0) return;
+        auto it = cache_.find(bestKey);
+        ghost_.upsert(bestKey, it->second.r);
+        cache_.erase(it);
+        evictions_++;
+        totalEvictions_++;
+    }
+
+public:
+    BareREMARC_HistAtom_PopCold(size_t capacity, const RemarcConfig& cfg = RemarcConfig{})
+        : ghost_(capacity * 2), cap_(capacity) { (void)cfg; }
+
+    void access(uint64_t key) {
+        epoch_++;
+        opCount_++;
+        if (opCount_ % ADAPT_INTERVAL == 0) adaptGhostDecay();
+        if (opCount_ % POP_INTERVAL == 0) updateColdRatio();
+
+        auto it = cache_.find(key);
+        if (it != cache_.end()) {
+            uint32_t gap = epoch_ - it->second.lastEpoch;
+            uint8_t r = it->second.r;
+            for (uint32_t i = 0; i < gap && r > 0; i++) r = decayR(r);
+            uint8_t f = it->second.f;
+            for (uint32_t i = 0; i < gap && f > 0; i++) f = decayF(f);
+            if (gap > 0 && it->second.avgGap > 0) {
+                it->second.avgGap = (uint32_t)((double)it->second.avgGap * (1.0 - AVG_ALPHA)
+                    + (double)gap * AVG_ALPHA);
+            } else if (gap > 0) {
+                it->second.avgGap = gap;
+            }
+            it->second.r = std::min(R_MAX, (uint8_t)(r + R_BOOST));
+            it->second.f = std::min(F_MAX, (uint8_t)(f + F_BOOST));
+            it->second.lastEpoch = epoch_;
+            hits_++;
+            return;
+        }
+
+        misses_++;
+        uint8_t r_init = R_MAX;
+        uint8_t f_init = 0;
+        uint32_t avgGap_init = 0;
+        auto gs = ghost_.query(key);
+        if (gs.has_value() && *gs > 0) {
+            ghostHits_++;
+            uint8_t ghostScore = std::max((uint8_t)1,
+                (uint8_t)((double)*gs * ghostDecayRate_));
+            r_init = std::min(R_MAX,
+                (uint8_t)((double)ghostScore * GHOST_BOOST_SCALE / R_MAX));
+            f_init = std::min(F_MAX,
+                (uint8_t)((double)ghostScore * GHOST_BOOST_SCALE / R_MAX));
+            avgGap_init = 0;
+        }
+
+        if (cache_.size() >= cap_) evictOne();
+        cache_[key] = {r_init, f_init, avgGap_init, epoch_};
+    }
+
+    size_t hits() const { return hits_; }
+    size_t misses() const { return misses_; }
+    size_t evictions() const { return evictions_; }
+    size_t scans() const { return 0; }
+};
+// =====================================================================
+
+// =====================================================================
+//  BareREMARC_HistAtom_FreqPop
+//
+//  HistAtom_FreqWeight + HistAtom_PopCold combined.
+//  Tests for interference between frequency projection and population
+//  phase detection.
+//
+//  score = (avgGap * (1 + r/R_MAX) + (R_MAX - r) - FREQ_WEIGHT * f)
+//          * ghostProtect(key) * (1.0 + POP_SCALE * coldRatio)
+//
+//  Probe target: both Zipfian (via FreqWeight) and ScanRes (via PopCold).
+// =====================================================================
+
+class BareREMARC_HistAtom_FreqPop {
+    static constexpr uint8_t R_MAX = 15;
+    static constexpr uint8_t F_MAX = 15;
+    static constexpr uint8_t DECAY_NUM = 7;
+    static constexpr uint8_t DECAY_DEN = 8;
+    static constexpr uint8_t R_BOOST = 2;
+    static constexpr uint8_t F_BOOST = 1;
+    static constexpr double AVG_ALPHA = 0.25;
+    static constexpr double GHOST_BOOST_SCALE = 10.0;
+    static constexpr double GHOST_PROTECT_SCALE = 1.0;
+    static constexpr double GHOST_PROTECT_FLOOR = 0.1;
+    static constexpr double FREQ_WEIGHT = 1.5;
+    static constexpr size_t ADAPT_INTERVAL = 256;
+    static constexpr double HIGH_RATIO = 0.3;
+    static constexpr double LOW_RATIO = 0.05;
+    static constexpr double COLD_THRESH = 10.0;
+    static constexpr double POP_SCALE = 1.5;
+    static constexpr size_t POP_INTERVAL = 64;
+
+    struct State {
+        uint8_t r = R_MAX;
+        uint8_t f = 0;
+        uint32_t avgGap = 0;
+        uint32_t lastEpoch = 0;
+    };
+
+    std::unordered_map<uint64_t, State> cache_;
+    GhostField ghost_;
+    size_t cap_;
+    size_t hits_ = 0, misses_ = 0, evictions_ = 0;
+    uint32_t epoch_ = 0;
+    size_t opCount_ = 0;
+
+    size_t ghostHits_ = 0;
+    size_t totalEvictions_ = 0;
+    double ghostDecayRate_ = (double)DECAY_NUM / DECAY_DEN;
+
+    double coldRatio_ = 0.0;
+
+    static uint8_t decayR(uint8_t r) {
+        return (uint8_t)((uint16_t)r * DECAY_NUM / DECAY_DEN);
+    }
+
+    static uint8_t decayF(uint8_t f) {
+        return f > 0 ? f - 1 : 0;
+    }
+
+    void adaptGhostDecay() {
+        if (totalEvictions_ == 0) return;
+        double ratio = (double)ghostHits_ / (double)totalEvictions_;
+        if (ratio > HIGH_RATIO) ghostDecayRate_ *= 0.99;
+        if (ratio < LOW_RATIO) ghostDecayRate_ *= 1.01;
+        ghostDecayRate_ = std::max(0.5, std::min(0.95, ghostDecayRate_));
+        ghostHits_ = 0;
+        totalEvictions_ = 0;
+    }
+
+    void updateColdRatio() {
+        if (cache_.empty()) { coldRatio_ = 0.0; return; }
+        size_t coldCount = 0;
+        for (const auto& [key, s] : cache_) {
+            if (s.avgGap > COLD_THRESH) coldCount++;
+        }
+        coldRatio_ = (double)coldCount / (double)cache_.size();
+    }
+
+    double ghostProtectFactor(uint64_t key) const {
+        auto gs = ghost_.peek(key);
+        if (!gs.has_value() || *gs == 0) return 1.0;
+        double protection = 1.0 - GHOST_PROTECT_SCALE * (double)*gs / R_MAX;
+        return std::max(GHOST_PROTECT_FLOOR, protection);
+    }
+
+    uint32_t evictScore(uint64_t key, const State& s) const {
+        uint32_t gap = epoch_ - s.lastEpoch;
+        uint8_t r = s.r;
+        for (uint32_t i = 0; i < gap && r > 0; i++) r = decayR(r);
+        double confidence = 1.0 + (double)r / R_MAX;
+        uint32_t freqPenalty = (uint32_t)(FREQ_WEIGHT * s.f);
+        uint32_t rawScore = s.avgGap * confidence + (uint32_t)(R_MAX - r);
+        if (rawScore > freqPenalty) rawScore -= freqPenalty;
+        else rawScore = 0;
+        double multiplier = 1.0 + POP_SCALE * coldRatio_;
+        return (uint32_t)(rawScore * ghostProtectFactor(key) * multiplier);
+    }
+
+    void evictOne() {
+        uint64_t bestKey = 0;
+        uint32_t bestScore = 0;
+        for (const auto& [key, state] : cache_) {
+            uint32_t score = evictScore(key, state);
+            if (score > bestScore) {
+                bestScore = score;
+                bestKey = key;
+            }
+        }
+        if (bestKey == 0) return;
+        auto it = cache_.find(bestKey);
+        ghost_.upsert(bestKey, it->second.r);
+        cache_.erase(it);
+        evictions_++;
+        totalEvictions_++;
+    }
+
+public:
+    BareREMARC_HistAtom_FreqPop(size_t capacity, const RemarcConfig& cfg = RemarcConfig{})
+        : ghost_(capacity * 2), cap_(capacity) { (void)cfg; }
+
+    void access(uint64_t key) {
+        epoch_++;
+        opCount_++;
+        if (opCount_ % ADAPT_INTERVAL == 0) adaptGhostDecay();
+        if (opCount_ % POP_INTERVAL == 0) updateColdRatio();
+
+        auto it = cache_.find(key);
+        if (it != cache_.end()) {
+            uint32_t gap = epoch_ - it->second.lastEpoch;
+            uint8_t r = it->second.r;
+            for (uint32_t i = 0; i < gap && r > 0; i++) r = decayR(r);
+            uint8_t f = it->second.f;
+            for (uint32_t i = 0; i < gap && f > 0; i++) f = decayF(f);
+            if (gap > 0 && it->second.avgGap > 0) {
+                it->second.avgGap = (uint32_t)((double)it->second.avgGap * (1.0 - AVG_ALPHA)
+                    + (double)gap * AVG_ALPHA);
+            } else if (gap > 0) {
+                it->second.avgGap = gap;
+            }
+            it->second.r = std::min(R_MAX, (uint8_t)(r + R_BOOST));
+            it->second.f = std::min(F_MAX, (uint8_t)(f + F_BOOST));
+            it->second.lastEpoch = epoch_;
+            hits_++;
+            return;
+        }
+
+        misses_++;
+        uint8_t r_init = R_MAX;
+        uint8_t f_init = 0;
+        uint32_t avgGap_init = 0;
+        auto gs = ghost_.query(key);
+        if (gs.has_value() && *gs > 0) {
+            ghostHits_++;
+            uint8_t ghostScore = std::max((uint8_t)1,
+                (uint8_t)((double)*gs * ghostDecayRate_));
+            r_init = std::min(R_MAX,
+                (uint8_t)((double)ghostScore * GHOST_BOOST_SCALE / R_MAX));
+            f_init = std::min(F_MAX,
+                (uint8_t)((double)ghostScore * GHOST_BOOST_SCALE / R_MAX));
+            avgGap_init = 0;
+        }
+
+        if (cache_.size() >= cap_) evictOne();
+        cache_[key] = {r_init, f_init, avgGap_init, epoch_};
+    }
+
+    size_t hits() const { return hits_; }
+    size_t misses() const { return misses_; }
+    size_t evictions() const { return evictions_; }
+    size_t scans() const { return 0; }
+};
+// =====================================================================
+
+// =====================================================================
+//  BareREMARC_HistAtom_ResidFreq
+//
+//  HA5 + A_residual_frequency: instead of raw f (colinear with r),
+//  compute the residual f_resid = f - beta * r where beta is the
+//  population-level f/r ratio. This extracts the component of frequency
+//  NOT explained by recency — genuinely independent information.
+//
+//  beta = popMeanF / popMeanR (computed periodically)
+//  f_resid = f - beta * r
+//  positive f_resid → more popular than recency predicts → protect
+//  negative f_resid → less popular → ignore (no extra penalty)
+//
+//  score = (base - FREQ_WEIGHT * max(0, f_resid)) * ghostProtect(key)
+//
+//  Proof context: separate r and f atoms produced zero change (colinear).
+//  This variant extracts the orthogonal component.
+//
+//  Probe target: Zipfian — long tail of keys where f >> expected f(r).
+// =====================================================================
+
+class BareREMARC_HistAtom_ResidFreq {
+    static constexpr uint8_t R_MAX = 15;
+    static constexpr uint8_t F_MAX = 15;
+    static constexpr uint8_t DECAY_NUM = 7;
+    static constexpr uint8_t DECAY_DEN = 8;
+    static constexpr uint8_t R_BOOST = 2;
+    static constexpr uint8_t F_BOOST = 1;
+    static constexpr double AVG_ALPHA = 0.25;
+    static constexpr double GHOST_BOOST_SCALE = 10.0;
+    static constexpr double GHOST_PROTECT_SCALE = 1.0;
+    static constexpr double GHOST_PROTECT_FLOOR = 0.1;
+    static constexpr double FREQ_WEIGHT = 1.5;
+    static constexpr size_t ADAPT_INTERVAL = 256;
+    static constexpr size_t POP_INTERVAL = 128;
+    static constexpr double HIGH_RATIO = 0.3;
+    static constexpr double LOW_RATIO = 0.05;
+
+    struct State {
+        uint8_t r = R_MAX;
+        uint8_t f = 0;
+        uint32_t avgGap = 0;
+        uint32_t lastEpoch = 0;
+    };
+
+    std::unordered_map<uint64_t, State> cache_;
+    GhostField ghost_;
+    size_t cap_;
+    size_t hits_ = 0, misses_ = 0, evictions_ = 0;
+    uint32_t epoch_ = 0;
+    size_t opCount_ = 0;
+
+    size_t ghostHits_ = 0;
+    size_t totalEvictions_ = 0;
+    double ghostDecayRate_ = (double)DECAY_NUM / DECAY_DEN;
+
+    double beta_ = 0.5;
+    double popSumR_ = 0.0;
+    double popSumF_ = 0.0;
+
+    static uint8_t decayR(uint8_t r) {
+        return (uint8_t)((uint16_t)r * DECAY_NUM / DECAY_DEN);
+    }
+
+    static uint8_t decayF(uint8_t f) {
+        return f > 0 ? f - 1 : 0;
+    }
+
+    void adaptGhostDecay() {
+        if (totalEvictions_ == 0) return;
+        double ratio = (double)ghostHits_ / (double)totalEvictions_;
+        if (ratio > HIGH_RATIO) ghostDecayRate_ *= 0.99;
+        if (ratio < LOW_RATIO) ghostDecayRate_ *= 1.01;
+        ghostDecayRate_ = std::max(0.5, std::min(0.95, ghostDecayRate_));
+        ghostHits_ = 0;
+        totalEvictions_ = 0;
+    }
+
+    void updateBeta() {
+        if (cache_.empty() || popSumR_ < 1.0) return;
+        double meanR = popSumR_ / (double)cache_.size();
+        double meanF = popSumF_ / (double)cache_.size();
+        if (meanR > 0.1) {
+            beta_ = 0.9 * beta_ + 0.1 * (meanF / meanR);
+        }
+        beta_ = std::max(0.05, std::min(3.0, beta_));
+    }
+
+    double ghostProtectFactor(uint64_t key) const {
+        auto gs = ghost_.peek(key);
+        if (!gs.has_value() || *gs == 0) return 1.0;
+        double protection = 1.0 - GHOST_PROTECT_SCALE * (double)*gs / R_MAX;
+        return std::max(GHOST_PROTECT_FLOOR, protection);
+    }
+
+    uint32_t evictScore(uint64_t key, const State& s) const {
+        uint32_t gap = epoch_ - s.lastEpoch;
+        uint8_t r = s.r;
+        for (uint32_t i = 0; i < gap && r > 0; i++) r = decayR(r);
+        double confidence = 1.0 + (double)r / R_MAX;
+        uint32_t rawScore = s.avgGap * confidence + (uint32_t)(R_MAX - r);
+        double fResid = (double)s.f - beta_ * (double)s.r;
+        if (fResid > 0.0) {
+            uint32_t penalty = (uint32_t)(FREQ_WEIGHT * fResid);
+            if (rawScore > penalty) rawScore -= penalty;
+            else rawScore = 0;
+        }
+        return (uint32_t)(rawScore * ghostProtectFactor(key));
+    }
+
+    void evictOne() {
+        uint64_t bestKey = 0;
+        uint32_t bestScore = 0;
+        for (const auto& [key, state] : cache_) {
+            uint32_t score = evictScore(key, state);
+            if (score > bestScore) {
+                bestScore = score;
+                bestKey = key;
+            }
+        }
+        if (bestKey == 0) return;
+        auto it = cache_.find(bestKey);
+        ghost_.upsert(bestKey, it->second.r);
+        popSumR_ -= it->second.r;
+        popSumF_ -= it->second.f;
+        cache_.erase(it);
+        evictions_++;
+        totalEvictions_++;
+    }
+
+public:
+    BareREMARC_HistAtom_ResidFreq(size_t capacity, const RemarcConfig& cfg = RemarcConfig{})
+        : ghost_(capacity * 2), cap_(capacity) { (void)cfg; }
+
+    void access(uint64_t key) {
+        epoch_++;
+        opCount_++;
+        if (opCount_ % ADAPT_INTERVAL == 0) adaptGhostDecay();
+        if (opCount_ % POP_INTERVAL == 0) updateBeta();
+
+        auto it = cache_.find(key);
+        if (it != cache_.end()) {
+            uint32_t gap = epoch_ - it->second.lastEpoch;
+            uint8_t r = it->second.r;
+            for (uint32_t i = 0; i < gap && r > 0; i++) r = decayR(r);
+            uint8_t f = it->second.f;
+            for (uint32_t i = 0; i < gap && f > 0; i++) f = decayF(f);
+            if (gap > 0 && it->second.avgGap > 0) {
+                it->second.avgGap = (uint32_t)((double)it->second.avgGap * (1.0 - AVG_ALPHA)
+                    + (double)gap * AVG_ALPHA);
+            } else if (gap > 0) {
+                it->second.avgGap = gap;
+            }
+            popSumR_ -= it->second.r;
+            popSumF_ -= it->second.f;
+            it->second.r = std::min(R_MAX, (uint8_t)(r + R_BOOST));
+            it->second.f = std::min(F_MAX, (uint8_t)(f + F_BOOST));
+            it->second.lastEpoch = epoch_;
+            popSumR_ += it->second.r;
+            popSumF_ += it->second.f;
+            hits_++;
+            return;
+        }
+
+        misses_++;
+        uint8_t r_init = R_MAX;
+        uint8_t f_init = 0;
+        uint32_t avgGap_init = 0;
+        auto gs = ghost_.query(key);
+        if (gs.has_value() && *gs > 0) {
+            ghostHits_++;
+            uint8_t ghostScore = std::max((uint8_t)1,
+                (uint8_t)((double)*gs * ghostDecayRate_));
+            r_init = std::min(R_MAX,
+                (uint8_t)((double)ghostScore * GHOST_BOOST_SCALE / R_MAX));
+            f_init = std::min(F_MAX,
+                (uint8_t)((double)ghostScore * GHOST_BOOST_SCALE / R_MAX));
+            avgGap_init = 0;
+        }
+
+        if (cache_.size() >= cap_) evictOne();
+        cache_[key] = {r_init, f_init, avgGap_init, epoch_};
+        popSumR_ += r_init;
+        popSumF_ += f_init;
+    }
+
+    size_t hits() const { return hits_; }
+    size_t misses() const { return misses_; }
+    size_t evictions() const { return evictions_; }
+    size_t scans() const { return 0; }
+};
+// =====================================================================
+
+// =====================================================================
+//  BareREMARC_HistAtom_PopDev
+//
+//  HA5 + A_population_deviation: instead of uniform coldRatio multiplier
+//  (rank-preserving, null result), use per-key deviation from population
+//  mean avgGap. This creates an interaction between individual and
+//  population state — non-rank-preserving.
+//
+//  dev_i = key.avgGap - popMeanAvgGap
+//  score = base * ghostProtect(key) + DEV_SCALE * dev_i
+//
+//  When dev > 0 (colder than avg): score increases → evict sooner
+//  When dev < 0 (hotter than avg): score decreases → protected
+//
+//  Proof context: uniform multiplier produced zero change (rank-preserving).
+//  Per-key deviation breaks the invariance.
+//
+//  Probe target: ScanRes — during locality phase, hot keys deviate negative
+//  relative to scan-polluted population mean.
+// =====================================================================
+
+class BareREMARC_HistAtom_PopDev {
+    static constexpr uint8_t R_MAX = 15;
+    static constexpr uint8_t F_MAX = 15;
+    static constexpr uint8_t DECAY_NUM = 7;
+    static constexpr uint8_t DECAY_DEN = 8;
+    static constexpr uint8_t R_BOOST = 2;
+    static constexpr uint8_t F_BOOST = 1;
+    static constexpr double AVG_ALPHA = 0.25;
+    static constexpr double GHOST_BOOST_SCALE = 10.0;
+    static constexpr double GHOST_PROTECT_SCALE = 1.0;
+    static constexpr double GHOST_PROTECT_FLOOR = 0.1;
+    static constexpr size_t ADAPT_INTERVAL = 256;
+    static constexpr size_t POP_INTERVAL = 128;
+    static constexpr double HIGH_RATIO = 0.3;
+    static constexpr double LOW_RATIO = 0.05;
+    static constexpr double DEV_SCALE = 1.0;
+
+    struct State {
+        uint8_t r = R_MAX;
+        uint8_t f = 0;
+        uint32_t avgGap = 0;
+        uint32_t lastEpoch = 0;
+    };
+
+    std::unordered_map<uint64_t, State> cache_;
+    GhostField ghost_;
+    size_t cap_;
+    size_t hits_ = 0, misses_ = 0, evictions_ = 0;
+    uint32_t epoch_ = 0;
+    size_t opCount_ = 0;
+
+    size_t ghostHits_ = 0;
+    size_t totalEvictions_ = 0;
+    double ghostDecayRate_ = (double)DECAY_NUM / DECAY_DEN;
+
+    double popMeanGap_ = 0.0;
+    double popSumGap_ = 0.0;
+
+    static uint8_t decayR(uint8_t r) {
+        return (uint8_t)((uint16_t)r * DECAY_NUM / DECAY_DEN);
+    }
+
+    static uint8_t decayF(uint8_t f) {
+        return f > 0 ? f - 1 : 0;
+    }
+
+    void adaptGhostDecay() {
+        if (totalEvictions_ == 0) return;
+        double ratio = (double)ghostHits_ / (double)totalEvictions_;
+        if (ratio > HIGH_RATIO) ghostDecayRate_ *= 0.99;
+        if (ratio < LOW_RATIO) ghostDecayRate_ *= 1.01;
+        ghostDecayRate_ = std::max(0.5, std::min(0.95, ghostDecayRate_));
+        ghostHits_ = 0;
+        totalEvictions_ = 0;
+    }
+
+    void updatePopMean() {
+        if (cache_.empty()) { popMeanGap_ = 0.0; popSumGap_ = 0.0; return; }
+        popMeanGap_ = popSumGap_ / (double)cache_.size();
+    }
+
+    double ghostProtectFactor(uint64_t key) const {
+        auto gs = ghost_.peek(key);
+        if (!gs.has_value() || *gs == 0) return 1.0;
+        double protection = 1.0 - GHOST_PROTECT_SCALE * (double)*gs / R_MAX;
+        return std::max(GHOST_PROTECT_FLOOR, protection);
+    }
+
+    uint32_t evictScore(uint64_t key, const State& s) const {
+        uint32_t gap = epoch_ - s.lastEpoch;
+        uint8_t r = s.r;
+        for (uint32_t i = 0; i < gap && r > 0; i++) r = decayR(r);
+        double confidence = 1.0 + (double)r / R_MAX;
+        uint32_t rawScore = s.avgGap * confidence + (uint32_t)(R_MAX - r);
+        double dev = (double)s.avgGap - popMeanGap_;
+        int32_t devAdj = (int32_t)(DEV_SCALE * dev);
+        int32_t score = (int32_t)(rawScore * ghostProtectFactor(key)) + devAdj;
+        return (uint32_t)std::max(0, score);
+    }
+
+    void evictOne() {
+        uint64_t bestKey = 0;
+        uint32_t bestScore = 0;
+        for (const auto& [key, state] : cache_) {
+            uint32_t score = evictScore(key, state);
+            if (score > bestScore) {
+                bestScore = score;
+                bestKey = key;
+            }
+        }
+        if (bestKey == 0) return;
+        auto it = cache_.find(bestKey);
+        ghost_.upsert(bestKey, it->second.r);
+        popSumGap_ -= it->second.avgGap;
+        cache_.erase(it);
+        evictions_++;
+        totalEvictions_++;
+    }
+
+public:
+    BareREMARC_HistAtom_PopDev(size_t capacity, const RemarcConfig& cfg = RemarcConfig{})
+        : ghost_(capacity * 2), cap_(capacity) { (void)cfg; }
+
+    void access(uint64_t key) {
+        epoch_++;
+        opCount_++;
+        if (opCount_ % ADAPT_INTERVAL == 0) adaptGhostDecay();
+        if (opCount_ % POP_INTERVAL == 0) updatePopMean();
+
+        auto it = cache_.find(key);
+        if (it != cache_.end()) {
+            uint32_t gap = epoch_ - it->second.lastEpoch;
+            uint8_t r = it->second.r;
+            for (uint32_t i = 0; i < gap && r > 0; i++) r = decayR(r);
+            uint8_t f = it->second.f;
+            for (uint32_t i = 0; i < gap && f > 0; i++) f = decayF(f);
+            popSumGap_ -= it->second.avgGap;
+            if (gap > 0 && it->second.avgGap > 0) {
+                it->second.avgGap = (uint32_t)((double)it->second.avgGap * (1.0 - AVG_ALPHA)
+                    + (double)gap * AVG_ALPHA);
+            } else if (gap > 0) {
+                it->second.avgGap = gap;
+            }
+            popSumGap_ += it->second.avgGap;
+            it->second.r = std::min(R_MAX, (uint8_t)(r + R_BOOST));
+            it->second.f = std::min(F_MAX, (uint8_t)(f + F_BOOST));
+            it->second.lastEpoch = epoch_;
+            hits_++;
+            return;
+        }
+
+        misses_++;
+        uint8_t r_init = R_MAX;
+        uint8_t f_init = 0;
+        uint32_t avgGap_init = 0;
+        auto gs = ghost_.query(key);
+        if (gs.has_value() && *gs > 0) {
+            ghostHits_++;
+            uint8_t ghostScore = std::max((uint8_t)1,
+                (uint8_t)((double)*gs * ghostDecayRate_));
+            r_init = std::min(R_MAX,
+                (uint8_t)((double)ghostScore * GHOST_BOOST_SCALE / R_MAX));
+            f_init = std::min(F_MAX,
+                (uint8_t)((double)ghostScore * GHOST_BOOST_SCALE / R_MAX));
+            avgGap_init = 0;
+        }
+
+        if (cache_.size() >= cap_) evictOne();
+        cache_[key] = {r_init, f_init, avgGap_init, epoch_};
+        popSumGap_ += avgGap_init;
+    }
+
+    size_t hits() const { return hits_; }
+    size_t misses() const { return misses_; }
+    size_t evictions() const { return evictions_; }
+    size_t scans() const { return 0; }
+};
+// =====================================================================
+
+// =====================================================================
+//  BareREMARC_HistAtom_ResidPop
+//
+//  Combines A_residual_frequency + A_population_deviation.
+//  Tests whether the two orthogonal decompositions interfere or compose.
+//
+//  score = (base - FREQ_WEIGHT * max(0, f - beta*r))
+//          * ghostProtect(key)
+//          + DEV_SCALE * (key.avgGap - popMeanGap)
+//
+//  Probe target: both Zipfian (residFreq) and ScanRes (popDev).
+// =====================================================================
+
+class BareREMARC_HistAtom_ResidPop {
+    static constexpr uint8_t R_MAX = 15;
+    static constexpr uint8_t F_MAX = 15;
+    static constexpr uint8_t DECAY_NUM = 7;
+    static constexpr uint8_t DECAY_DEN = 8;
+    static constexpr uint8_t R_BOOST = 2;
+    static constexpr uint8_t F_BOOST = 1;
+    static constexpr double AVG_ALPHA = 0.25;
+    static constexpr double GHOST_BOOST_SCALE = 10.0;
+    static constexpr double GHOST_PROTECT_SCALE = 1.0;
+    static constexpr double GHOST_PROTECT_FLOOR = 0.1;
+    static constexpr double FREQ_WEIGHT = 1.5;
+    static constexpr double DEV_SCALE = 1.0;
+    static constexpr size_t ADAPT_INTERVAL = 256;
+    static constexpr size_t POP_INTERVAL = 128;
+    static constexpr double HIGH_RATIO = 0.3;
+    static constexpr double LOW_RATIO = 0.05;
+
+    struct State {
+        uint8_t r = R_MAX;
+        uint8_t f = 0;
+        uint32_t avgGap = 0;
+        uint32_t lastEpoch = 0;
+    };
+
+    std::unordered_map<uint64_t, State> cache_;
+    GhostField ghost_;
+    size_t cap_;
+    size_t hits_ = 0, misses_ = 0, evictions_ = 0;
+    uint32_t epoch_ = 0;
+    size_t opCount_ = 0;
+
+    size_t ghostHits_ = 0;
+    size_t totalEvictions_ = 0;
+    double ghostDecayRate_ = (double)DECAY_NUM / DECAY_DEN;
+
+    double beta_ = 0.5;
+    double popSumR_ = 0.0;
+    double popSumF_ = 0.0;
+    double popMeanGap_ = 0.0;
+    double popSumGap_ = 0.0;
+
+    static uint8_t decayR(uint8_t r) {
+        return (uint8_t)((uint16_t)r * DECAY_NUM / DECAY_DEN);
+    }
+
+    static uint8_t decayF(uint8_t f) {
+        return f > 0 ? f - 1 : 0;
+    }
+
+    void adaptGhostDecay() {
+        if (totalEvictions_ == 0) return;
+        double ratio = (double)ghostHits_ / (double)totalEvictions_;
+        if (ratio > HIGH_RATIO) ghostDecayRate_ *= 0.99;
+        if (ratio < LOW_RATIO) ghostDecayRate_ *= 1.01;
+        ghostDecayRate_ = std::max(0.5, std::min(0.95, ghostDecayRate_));
+        ghostHits_ = 0;
+        totalEvictions_ = 0;
+    }
+
+    void updatePopStats() {
+        if (cache_.empty()) {
+            popMeanGap_ = 0.0; popSumR_ = 0.0;
+            popSumF_ = 0.0; popSumGap_ = 0.0;
+            return;
+        }
+        popMeanGap_ = popSumGap_ / (double)cache_.size();
+        double meanR = popSumR_ / (double)cache_.size();
+        double meanF = popSumF_ / (double)cache_.size();
+        if (meanR > 0.1) {
+            beta_ = 0.9 * beta_ + 0.1 * (meanF / meanR);
+        }
+        beta_ = std::max(0.05, std::min(3.0, beta_));
+    }
+
+    double ghostProtectFactor(uint64_t key) const {
+        auto gs = ghost_.peek(key);
+        if (!gs.has_value() || *gs == 0) return 1.0;
+        double protection = 1.0 - GHOST_PROTECT_SCALE * (double)*gs / R_MAX;
+        return std::max(GHOST_PROTECT_FLOOR, protection);
+    }
+
+    uint32_t evictScore(uint64_t key, const State& s) const {
+        uint32_t gap = epoch_ - s.lastEpoch;
+        uint8_t r = s.r;
+        for (uint32_t i = 0; i < gap && r > 0; i++) r = decayR(r);
+        double confidence = 1.0 + (double)r / R_MAX;
+        uint32_t rawScore = s.avgGap * confidence + (uint32_t)(R_MAX - r);
+        double fResid = (double)s.f - beta_ * (double)s.r;
+        if (fResid > 0.0) {
+            uint32_t penalty = (uint32_t)(FREQ_WEIGHT * fResid);
+            if (rawScore > penalty) rawScore -= penalty;
+            else rawScore = 0;
+        }
+        double dev = (double)s.avgGap - popMeanGap_;
+        int32_t devAdj = (int32_t)(DEV_SCALE * dev);
+        int32_t score = (int32_t)(rawScore * ghostProtectFactor(key)) + devAdj;
+        return (uint32_t)std::max(0, score);
+    }
+
+    void evictOne() {
+        uint64_t bestKey = 0;
+        uint32_t bestScore = 0;
+        for (const auto& [key, state] : cache_) {
+            uint32_t score = evictScore(key, state);
+            if (score > bestScore) {
+                bestScore = score;
+                bestKey = key;
+            }
+        }
+        if (bestKey == 0) return;
+        auto it = cache_.find(bestKey);
+        ghost_.upsert(bestKey, it->second.r);
+        popSumR_ -= it->second.r;
+        popSumF_ -= it->second.f;
+        popSumGap_ -= it->second.avgGap;
+        cache_.erase(it);
+        evictions_++;
+        totalEvictions_++;
+    }
+
+public:
+    BareREMARC_HistAtom_ResidPop(size_t capacity, const RemarcConfig& cfg = RemarcConfig{})
+        : ghost_(capacity * 2), cap_(capacity) { (void)cfg; }
+
+    void access(uint64_t key) {
+        epoch_++;
+        opCount_++;
+        if (opCount_ % ADAPT_INTERVAL == 0) adaptGhostDecay();
+        if (opCount_ % POP_INTERVAL == 0) updatePopStats();
+
+        auto it = cache_.find(key);
+        if (it != cache_.end()) {
+            uint32_t gap = epoch_ - it->second.lastEpoch;
+            uint8_t r = it->second.r;
+            for (uint32_t i = 0; i < gap && r > 0; i++) r = decayR(r);
+            uint8_t f = it->second.f;
+            for (uint32_t i = 0; i < gap && f > 0; i++) f = decayF(f);
+            popSumR_ -= it->second.r;
+            popSumF_ -= it->second.f;
+            popSumGap_ -= it->second.avgGap;
+            if (gap > 0 && it->second.avgGap > 0) {
+                it->second.avgGap = (uint32_t)((double)it->second.avgGap * (1.0 - AVG_ALPHA)
+                    + (double)gap * AVG_ALPHA);
+            } else if (gap > 0) {
+                it->second.avgGap = gap;
+            }
+            it->second.r = std::min(R_MAX, (uint8_t)(r + R_BOOST));
+            it->second.f = std::min(F_MAX, (uint8_t)(f + F_BOOST));
+            it->second.lastEpoch = epoch_;
+            popSumR_ += it->second.r;
+            popSumF_ += it->second.f;
+            popSumGap_ += it->second.avgGap;
+            hits_++;
+            return;
+        }
+
+        misses_++;
+        uint8_t r_init = R_MAX;
+        uint8_t f_init = 0;
+        uint32_t avgGap_init = 0;
+        auto gs = ghost_.query(key);
+        if (gs.has_value() && *gs > 0) {
+            ghostHits_++;
+            uint8_t ghostScore = std::max((uint8_t)1,
+                (uint8_t)((double)*gs * ghostDecayRate_));
+            r_init = std::min(R_MAX,
+                (uint8_t)((double)ghostScore * GHOST_BOOST_SCALE / R_MAX));
+            f_init = std::min(F_MAX,
+                (uint8_t)((double)ghostScore * GHOST_BOOST_SCALE / R_MAX));
+            avgGap_init = 0;
+        }
+
+        if (cache_.size() >= cap_) evictOne();
+        cache_[key] = {r_init, f_init, avgGap_init, epoch_};
+        popSumR_ += r_init;
+        popSumF_ += f_init;
+        popSumGap_ += avgGap_init;
+    }
+
+    size_t hits() const { return hits_; }
+    size_t misses() const { return misses_; }
+    size_t evictions() const { return evictions_; }
+    size_t scans() const { return 0; }
+};
+// =====================================================================
+
+// Shared eviction-regret tracker for adaptive variants.
+// Records evicted keys' relevant metric, checks if re-accessed.
+struct EvictRegretTracker {
+    static constexpr size_t BUF_SIZE = 256;
+    struct Entry { uint64_t key; double metric; };
+    Entry buf_[BUF_SIZE];
+    size_t pos_ = 0;
+
+    void record(uint64_t key, double metric) {
+        buf_[pos_ % BUF_SIZE] = {key, metric};
+        pos_++;
+    }
+
+    double regret(const std::unordered_set<uint64_t>& recentlyAccessed) const {
+        size_t count = std::min(pos_, BUF_SIZE);
+        if (count == 0) return 0.0;
+        size_t regretted = 0;
+        for (size_t i = 0; i < count; i++) {
+            if (recentlyAccessed.count(buf_[i].key)) regretted++;
+        }
+        return (double)regretted / (double)count;
+    }
+};
+
+// =====================================================================
+//  BareREMARC_HistAtom_PopDevSM
+//
+//  HA-POPDEV with DEV_SCALE = 0.3 (gentler). Tests whether the -0.97pp
+//  ScanRes regression was a magnitude issue.
+// =====================================================================
+
+class BareREMARC_HistAtom_PopDevSM {
+    static constexpr uint8_t R_MAX = 15;
+    static constexpr uint8_t F_MAX = 15;
+    static constexpr uint8_t DECAY_NUM = 7;
+    static constexpr uint8_t DECAY_DEN = 8;
+    static constexpr uint8_t R_BOOST = 2;
+    static constexpr uint8_t F_BOOST = 1;
+    static constexpr double AVG_ALPHA = 0.25;
+    static constexpr double GHOST_BOOST_SCALE = 10.0;
+    static constexpr double GHOST_PROTECT_SCALE = 1.0;
+    static constexpr double GHOST_PROTECT_FLOOR = 0.1;
+    static constexpr size_t ADAPT_INTERVAL = 256;
+    static constexpr size_t POP_INTERVAL = 128;
+    static constexpr double HIGH_RATIO = 0.3;
+    static constexpr double LOW_RATIO = 0.05;
+    static constexpr double DEV_SCALE = 0.3;
+
+    struct State {
+        uint8_t r = R_MAX;
+        uint8_t f = 0;
+        uint32_t avgGap = 0;
+        uint32_t lastEpoch = 0;
+    };
+
+    std::unordered_map<uint64_t, State> cache_;
+    GhostField ghost_;
+    size_t cap_;
+    size_t hits_ = 0, misses_ = 0, evictions_ = 0;
+    uint32_t epoch_ = 0;
+    size_t opCount_ = 0;
+
+    size_t ghostHits_ = 0;
+    size_t totalEvictions_ = 0;
+    double ghostDecayRate_ = (double)DECAY_NUM / DECAY_DEN;
+
+    double popMeanGap_ = 0.0;
+    double popSumGap_ = 0.0;
+
+    static uint8_t decayR(uint8_t r) {
+        return (uint8_t)((uint16_t)r * DECAY_NUM / DECAY_DEN);
+    }
+
+    static uint8_t decayF(uint8_t f) {
+        return f > 0 ? f - 1 : 0;
+    }
+
+    void adaptGhostDecay() {
+        if (totalEvictions_ == 0) return;
+        double ratio = (double)ghostHits_ / (double)totalEvictions_;
+        if (ratio > HIGH_RATIO) ghostDecayRate_ *= 0.99;
+        if (ratio < LOW_RATIO) ghostDecayRate_ *= 1.01;
+        ghostDecayRate_ = std::max(0.5, std::min(0.95, ghostDecayRate_));
+        ghostHits_ = 0;
+        totalEvictions_ = 0;
+    }
+
+    void updatePopMean() {
+        if (cache_.empty()) { popMeanGap_ = 0.0; popSumGap_ = 0.0; return; }
+        popMeanGap_ = popSumGap_ / (double)cache_.size();
+    }
+
+    double ghostProtectFactor(uint64_t key) const {
+        auto gs = ghost_.peek(key);
+        if (!gs.has_value() || *gs == 0) return 1.0;
+        double protection = 1.0 - GHOST_PROTECT_SCALE * (double)*gs / R_MAX;
+        return std::max(GHOST_PROTECT_FLOOR, protection);
+    }
+
+    uint32_t evictScore(uint64_t key, const State& s) const {
+        uint32_t gap = epoch_ - s.lastEpoch;
+        uint8_t r = s.r;
+        for (uint32_t i = 0; i < gap && r > 0; i++) r = decayR(r);
+        double confidence = 1.0 + (double)r / R_MAX;
+        uint32_t rawScore = s.avgGap * confidence + (uint32_t)(R_MAX - r);
+        double dev = (double)s.avgGap - popMeanGap_;
+        int32_t devAdj = (int32_t)(DEV_SCALE * dev);
+        int32_t score = (int32_t)(rawScore * ghostProtectFactor(key)) + devAdj;
+        return (uint32_t)std::max(0, score);
+    }
+
+    void evictOne() {
+        uint64_t bestKey = 0;
+        uint32_t bestScore = 0;
+        for (const auto& [key, state] : cache_) {
+            uint32_t score = evictScore(key, state);
+            if (score > bestScore) {
+                bestScore = score;
+                bestKey = key;
+            }
+        }
+        if (bestKey == 0) return;
+        auto it = cache_.find(bestKey);
+        ghost_.upsert(bestKey, it->second.r);
+        popSumGap_ -= it->second.avgGap;
+        cache_.erase(it);
+        evictions_++;
+        totalEvictions_++;
+    }
+
+public:
+    BareREMARC_HistAtom_PopDevSM(size_t capacity, const RemarcConfig& cfg = RemarcConfig{})
+        : ghost_(capacity * 2), cap_(capacity) { (void)cfg; }
+
+    void access(uint64_t key) {
+        epoch_++;
+        opCount_++;
+        if (opCount_ % ADAPT_INTERVAL == 0) adaptGhostDecay();
+        if (opCount_ % POP_INTERVAL == 0) updatePopMean();
+
+        auto it = cache_.find(key);
+        if (it != cache_.end()) {
+            uint32_t gap = epoch_ - it->second.lastEpoch;
+            uint8_t r = it->second.r;
+            for (uint32_t i = 0; i < gap && r > 0; i++) r = decayR(r);
+            uint8_t f = it->second.f;
+            for (uint32_t i = 0; i < gap && f > 0; i++) f = decayF(f);
+            popSumGap_ -= it->second.avgGap;
+            if (gap > 0 && it->second.avgGap > 0) {
+                it->second.avgGap = (uint32_t)((double)it->second.avgGap * (1.0 - AVG_ALPHA)
+                    + (double)gap * AVG_ALPHA);
+            } else if (gap > 0) {
+                it->second.avgGap = gap;
+            }
+            popSumGap_ += it->second.avgGap;
+            it->second.r = std::min(R_MAX, (uint8_t)(r + R_BOOST));
+            it->second.f = std::min(F_MAX, (uint8_t)(f + F_BOOST));
+            it->second.lastEpoch = epoch_;
+            hits_++;
+            return;
+        }
+
+        misses_++;
+        uint8_t r_init = R_MAX;
+        uint8_t f_init = 0;
+        uint32_t avgGap_init = 0;
+        auto gs = ghost_.query(key);
+        if (gs.has_value() && *gs > 0) {
+            ghostHits_++;
+            uint8_t ghostScore = std::max((uint8_t)1,
+                (uint8_t)((double)*gs * ghostDecayRate_));
+            r_init = std::min(R_MAX,
+                (uint8_t)((double)ghostScore * GHOST_BOOST_SCALE / R_MAX));
+            f_init = std::min(F_MAX,
+                (uint8_t)((double)ghostScore * GHOST_BOOST_SCALE / R_MAX));
+            avgGap_init = 0;
+        }
+
+        if (cache_.size() >= cap_) evictOne();
+        cache_[key] = {r_init, f_init, avgGap_init, epoch_};
+        popSumGap_ += avgGap_init;
+    }
+
+    size_t hits() const { return hits_; }
+    size_t misses() const { return misses_; }
+    size_t evictions() const { return evictions_; }
+    size_t scans() const { return 0; }
+};
+// =====================================================================
+
+// =====================================================================
+//  BareREMARC_HistAtom_PopDevADAPT
+//
+//  HA-POPDEV + adaptive DEV_SCALE via eviction regret feedback.
+//
+//  Feedback controller:
+//  - Track evicted keys in a ring buffer
+//  - Every ADAPT_INTERVAL, compute regret = fraction of evicted keys
+//    that were re-accessed
+//  - If regret > HIGH_REGRET: DEV_SCALE *= SHRINK (too aggressive)
+//  - If regret < LOW_REGRET:  DEV_SCALE *= GROW  (too conservative)
+//
+//  This lets the atom discover its own optimal magnitude per workload.
+// =====================================================================
+
+class BareREMARC_HistAtom_PopDevADAPT {
+    static constexpr uint8_t R_MAX = 15;
+    static constexpr uint8_t F_MAX = 15;
+    static constexpr uint8_t DECAY_NUM = 7;
+    static constexpr uint8_t DECAY_DEN = 8;
+    static constexpr uint8_t R_BOOST = 2;
+    static constexpr uint8_t F_BOOST = 1;
+    static constexpr double AVG_ALPHA = 0.25;
+    static constexpr double GHOST_BOOST_SCALE = 10.0;
+    static constexpr double GHOST_PROTECT_SCALE = 1.0;
+    static constexpr double GHOST_PROTECT_FLOOR = 0.1;
+    static constexpr size_t ADAPT_INTERVAL = 256;
+    static constexpr size_t POP_INTERVAL = 128;
+    static constexpr double HIGH_RATIO = 0.3;
+    static constexpr double LOW_RATIO = 0.05;
+    static constexpr double HIGH_REGRET = 0.15;
+    static constexpr double LOW_REGRET = 0.05;
+    static constexpr double SHRINK = 0.9;
+    static constexpr double GROW = 1.1;
+    static constexpr double DEV_SCALE_MIN = 0.05;
+    static constexpr double DEV_SCALE_MAX = 3.0;
+
+    struct State {
+        uint8_t r = R_MAX;
+        uint8_t f = 0;
+        uint32_t avgGap = 0;
+        uint32_t lastEpoch = 0;
+    };
+
+    std::unordered_map<uint64_t, State> cache_;
+    GhostField ghost_;
+    size_t cap_;
+    size_t hits_ = 0, misses_ = 0, evictions_ = 0;
+    uint32_t epoch_ = 0;
+    size_t opCount_ = 0;
+
+    size_t ghostHits_ = 0;
+    size_t totalEvictions_ = 0;
+    double ghostDecayRate_ = (double)DECAY_NUM / DECAY_DEN;
+
+    double devScale_ = 0.5;
+    double popMeanGap_ = 0.0;
+    double popSumGap_ = 0.0;
+
+    EvictRegretTracker regretTracker_;
+    std::unordered_set<uint64_t> recentAccess_;
+
+    static uint8_t decayR(uint8_t r) {
+        return (uint8_t)((uint16_t)r * DECAY_NUM / DECAY_DEN);
+    }
+
+    static uint8_t decayF(uint8_t f) {
+        return f > 0 ? f - 1 : 0;
+    }
+
+    void adaptGhostDecay() {
+        if (totalEvictions_ == 0) return;
+        double ratio = (double)ghostHits_ / (double)totalEvictions_;
+        if (ratio > HIGH_RATIO) ghostDecayRate_ *= 0.99;
+        if (ratio < LOW_RATIO) ghostDecayRate_ *= 1.01;
+        ghostDecayRate_ = std::max(0.5, std::min(0.95, ghostDecayRate_));
+        ghostHits_ = 0;
+        totalEvictions_ = 0;
+    }
+
+    void updatePopMean() {
+        if (cache_.empty()) { popMeanGap_ = 0.0; popSumGap_ = 0.0; return; }
+        popMeanGap_ = popSumGap_ / (double)cache_.size();
+    }
+
+    void adaptDevScale() {
+        double regret = regretTracker_.regret(recentAccess_);
+        if (regret > HIGH_REGRET) devScale_ *= SHRINK;
+        else if (regret < LOW_REGRET) devScale_ *= GROW;
+        devScale_ = std::max(DEV_SCALE_MIN, std::min(DEV_SCALE_MAX, devScale_));
+        recentAccess_.clear();
+    }
+
+    double ghostProtectFactor(uint64_t key) const {
+        auto gs = ghost_.peek(key);
+        if (!gs.has_value() || *gs == 0) return 1.0;
+        double protection = 1.0 - GHOST_PROTECT_SCALE * (double)*gs / R_MAX;
+        return std::max(GHOST_PROTECT_FLOOR, protection);
+    }
+
+    uint32_t evictScore(uint64_t key, const State& s) const {
+        uint32_t gap = epoch_ - s.lastEpoch;
+        uint8_t r = s.r;
+        for (uint32_t i = 0; i < gap && r > 0; i++) r = decayR(r);
+        double confidence = 1.0 + (double)r / R_MAX;
+        uint32_t rawScore = s.avgGap * confidence + (uint32_t)(R_MAX - r);
+        double dev = (double)s.avgGap - popMeanGap_;
+        int32_t devAdj = (int32_t)(devScale_ * dev);
+        int32_t score = (int32_t)(rawScore * ghostProtectFactor(key)) + devAdj;
+        return (uint32_t)std::max(0, score);
+    }
+
+    void evictOne() {
+        uint64_t bestKey = 0;
+        uint32_t bestScore = 0;
+        for (const auto& [key, state] : cache_) {
+            uint32_t score = evictScore(key, state);
+            if (score > bestScore) {
+                bestScore = score;
+                bestKey = key;
+            }
+        }
+        if (bestKey == 0) return;
+        auto it = cache_.find(bestKey);
+        double dev = (double)it->second.avgGap - popMeanGap_;
+        regretTracker_.record(bestKey, dev);
+        ghost_.upsert(bestKey, it->second.r);
+        popSumGap_ -= it->second.avgGap;
+        cache_.erase(it);
+        evictions_++;
+        totalEvictions_++;
+    }
+
+public:
+    BareREMARC_HistAtom_PopDevADAPT(size_t capacity, const RemarcConfig& cfg = RemarcConfig{})
+        : ghost_(capacity * 2), cap_(capacity) { (void)cfg; }
+
+    void access(uint64_t key) {
+        epoch_++;
+        opCount_++;
+        if (opCount_ % ADAPT_INTERVAL == 0) { adaptGhostDecay(); adaptDevScale(); }
+        if (opCount_ % POP_INTERVAL == 0) updatePopMean();
+
+        recentAccess_.insert(key);
+
+        auto it = cache_.find(key);
+        if (it != cache_.end()) {
+            uint32_t gap = epoch_ - it->second.lastEpoch;
+            uint8_t r = it->second.r;
+            for (uint32_t i = 0; i < gap && r > 0; i++) r = decayR(r);
+            uint8_t f = it->second.f;
+            for (uint32_t i = 0; i < gap && f > 0; i++) f = decayF(f);
+            popSumGap_ -= it->second.avgGap;
+            if (gap > 0 && it->second.avgGap > 0) {
+                it->second.avgGap = (uint32_t)((double)it->second.avgGap * (1.0 - AVG_ALPHA)
+                    + (double)gap * AVG_ALPHA);
+            } else if (gap > 0) {
+                it->second.avgGap = gap;
+            }
+            popSumGap_ += it->second.avgGap;
+            it->second.r = std::min(R_MAX, (uint8_t)(r + R_BOOST));
+            it->second.f = std::min(F_MAX, (uint8_t)(f + F_BOOST));
+            it->second.lastEpoch = epoch_;
+            hits_++;
+            return;
+        }
+
+        misses_++;
+        uint8_t r_init = R_MAX;
+        uint8_t f_init = 0;
+        uint32_t avgGap_init = 0;
+        auto gs = ghost_.query(key);
+        if (gs.has_value() && *gs > 0) {
+            ghostHits_++;
+            uint8_t ghostScore = std::max((uint8_t)1,
+                (uint8_t)((double)*gs * ghostDecayRate_));
+            r_init = std::min(R_MAX,
+                (uint8_t)((double)ghostScore * GHOST_BOOST_SCALE / R_MAX));
+            f_init = std::min(F_MAX,
+                (uint8_t)((double)ghostScore * GHOST_BOOST_SCALE / R_MAX));
+            avgGap_init = 0;
+        }
+
+        if (cache_.size() >= cap_) evictOne();
+        cache_[key] = {r_init, f_init, avgGap_init, epoch_};
+        popSumGap_ += avgGap_init;
+    }
+
+    size_t hits() const { return hits_; }
+    size_t misses() const { return misses_; }
+    size_t evictions() const { return evictions_; }
+    size_t scans() const { return 0; }
+};
+// =====================================================================
+
+// =====================================================================
+//  BareREMARC_HistAtom_ResidFQADAPT
+//
+//  HA-RESIDFREQ + adaptive FREQ_WEIGHT via eviction regret.
+//  Track whether evicted keys with high f_resid were re-accessed.
+//  High regret on high-residual keys → increase FREQ_WEIGHT (protect more).
+//  Low regret → decrease (frequency projection isn't helping).
+// =====================================================================
+
+class BareREMARC_HistAtom_ResidFQADAPT {
+    static constexpr uint8_t R_MAX = 15;
+    static constexpr uint8_t F_MAX = 15;
+    static constexpr uint8_t DECAY_NUM = 7;
+    static constexpr uint8_t DECAY_DEN = 8;
+    static constexpr uint8_t R_BOOST = 2;
+    static constexpr uint8_t F_BOOST = 1;
+    static constexpr double AVG_ALPHA = 0.25;
+    static constexpr double GHOST_BOOST_SCALE = 10.0;
+    static constexpr double GHOST_PROTECT_SCALE = 1.0;
+    static constexpr double GHOST_PROTECT_FLOOR = 0.1;
+    static constexpr size_t ADAPT_INTERVAL = 256;
+    static constexpr size_t POP_INTERVAL = 128;
+    static constexpr double HIGH_RATIO = 0.3;
+    static constexpr double LOW_RATIO = 0.05;
+    static constexpr double HIGH_REGRET = 0.15;
+    static constexpr double LOW_REGRET = 0.05;
+    static constexpr double SHRINK = 0.9;
+    static constexpr double GROW = 1.1;
+    static constexpr double FW_MIN = 0.1;
+    static constexpr double FW_MAX = 5.0;
+
+    struct State {
+        uint8_t r = R_MAX;
+        uint8_t f = 0;
+        uint32_t avgGap = 0;
+        uint32_t lastEpoch = 0;
+    };
+
+    std::unordered_map<uint64_t, State> cache_;
+    GhostField ghost_;
+    size_t cap_;
+    size_t hits_ = 0, misses_ = 0, evictions_ = 0;
+    uint32_t epoch_ = 0;
+    size_t opCount_ = 0;
+
+    size_t ghostHits_ = 0;
+    size_t totalEvictions_ = 0;
+    double ghostDecayRate_ = (double)DECAY_NUM / DECAY_DEN;
+
+    double freqWeight_ = 1.0;
+    double beta_ = 0.5;
+    double popSumR_ = 0.0;
+    double popSumF_ = 0.0;
+
+    EvictRegretTracker regretTracker_;
+    std::unordered_set<uint64_t> recentAccess_;
+
+    static uint8_t decayR(uint8_t r) {
+        return (uint8_t)((uint16_t)r * DECAY_NUM / DECAY_DEN);
+    }
+
+    static uint8_t decayF(uint8_t f) {
+        return f > 0 ? f - 1 : 0;
+    }
+
+    void adaptGhostDecay() {
+        if (totalEvictions_ == 0) return;
+        double ratio = (double)ghostHits_ / (double)totalEvictions_;
+        if (ratio > HIGH_RATIO) ghostDecayRate_ *= 0.99;
+        if (ratio < LOW_RATIO) ghostDecayRate_ *= 1.01;
+        ghostDecayRate_ = std::max(0.5, std::min(0.95, ghostDecayRate_));
+        ghostHits_ = 0;
+        totalEvictions_ = 0;
+    }
+
+    void updateBeta() {
+        if (cache_.empty() || popSumR_ < 1.0) return;
+        double meanR = popSumR_ / (double)cache_.size();
+        double meanF = popSumF_ / (double)cache_.size();
+        if (meanR > 0.1) {
+            beta_ = 0.9 * beta_ + 0.1 * (meanF / meanR);
+        }
+        beta_ = std::max(0.05, std::min(3.0, beta_));
+    }
+
+    void adaptFreqWeight() {
+        double regret = regretTracker_.regret(recentAccess_);
+        if (regret > HIGH_REGRET) freqWeight_ *= GROW;
+        else if (regret < LOW_REGRET) freqWeight_ *= SHRINK;
+        freqWeight_ = std::max(FW_MIN, std::min(FW_MAX, freqWeight_));
+        recentAccess_.clear();
+    }
+
+    double ghostProtectFactor(uint64_t key) const {
+        auto gs = ghost_.peek(key);
+        if (!gs.has_value() || *gs == 0) return 1.0;
+        double protection = 1.0 - GHOST_PROTECT_SCALE * (double)*gs / R_MAX;
+        return std::max(GHOST_PROTECT_FLOOR, protection);
+    }
+
+    uint32_t evictScore(uint64_t key, const State& s) const {
+        uint32_t gap = epoch_ - s.lastEpoch;
+        uint8_t r = s.r;
+        for (uint32_t i = 0; i < gap && r > 0; i++) r = decayR(r);
+        double confidence = 1.0 + (double)r / R_MAX;
+        uint32_t rawScore = s.avgGap * confidence + (uint32_t)(R_MAX - r);
+        double fResid = (double)s.f - beta_ * (double)s.r;
+        if (fResid > 0.0) {
+            uint32_t penalty = (uint32_t)(freqWeight_ * fResid);
+            if (rawScore > penalty) rawScore -= penalty;
+            else rawScore = 0;
+        }
+        return (uint32_t)(rawScore * ghostProtectFactor(key));
+    }
+
+    void evictOne() {
+        uint64_t bestKey = 0;
+        uint32_t bestScore = 0;
+        for (const auto& [key, state] : cache_) {
+            uint32_t score = evictScore(key, state);
+            if (score > bestScore) {
+                bestScore = score;
+                bestKey = key;
+            }
+        }
+        if (bestKey == 0) return;
+        auto it = cache_.find(bestKey);
+        double fResid = (double)it->second.f - beta_ * (double)it->second.r;
+        regretTracker_.record(bestKey, fResid);
+        ghost_.upsert(bestKey, it->second.r);
+        popSumR_ -= it->second.r;
+        popSumF_ -= it->second.f;
+        cache_.erase(it);
+        evictions_++;
+        totalEvictions_++;
+    }
+
+public:
+    BareREMARC_HistAtom_ResidFQADAPT(size_t capacity, const RemarcConfig& cfg = RemarcConfig{})
+        : ghost_(capacity * 2), cap_(capacity) { (void)cfg; }
+
+    void access(uint64_t key) {
+        epoch_++;
+        opCount_++;
+        if (opCount_ % ADAPT_INTERVAL == 0) { adaptGhostDecay(); adaptFreqWeight(); }
+        if (opCount_ % POP_INTERVAL == 0) updateBeta();
+
+        recentAccess_.insert(key);
+
+        auto it = cache_.find(key);
+        if (it != cache_.end()) {
+            uint32_t gap = epoch_ - it->second.lastEpoch;
+            uint8_t r = it->second.r;
+            for (uint32_t i = 0; i < gap && r > 0; i++) r = decayR(r);
+            uint8_t f = it->second.f;
+            for (uint32_t i = 0; i < gap && f > 0; i++) f = decayF(f);
+            popSumR_ -= it->second.r;
+            popSumF_ -= it->second.f;
+            if (gap > 0 && it->second.avgGap > 0) {
+                it->second.avgGap = (uint32_t)((double)it->second.avgGap * (1.0 - AVG_ALPHA)
+                    + (double)gap * AVG_ALPHA);
+            } else if (gap > 0) {
+                it->second.avgGap = gap;
+            }
+            it->second.r = std::min(R_MAX, (uint8_t)(r + R_BOOST));
+            it->second.f = std::min(F_MAX, (uint8_t)(f + F_BOOST));
+            it->second.lastEpoch = epoch_;
+            popSumR_ += it->second.r;
+            popSumF_ += it->second.f;
+            hits_++;
+            return;
+        }
+
+        misses_++;
+        uint8_t r_init = R_MAX;
+        uint8_t f_init = 0;
+        uint32_t avgGap_init = 0;
+        auto gs = ghost_.query(key);
+        if (gs.has_value() && *gs > 0) {
+            ghostHits_++;
+            uint8_t ghostScore = std::max((uint8_t)1,
+                (uint8_t)((double)*gs * ghostDecayRate_));
+            r_init = std::min(R_MAX,
+                (uint8_t)((double)ghostScore * GHOST_BOOST_SCALE / R_MAX));
+            f_init = std::min(F_MAX,
+                (uint8_t)((double)ghostScore * GHOST_BOOST_SCALE / R_MAX));
+            avgGap_init = 0;
+        }
+
+        if (cache_.size() >= cap_) evictOne();
+        cache_[key] = {r_init, f_init, avgGap_init, epoch_};
+        popSumR_ += r_init;
+        popSumF_ += f_init;
+    }
+
+    size_t hits() const { return hits_; }
+    size_t misses() const { return misses_; }
+    size_t evictions() const { return evictions_; }
+    size_t scans() const { return 0; }
+};
+// =====================================================================
+
+// =====================================================================
+//  BareREMARC_HistAtom_ResidPopADAPT
+//
+//  Combines residual frequency + population deviation, both with
+//  adaptive weight tuning via eviction regret.
+//
+//  Two independent feedback controllers:
+//  - freqWeight_: grows if high-residual evictions are regretted
+//  - devScale_: shrinks if deviation evictions are regretted
+//
+//  Tests whether the two atoms compose without interference when
+//  both are self-tuning.
+// =====================================================================
+
+class BareREMARC_HistAtom_ResidPopADAPT {
+    static constexpr uint8_t R_MAX = 15;
+    static constexpr uint8_t F_MAX = 15;
+    static constexpr uint8_t DECAY_NUM = 7;
+    static constexpr uint8_t DECAY_DEN = 8;
+    static constexpr uint8_t R_BOOST = 2;
+    static constexpr uint8_t F_BOOST = 1;
+    static constexpr double AVG_ALPHA = 0.25;
+    static constexpr double GHOST_BOOST_SCALE = 10.0;
+    static constexpr double GHOST_PROTECT_SCALE = 1.0;
+    static constexpr double GHOST_PROTECT_FLOOR = 0.1;
+    static constexpr size_t ADAPT_INTERVAL = 256;
+    static constexpr size_t POP_INTERVAL = 128;
+    static constexpr double HIGH_RATIO = 0.3;
+    static constexpr double LOW_RATIO = 0.05;
+    static constexpr double HIGH_REGRET = 0.15;
+    static constexpr double LOW_REGRET = 0.05;
+    static constexpr double SHRINK = 0.9;
+    static constexpr double GROW = 1.1;
+    static constexpr double FW_MIN = 0.1;
+    static constexpr double FW_MAX = 5.0;
+    static constexpr double DEV_SCALE_MIN = 0.05;
+    static constexpr double DEV_SCALE_MAX = 3.0;
+
+    struct State {
+        uint8_t r = R_MAX;
+        uint8_t f = 0;
+        uint32_t avgGap = 0;
+        uint32_t lastEpoch = 0;
+    };
+
+    std::unordered_map<uint64_t, State> cache_;
+    GhostField ghost_;
+    size_t cap_;
+    size_t hits_ = 0, misses_ = 0, evictions_ = 0;
+    uint32_t epoch_ = 0;
+    size_t opCount_ = 0;
+
+    size_t ghostHits_ = 0;
+    size_t totalEvictions_ = 0;
+    double ghostDecayRate_ = (double)DECAY_NUM / DECAY_DEN;
+
+    double freqWeight_ = 1.0;
+    double devScale_ = 0.5;
+    double beta_ = 0.5;
+    double popSumR_ = 0.0;
+    double popSumF_ = 0.0;
+    double popMeanGap_ = 0.0;
+    double popSumGap_ = 0.0;
+
+    EvictRegretTracker freqRegret_;
+    EvictRegretTracker devRegret_;
+    std::unordered_set<uint64_t> recentAccess_;
+
+    static uint8_t decayR(uint8_t r) {
+        return (uint8_t)((uint16_t)r * DECAY_NUM / DECAY_DEN);
+    }
+
+    static uint8_t decayF(uint8_t f) {
+        return f > 0 ? f - 1 : 0;
+    }
+
+    void adaptGhostDecay() {
+        if (totalEvictions_ == 0) return;
+        double ratio = (double)ghostHits_ / (double)totalEvictions_;
+        if (ratio > HIGH_RATIO) ghostDecayRate_ *= 0.99;
+        if (ratio < LOW_RATIO) ghostDecayRate_ *= 1.01;
+        ghostDecayRate_ = std::max(0.5, std::min(0.95, ghostDecayRate_));
+        ghostHits_ = 0;
+        totalEvictions_ = 0;
+    }
+
+    void updatePopStats() {
+        if (cache_.empty()) {
+            popMeanGap_ = 0.0; popSumR_ = 0.0;
+            popSumF_ = 0.0; popSumGap_ = 0.0;
+            return;
+        }
+        popMeanGap_ = popSumGap_ / (double)cache_.size();
+        double meanR = popSumR_ / (double)cache_.size();
+        double meanF = popSumF_ / (double)cache_.size();
+        if (meanR > 0.1) {
+            beta_ = 0.9 * beta_ + 0.1 * (meanF / meanR);
+        }
+        beta_ = std::max(0.05, std::min(3.0, beta_));
+    }
+
+    void adaptWeights() {
+        double freqRegret = freqRegret_.regret(recentAccess_);
+        if (freqRegret > HIGH_REGRET) freqWeight_ *= GROW;
+        else if (freqRegret < LOW_REGRET) freqWeight_ *= SHRINK;
+        freqWeight_ = std::max(FW_MIN, std::min(FW_MAX, freqWeight_));
+
+        double devRegret = devRegret_.regret(recentAccess_);
+        if (devRegret > HIGH_REGRET) devScale_ *= SHRINK;
+        else if (devRegret < LOW_REGRET) devScale_ *= GROW;
+        devScale_ = std::max(DEV_SCALE_MIN, std::min(DEV_SCALE_MAX, devScale_));
+
+        recentAccess_.clear();
+    }
+
+    double ghostProtectFactor(uint64_t key) const {
+        auto gs = ghost_.peek(key);
+        if (!gs.has_value() || *gs == 0) return 1.0;
+        double protection = 1.0 - GHOST_PROTECT_SCALE * (double)*gs / R_MAX;
+        return std::max(GHOST_PROTECT_FLOOR, protection);
+    }
+
+    uint32_t evictScore(uint64_t key, const State& s) const {
+        uint32_t gap = epoch_ - s.lastEpoch;
+        uint8_t r = s.r;
+        for (uint32_t i = 0; i < gap && r > 0; i++) r = decayR(r);
+        double confidence = 1.0 + (double)r / R_MAX;
+        uint32_t rawScore = s.avgGap * confidence + (uint32_t)(R_MAX - r);
+        double fResid = (double)s.f - beta_ * (double)s.r;
+        if (fResid > 0.0) {
+            uint32_t penalty = (uint32_t)(freqWeight_ * fResid);
+            if (rawScore > penalty) rawScore -= penalty;
+            else rawScore = 0;
+        }
+        double dev = (double)s.avgGap - popMeanGap_;
+        int32_t devAdj = (int32_t)(devScale_ * dev);
+        int32_t score = (int32_t)(rawScore * ghostProtectFactor(key)) + devAdj;
+        return (uint32_t)std::max(0, score);
+    }
+
+    void evictOne() {
+        uint64_t bestKey = 0;
+        uint32_t bestScore = 0;
+        for (const auto& [key, state] : cache_) {
+            uint32_t score = evictScore(key, state);
+            if (score > bestScore) {
+                bestScore = score;
+                bestKey = key;
+            }
+        }
+        if (bestKey == 0) return;
+        auto it = cache_.find(bestKey);
+        double fResid = (double)it->second.f - beta_ * (double)it->second.r;
+        freqRegret_.record(bestKey, fResid);
+        double dev = (double)it->second.avgGap - popMeanGap_;
+        devRegret_.record(bestKey, dev);
+        ghost_.upsert(bestKey, it->second.r);
+        popSumR_ -= it->second.r;
+        popSumF_ -= it->second.f;
+        popSumGap_ -= it->second.avgGap;
+        cache_.erase(it);
+        evictions_++;
+        totalEvictions_++;
+    }
+
+public:
+    BareREMARC_HistAtom_ResidPopADAPT(size_t capacity, const RemarcConfig& cfg = RemarcConfig{})
+        : ghost_(capacity * 2), cap_(capacity) { (void)cfg; }
+
+    void access(uint64_t key) {
+        epoch_++;
+        opCount_++;
+        if (opCount_ % ADAPT_INTERVAL == 0) { adaptGhostDecay(); adaptWeights(); }
+        if (opCount_ % POP_INTERVAL == 0) updatePopStats();
+
+        recentAccess_.insert(key);
+
+        auto it = cache_.find(key);
+        if (it != cache_.end()) {
+            uint32_t gap = epoch_ - it->second.lastEpoch;
+            uint8_t r = it->second.r;
+            for (uint32_t i = 0; i < gap && r > 0; i++) r = decayR(r);
+            uint8_t f = it->second.f;
+            for (uint32_t i = 0; i < gap && f > 0; i++) f = decayF(f);
+            popSumR_ -= it->second.r;
+            popSumF_ -= it->second.f;
+            popSumGap_ -= it->second.avgGap;
+            if (gap > 0 && it->second.avgGap > 0) {
+                it->second.avgGap = (uint32_t)((double)it->second.avgGap * (1.0 - AVG_ALPHA)
+                    + (double)gap * AVG_ALPHA);
+            } else if (gap > 0) {
+                it->second.avgGap = gap;
+            }
+            it->second.r = std::min(R_MAX, (uint8_t)(r + R_BOOST));
+            it->second.f = std::min(F_MAX, (uint8_t)(f + F_BOOST));
+            it->second.lastEpoch = epoch_;
+            popSumR_ += it->second.r;
+            popSumF_ += it->second.f;
+            popSumGap_ += it->second.avgGap;
+            hits_++;
+            return;
+        }
+
+        misses_++;
+        uint8_t r_init = R_MAX;
+        uint8_t f_init = 0;
+        uint32_t avgGap_init = 0;
+        auto gs = ghost_.query(key);
+        if (gs.has_value() && *gs > 0) {
+            ghostHits_++;
+            uint8_t ghostScore = std::max((uint8_t)1,
+                (uint8_t)((double)*gs * ghostDecayRate_));
+            r_init = std::min(R_MAX,
+                (uint8_t)((double)ghostScore * GHOST_BOOST_SCALE / R_MAX));
+            f_init = std::min(F_MAX,
+                (uint8_t)((double)ghostScore * GHOST_BOOST_SCALE / R_MAX));
+            avgGap_init = 0;
+        }
+
+        if (cache_.size() >= cap_) evictOne();
+        cache_[key] = {r_init, f_init, avgGap_init, epoch_};
+        popSumR_ += r_init;
+        popSumF_ += f_init;
+        popSumGap_ += avgGap_init;
+    }
+
+    size_t hits() const { return hits_; }
+    size_t misses() const { return misses_; }
+    size_t evictions() const { return evictions_; }
+    size_t scans() const { return 0; }
+};
+// =====================================================================
+
+// =====================================================================
+//  BareREMARC_HistAtom_VAR
+//
+//  HA5 + A_variance: track gap variance (EMA of squared deviations from
+//  avgGap). Bursty keys (high variance) are more likely scan pollution.
+//  Steady keys (low variance) are likely genuine residents.
+//
+//  State adds: gapVar (uint32_t, EMA of (gap - avgGap)^2)
+//  On access: gapVar = 0.9 * gapVar + 0.1 * (gap - avgGap)^2
+//  Score:     base + VAR_SCALE * sqrt(gapVar)
+//
+//  Probe target: ScanRes — bursty scan keys should have higher variance
+//  than steady hot keys.
+// =====================================================================
+
+class BareREMARC_HistAtom_VAR {
+    static constexpr uint8_t R_MAX = 15;
+    static constexpr uint8_t F_MAX = 15;
+    static constexpr uint8_t DECAY_NUM = 7;
+    static constexpr uint8_t DECAY_DEN = 8;
+    static constexpr uint8_t R_BOOST = 2;
+    static constexpr uint8_t F_BOOST = 1;
+    static constexpr double AVG_ALPHA = 0.25;
+    static constexpr double VAR_ALPHA = 0.1;
+    static constexpr double GHOST_BOOST_SCALE = 10.0;
+    static constexpr double GHOST_PROTECT_SCALE = 1.0;
+    static constexpr double GHOST_PROTECT_FLOOR = 0.1;
+    static constexpr double VAR_SCALE = 1.0;
+    static constexpr size_t ADAPT_INTERVAL = 256;
+    static constexpr double HIGH_RATIO = 0.3;
+    static constexpr double LOW_RATIO = 0.05;
+
+    struct State {
+        uint8_t r = R_MAX;
+        uint8_t f = 0;
+        uint32_t avgGap = 0;
+        uint32_t lastEpoch = 0;
+        double gapVar = 0.0;
+    };
+
+    std::unordered_map<uint64_t, State> cache_;
+    GhostField ghost_;
+    size_t cap_;
+    size_t hits_ = 0, misses_ = 0, evictions_ = 0;
+    uint32_t epoch_ = 0;
+    size_t opCount_ = 0;
+
+    size_t ghostHits_ = 0;
+    size_t totalEvictions_ = 0;
+    double ghostDecayRate_ = (double)DECAY_NUM / DECAY_DEN;
+
+    static uint8_t decayR(uint8_t r) {
+        return (uint8_t)((uint16_t)r * DECAY_NUM / DECAY_DEN);
+    }
+
+    static uint8_t decayF(uint8_t f) {
+        return f > 0 ? f - 1 : 0;
+    }
+
+    void adaptGhostDecay() {
+        if (totalEvictions_ == 0) return;
+        double ratio = (double)ghostHits_ / (double)totalEvictions_;
+        if (ratio > HIGH_RATIO) ghostDecayRate_ *= 0.99;
+        if (ratio < LOW_RATIO) ghostDecayRate_ *= 1.01;
+        ghostDecayRate_ = std::max(0.5, std::min(0.95, ghostDecayRate_));
+        ghostHits_ = 0;
+        totalEvictions_ = 0;
+    }
+
+    double ghostProtectFactor(uint64_t key) const {
+        auto gs = ghost_.peek(key);
+        if (!gs.has_value() || *gs == 0) return 1.0;
+        double protection = 1.0 - GHOST_PROTECT_SCALE * (double)*gs / R_MAX;
+        return std::max(GHOST_PROTECT_FLOOR, protection);
+    }
+
+    uint32_t evictScore(uint64_t key, const State& s) const {
+        uint32_t gap = epoch_ - s.lastEpoch;
+        uint8_t r = s.r;
+        for (uint32_t i = 0; i < gap && r > 0; i++) r = decayR(r);
+        double confidence = 1.0 + (double)r / R_MAX;
+        uint32_t rawScore = s.avgGap * confidence + (uint32_t)(R_MAX - r);
+        double varBonus = VAR_SCALE * std::sqrt(s.gapVar);
+        return (uint32_t)((rawScore + varBonus) * ghostProtectFactor(key));
+    }
+
+    void evictOne() {
+        uint64_t bestKey = 0;
+        uint32_t bestScore = 0;
+        for (const auto& [key, state] : cache_) {
+            uint32_t score = evictScore(key, state);
+            if (score > bestScore) {
+                bestScore = score;
+                bestKey = key;
+            }
+        }
+        if (bestKey == 0) return;
+        auto it = cache_.find(bestKey);
+        ghost_.upsert(bestKey, it->second.r);
+        cache_.erase(it);
+        evictions_++;
+        totalEvictions_++;
+    }
+
+public:
+    BareREMARC_HistAtom_VAR(size_t capacity, const RemarcConfig& cfg = RemarcConfig{})
+        : ghost_(capacity * 2), cap_(capacity) { (void)cfg; }
+
+    void access(uint64_t key) {
+        epoch_++;
+        opCount_++;
+        if (opCount_ % ADAPT_INTERVAL == 0) adaptGhostDecay();
+
+        auto it = cache_.find(key);
+        if (it != cache_.end()) {
+            uint32_t gap = epoch_ - it->second.lastEpoch;
+            uint8_t r = it->second.r;
+            for (uint32_t i = 0; i < gap && r > 0; i++) r = decayR(r);
+            uint8_t f = it->second.f;
+            for (uint32_t i = 0; i < gap && f > 0; i++) f = decayF(f);
+            double oldAvg = it->second.avgGap;
+            if (gap > 0 && oldAvg > 0) {
+                it->second.avgGap = (uint32_t)((double)oldAvg * (1.0 - AVG_ALPHA)
+                    + (double)gap * AVG_ALPHA);
+                double dev = (double)gap - oldAvg;
+                it->second.gapVar = it->second.gapVar * (1.0 - VAR_ALPHA)
+                    + dev * dev * VAR_ALPHA;
+            } else if (gap > 0) {
+                it->second.avgGap = gap;
+            }
+            it->second.r = std::min(R_MAX, (uint8_t)(r + R_BOOST));
+            it->second.f = std::min(F_MAX, (uint8_t)(f + F_BOOST));
+            it->second.lastEpoch = epoch_;
+            hits_++;
+            return;
+        }
+
+        misses_++;
+        uint8_t r_init = R_MAX;
+        uint8_t f_init = 0;
+        uint32_t avgGap_init = 0;
+        auto gs = ghost_.query(key);
+        if (gs.has_value() && *gs > 0) {
+            ghostHits_++;
+            uint8_t ghostScore = std::max((uint8_t)1,
+                (uint8_t)((double)*gs * ghostDecayRate_));
+            r_init = std::min(R_MAX,
+                (uint8_t)((double)ghostScore * GHOST_BOOST_SCALE / R_MAX));
+            f_init = std::min(F_MAX,
+                (uint8_t)((double)ghostScore * GHOST_BOOST_SCALE / R_MAX));
+            avgGap_init = 0;
+        }
+
+        if (cache_.size() >= cap_) evictOne();
+        cache_[key] = {r_init, f_init, avgGap_init, epoch_, 0.0};
+    }
+
+    size_t hits() const { return hits_; }
+    size_t misses() const { return misses_; }
+    size_t evictions() const { return evictions_; }
+    size_t scans() const { return 0; }
+};
+// =====================================================================
+
+// =====================================================================
+//  BareREMARC_HistAtom_LIFETIME
+//
+//  HA5 + A_lifetime: track when each key was admitted. Keys with very
+//  short lifetime (recently admitted, few accesses) may be scan pollution.
+//  Keys with long lifetime are proven residents.
+//
+//  State adds: admitEpoch (uint32_t)
+//  Score: base + LIFE_PENALTY * max(0, SHORT_LIFE - (epoch - admitEpoch))
+//  Short-lived keys get a bonus to their eviction score.
+//
+//  Probe target: ScanRes — scan keys have very short lifetime.
+// =====================================================================
+
+class BareREMARC_HistAtom_LIFETIME {
+    static constexpr uint8_t R_MAX = 15;
+    static constexpr uint8_t F_MAX = 15;
+    static constexpr uint8_t DECAY_NUM = 7;
+    static constexpr uint8_t DECAY_DEN = 8;
+    static constexpr uint8_t R_BOOST = 2;
+    static constexpr uint8_t F_BOOST = 1;
+    static constexpr double AVG_ALPHA = 0.25;
+    static constexpr double GHOST_BOOST_SCALE = 10.0;
+    static constexpr double GHOST_PROTECT_SCALE = 1.0;
+    static constexpr double GHOST_PROTECT_FLOOR = 0.1;
+    static constexpr uint32_t SHORT_LIFE = 64;
+    static constexpr double LIFE_PENALTY = 2.0;
+    static constexpr size_t ADAPT_INTERVAL = 256;
+    static constexpr double HIGH_RATIO = 0.3;
+    static constexpr double LOW_RATIO = 0.05;
+
+    struct State {
+        uint8_t r = R_MAX;
+        uint8_t f = 0;
+        uint32_t avgGap = 0;
+        uint32_t lastEpoch = 0;
+        uint32_t admitEpoch = 0;
+    };
+
+    std::unordered_map<uint64_t, State> cache_;
+    GhostField ghost_;
+    size_t cap_;
+    size_t hits_ = 0, misses_ = 0, evictions_ = 0;
+    uint32_t epoch_ = 0;
+    size_t opCount_ = 0;
+
+    size_t ghostHits_ = 0;
+    size_t totalEvictions_ = 0;
+    double ghostDecayRate_ = (double)DECAY_NUM / DECAY_DEN;
+
+    static uint8_t decayR(uint8_t r) {
+        return (uint8_t)((uint16_t)r * DECAY_NUM / DECAY_DEN);
+    }
+
+    static uint8_t decayF(uint8_t f) {
+        return f > 0 ? f - 1 : 0;
+    }
+
+    void adaptGhostDecay() {
+        if (totalEvictions_ == 0) return;
+        double ratio = (double)ghostHits_ / (double)totalEvictions_;
+        if (ratio > HIGH_RATIO) ghostDecayRate_ *= 0.99;
+        if (ratio < LOW_RATIO) ghostDecayRate_ *= 1.01;
+        ghostDecayRate_ = std::max(0.5, std::min(0.95, ghostDecayRate_));
+        ghostHits_ = 0;
+        totalEvictions_ = 0;
+    }
+
+    double ghostProtectFactor(uint64_t key) const {
+        auto gs = ghost_.peek(key);
+        if (!gs.has_value() || *gs == 0) return 1.0;
+        double protection = 1.0 - GHOST_PROTECT_SCALE * (double)*gs / R_MAX;
+        return std::max(GHOST_PROTECT_FLOOR, protection);
+    }
+
+    uint32_t evictScore(uint64_t key, const State& s) const {
+        uint32_t gap = epoch_ - s.lastEpoch;
+        uint8_t r = s.r;
+        for (uint32_t i = 0; i < gap && r > 0; i++) r = decayR(r);
+        double confidence = 1.0 + (double)r / R_MAX;
+        uint32_t rawScore = s.avgGap * confidence + (uint32_t)(R_MAX - r);
+        uint32_t life = epoch_ - s.admitEpoch;
+        uint32_t lifeBonus = (life < SHORT_LIFE) ? (uint32_t)(LIFE_PENALTY * (SHORT_LIFE - life)) : 0;
+        return (uint32_t)((rawScore + lifeBonus) * ghostProtectFactor(key));
+    }
+
+    void evictOne() {
+        uint64_t bestKey = 0;
+        uint32_t bestScore = 0;
+        for (const auto& [key, state] : cache_) {
+            uint32_t score = evictScore(key, state);
+            if (score > bestScore) {
+                bestScore = score;
+                bestKey = key;
+            }
+        }
+        if (bestKey == 0) return;
+        auto it = cache_.find(bestKey);
+        ghost_.upsert(bestKey, it->second.r);
+        cache_.erase(it);
+        evictions_++;
+        totalEvictions_++;
+    }
+
+public:
+    BareREMARC_HistAtom_LIFETIME(size_t capacity, const RemarcConfig& cfg = RemarcConfig{})
+        : ghost_(capacity * 2), cap_(capacity) { (void)cfg; }
+
+    void access(uint64_t key) {
+        epoch_++;
+        opCount_++;
+        if (opCount_ % ADAPT_INTERVAL == 0) adaptGhostDecay();
+
+        auto it = cache_.find(key);
+        if (it != cache_.end()) {
+            uint32_t gap = epoch_ - it->second.lastEpoch;
+            uint8_t r = it->second.r;
+            for (uint32_t i = 0; i < gap && r > 0; i++) r = decayR(r);
+            uint8_t f = it->second.f;
+            for (uint32_t i = 0; i < gap && f > 0; i++) f = decayF(f);
+            if (gap > 0 && it->second.avgGap > 0) {
+                it->second.avgGap = (uint32_t)((double)it->second.avgGap * (1.0 - AVG_ALPHA)
+                    + (double)gap * AVG_ALPHA);
+            } else if (gap > 0) {
+                it->second.avgGap = gap;
+            }
+            it->second.r = std::min(R_MAX, (uint8_t)(r + R_BOOST));
+            it->second.f = std::min(F_MAX, (uint8_t)(f + F_BOOST));
+            it->second.lastEpoch = epoch_;
+            hits_++;
+            return;
+        }
+
+        misses_++;
+        uint8_t r_init = R_MAX;
+        uint8_t f_init = 0;
+        uint32_t avgGap_init = 0;
+        auto gs = ghost_.query(key);
+        if (gs.has_value() && *gs > 0) {
+            ghostHits_++;
+            uint8_t ghostScore = std::max((uint8_t)1,
+                (uint8_t)((double)*gs * ghostDecayRate_));
+            r_init = std::min(R_MAX,
+                (uint8_t)((double)ghostScore * GHOST_BOOST_SCALE / R_MAX));
+            f_init = std::min(F_MAX,
+                (uint8_t)((double)ghostScore * GHOST_BOOST_SCALE / R_MAX));
+            avgGap_init = 0;
+        }
+
+        if (cache_.size() >= cap_) evictOne();
+        cache_[key] = {r_init, f_init, avgGap_init, epoch_, epoch_};
+    }
+
+    size_t hits() const { return hits_; }
+    size_t misses() const { return misses_; }
+    size_t evictions() const { return evictions_; }
+    size_t scans() const { return 0; }
+};
+// =====================================================================
+
+// =====================================================================
+//  BareREMARC_HistAtom_DENSITY
+//
+//  HA5 + A_access_density: track total accesses while in cache, compute
+//  density = accessCount / lifetime. High density = genuinely popular
+//  per unit time. Independent of raw f because it normalizes by age.
+//
+//  State adds: accessCount (uint16_t)
+//  Score: base - DENSITY_SCALE * density
+//  High density → lower score → protected.
+//
+//  Probe target: Zipfian — popular keys accumulate high density.
+// =====================================================================
+
+class BareREMARC_HistAtom_DENSITY {
+    static constexpr uint8_t R_MAX = 15;
+    static constexpr uint8_t F_MAX = 15;
+    static constexpr uint8_t DECAY_NUM = 7;
+    static constexpr uint8_t DECAY_DEN = 8;
+    static constexpr uint8_t R_BOOST = 2;
+    static constexpr uint8_t F_BOOST = 1;
+    static constexpr double AVG_ALPHA = 0.25;
+    static constexpr double GHOST_BOOST_SCALE = 10.0;
+    static constexpr double GHOST_PROTECT_SCALE = 1.0;
+    static constexpr double GHOST_PROTECT_FLOOR = 0.1;
+    static constexpr double DENSITY_SCALE = 0.5;
+    static constexpr size_t ADAPT_INTERVAL = 256;
+    static constexpr double HIGH_RATIO = 0.3;
+    static constexpr double LOW_RATIO = 0.05;
+
+    struct State {
+        uint8_t r = R_MAX;
+        uint8_t f = 0;
+        uint32_t avgGap = 0;
+        uint32_t lastEpoch = 0;
+        uint32_t admitEpoch = 0;
+        uint16_t accessCount = 1;
+    };
+
+    std::unordered_map<uint64_t, State> cache_;
+    GhostField ghost_;
+    size_t cap_;
+    size_t hits_ = 0, misses_ = 0, evictions_ = 0;
+    uint32_t epoch_ = 0;
+    size_t opCount_ = 0;
+
+    size_t ghostHits_ = 0;
+    size_t totalEvictions_ = 0;
+    double ghostDecayRate_ = (double)DECAY_NUM / DECAY_DEN;
+
+    static uint8_t decayR(uint8_t r) {
+        return (uint8_t)((uint16_t)r * DECAY_NUM / DECAY_DEN);
+    }
+
+    static uint8_t decayF(uint8_t f) {
+        return f > 0 ? f - 1 : 0;
+    }
+
+    void adaptGhostDecay() {
+        if (totalEvictions_ == 0) return;
+        double ratio = (double)ghostHits_ / (double)totalEvictions_;
+        if (ratio > HIGH_RATIO) ghostDecayRate_ *= 0.99;
+        if (ratio < LOW_RATIO) ghostDecayRate_ *= 1.01;
+        ghostDecayRate_ = std::max(0.5, std::min(0.95, ghostDecayRate_));
+        ghostHits_ = 0;
+        totalEvictions_ = 0;
+    }
+
+    double ghostProtectFactor(uint64_t key) const {
+        auto gs = ghost_.peek(key);
+        if (!gs.has_value() || *gs == 0) return 1.0;
+        double protection = 1.0 - GHOST_PROTECT_SCALE * (double)*gs / R_MAX;
+        return std::max(GHOST_PROTECT_FLOOR, protection);
+    }
+
+    uint32_t evictScore(uint64_t key, const State& s) const {
+        uint32_t gap = epoch_ - s.lastEpoch;
+        uint8_t r = s.r;
+        for (uint32_t i = 0; i < gap && r > 0; i++) r = decayR(r);
+        double confidence = 1.0 + (double)r / R_MAX;
+        uint32_t rawScore = s.avgGap * confidence + (uint32_t)(R_MAX - r);
+        uint32_t lifetime = std::max((uint32_t)1, epoch_ - s.admitEpoch);
+        double density = (double)s.accessCount / (double)lifetime;
+        double densityPenalty = DENSITY_SCALE * density;
+        int32_t score = (int32_t)(rawScore * ghostProtectFactor(key)) - (int32_t)densityPenalty;
+        return (uint32_t)std::max(0, score);
+    }
+
+    void evictOne() {
+        uint64_t bestKey = 0;
+        uint32_t bestScore = 0;
+        for (const auto& [key, state] : cache_) {
+            uint32_t score = evictScore(key, state);
+            if (score > bestScore) {
+                bestScore = score;
+                bestKey = key;
+            }
+        }
+        if (bestKey == 0) return;
+        auto it = cache_.find(bestKey);
+        ghost_.upsert(bestKey, it->second.r);
+        cache_.erase(it);
+        evictions_++;
+        totalEvictions_++;
+    }
+
+public:
+    BareREMARC_HistAtom_DENSITY(size_t capacity, const RemarcConfig& cfg = RemarcConfig{})
+        : ghost_(capacity * 2), cap_(capacity) { (void)cfg; }
+
+    void access(uint64_t key) {
+        epoch_++;
+        opCount_++;
+        if (opCount_ % ADAPT_INTERVAL == 0) adaptGhostDecay();
+
+        auto it = cache_.find(key);
+        if (it != cache_.end()) {
+            uint32_t gap = epoch_ - it->second.lastEpoch;
+            uint8_t r = it->second.r;
+            for (uint32_t i = 0; i < gap && r > 0; i++) r = decayR(r);
+            uint8_t f = it->second.f;
+            for (uint32_t i = 0; i < gap && f > 0; i++) f = decayF(f);
+            if (gap > 0 && it->second.avgGap > 0) {
+                it->second.avgGap = (uint32_t)((double)it->second.avgGap * (1.0 - AVG_ALPHA)
+                    + (double)gap * AVG_ALPHA);
+            } else if (gap > 0) {
+                it->second.avgGap = gap;
+            }
+            it->second.r = std::min(R_MAX, (uint8_t)(r + R_BOOST));
+            it->second.f = std::min(F_MAX, (uint8_t)(f + F_BOOST));
+            it->second.lastEpoch = epoch_;
+            if (it->second.accessCount < 0xFFFF) it->second.accessCount++;
+            hits_++;
+            return;
+        }
+
+        misses_++;
+        uint8_t r_init = R_MAX;
+        uint8_t f_init = 0;
+        uint32_t avgGap_init = 0;
+        auto gs = ghost_.query(key);
+        if (gs.has_value() && *gs > 0) {
+            ghostHits_++;
+            uint8_t ghostScore = std::max((uint8_t)1,
+                (uint8_t)((double)*gs * ghostDecayRate_));
+            r_init = std::min(R_MAX,
+                (uint8_t)((double)ghostScore * GHOST_BOOST_SCALE / R_MAX));
+            f_init = std::min(F_MAX,
+                (uint8_t)((double)ghostScore * GHOST_BOOST_SCALE / R_MAX));
+            avgGap_init = 0;
+        }
+
+        if (cache_.size() >= cap_) evictOne();
+        cache_[key] = {r_init, f_init, avgGap_init, epoch_, epoch_, 1};
+    }
+
+    size_t hits() const { return hits_; }
+    size_t misses() const { return misses_; }
+    size_t evictions() const { return evictions_; }
+    size_t scans() const { return 0; }
+};
+// =====================================================================
+
+// =====================================================================
+//  BareREMARC_HistAtom_MULT
+//
+//  HA5 state, multiplicative projection.
+//  Instead of additive avgGap * confidence + (R_MAX - r), use:
+//
+//  score = (avgGap + 1) * (R_MAX - r + 1) / max(r, 1)
+//
+//  Multiplicative interaction: keys that are bad on BOTH dimensions
+//  (high gap AND low recency) are penalized more than additive would.
+//  Keys that are good on one dimension get partial protection.
+//
+//  Probe target: all workloads — tests whether projection topology matters.
+// =====================================================================
+
+class BareREMARC_HistAtom_MULT {
+    static constexpr uint8_t R_MAX = 15;
+    static constexpr uint8_t F_MAX = 15;
+    static constexpr uint8_t DECAY_NUM = 7;
+    static constexpr uint8_t DECAY_DEN = 8;
+    static constexpr uint8_t R_BOOST = 2;
+    static constexpr uint8_t F_BOOST = 1;
+    static constexpr double AVG_ALPHA = 0.25;
+    static constexpr double GHOST_BOOST_SCALE = 10.0;
+    static constexpr double GHOST_PROTECT_SCALE = 1.0;
+    static constexpr double GHOST_PROTECT_FLOOR = 0.1;
+    static constexpr size_t ADAPT_INTERVAL = 256;
+    static constexpr double HIGH_RATIO = 0.3;
+    static constexpr double LOW_RATIO = 0.05;
+
+    struct State {
+        uint8_t r = R_MAX;
+        uint8_t f = 0;
+        uint32_t avgGap = 0;
+        uint32_t lastEpoch = 0;
+    };
+
+    std::unordered_map<uint64_t, State> cache_;
+    GhostField ghost_;
+    size_t cap_;
+    size_t hits_ = 0, misses_ = 0, evictions_ = 0;
+    uint32_t epoch_ = 0;
+    size_t opCount_ = 0;
+
+    size_t ghostHits_ = 0;
+    size_t totalEvictions_ = 0;
+    double ghostDecayRate_ = (double)DECAY_NUM / DECAY_DEN;
+
+    static uint8_t decayR(uint8_t r) {
+        return (uint8_t)((uint16_t)r * DECAY_NUM / DECAY_DEN);
+    }
+
+    static uint8_t decayF(uint8_t f) {
+        return f > 0 ? f - 1 : 0;
+    }
+
+    void adaptGhostDecay() {
+        if (totalEvictions_ == 0) return;
+        double ratio = (double)ghostHits_ / (double)totalEvictions_;
+        if (ratio > HIGH_RATIO) ghostDecayRate_ *= 0.99;
+        if (ratio < LOW_RATIO) ghostDecayRate_ *= 1.01;
+        ghostDecayRate_ = std::max(0.5, std::min(0.95, ghostDecayRate_));
+        ghostHits_ = 0;
+        totalEvictions_ = 0;
+    }
+
+    double ghostProtectFactor(uint64_t key) const {
+        auto gs = ghost_.peek(key);
+        if (!gs.has_value() || *gs == 0) return 1.0;
+        double protection = 1.0 - GHOST_PROTECT_SCALE * (double)*gs / R_MAX;
+        return std::max(GHOST_PROTECT_FLOOR, protection);
+    }
+
+    uint32_t evictScore(uint64_t key, const State& s) const {
+        uint32_t gap = epoch_ - s.lastEpoch;
+        uint8_t r = s.r;
+        for (uint32_t i = 0; i < gap && r > 0; i++) r = decayR(r);
+        double mult = ((double)s.avgGap + 1.0) * ((double)(R_MAX - r) + 1.0)
+                      / (double)std::max((uint32_t)1, (uint32_t)r);
+        return (uint32_t)(mult * ghostProtectFactor(key));
+    }
+
+    void evictOne() {
+        uint64_t bestKey = 0;
+        uint32_t bestScore = 0;
+        for (const auto& [key, state] : cache_) {
+            uint32_t score = evictScore(key, state);
+            if (score > bestScore) {
+                bestScore = score;
+                bestKey = key;
+            }
+        }
+        if (bestKey == 0) return;
+        auto it = cache_.find(bestKey);
+        ghost_.upsert(bestKey, it->second.r);
+        cache_.erase(it);
+        evictions_++;
+        totalEvictions_++;
+    }
+
+public:
+    BareREMARC_HistAtom_MULT(size_t capacity, const RemarcConfig& cfg = RemarcConfig{})
+        : ghost_(capacity * 2), cap_(capacity) { (void)cfg; }
+
+    void access(uint64_t key) {
+        epoch_++;
+        opCount_++;
+        if (opCount_ % ADAPT_INTERVAL == 0) adaptGhostDecay();
+
+        auto it = cache_.find(key);
+        if (it != cache_.end()) {
+            uint32_t gap = epoch_ - it->second.lastEpoch;
+            uint8_t r = it->second.r;
+            for (uint32_t i = 0; i < gap && r > 0; i++) r = decayR(r);
+            uint8_t f = it->second.f;
+            for (uint32_t i = 0; i < gap && f > 0; i++) f = decayF(f);
+            if (gap > 0 && it->second.avgGap > 0) {
+                it->second.avgGap = (uint32_t)((double)it->second.avgGap * (1.0 - AVG_ALPHA)
+                    + (double)gap * AVG_ALPHA);
+            } else if (gap > 0) {
+                it->second.avgGap = gap;
+            }
+            it->second.r = std::min(R_MAX, (uint8_t)(r + R_BOOST));
+            it->second.f = std::min(F_MAX, (uint8_t)(f + F_BOOST));
+            it->second.lastEpoch = epoch_;
+            hits_++;
+            return;
+        }
+
+        misses_++;
+        uint8_t r_init = R_MAX;
+        uint8_t f_init = 0;
+        uint32_t avgGap_init = 0;
+        auto gs = ghost_.query(key);
+        if (gs.has_value() && *gs > 0) {
+            ghostHits_++;
+            uint8_t ghostScore = std::max((uint8_t)1,
+                (uint8_t)((double)*gs * ghostDecayRate_));
+            r_init = std::min(R_MAX,
+                (uint8_t)((double)ghostScore * GHOST_BOOST_SCALE / R_MAX));
+            f_init = std::min(F_MAX,
+                (uint8_t)((double)ghostScore * GHOST_BOOST_SCALE / R_MAX));
+            avgGap_init = 0;
+        }
+
+        if (cache_.size() >= cap_) evictOne();
+        cache_[key] = {r_init, f_init, avgGap_init, epoch_};
+    }
+
+    size_t hits() const { return hits_; }
+    size_t misses() const { return misses_; }
+    size_t evictions() const { return evictions_; }
+    size_t scans() const { return 0; }
+};
+// =====================================================================
+
+// =====================================================================
+//  BareREMARC_HistAtom_RATIO
+//
+//  HA5 state, ratio-based projection.
+//
+//  score = ((avgGap + 1) / max(r, 1)) * (1.0 + f / F_MAX) * ghostProtect
+//
+//  Gap-per-recency-unit normalized by frequency. Keys with high gap
+//  relative to recency are penalized; frequency amplifies the signal.
+//
+//  Probe target: ScanRes — scan keys have high gap relative to recency.
+// =====================================================================
+
+class BareREMARC_HistAtom_RATIO {
+    static constexpr uint8_t R_MAX = 15;
+    static constexpr uint8_t F_MAX = 15;
+    static constexpr uint8_t DECAY_NUM = 7;
+    static constexpr uint8_t DECAY_DEN = 8;
+    static constexpr uint8_t R_BOOST = 2;
+    static constexpr uint8_t F_BOOST = 1;
+    static constexpr double AVG_ALPHA = 0.25;
+    static constexpr double GHOST_BOOST_SCALE = 10.0;
+    static constexpr double GHOST_PROTECT_SCALE = 1.0;
+    static constexpr double GHOST_PROTECT_FLOOR = 0.1;
+    static constexpr size_t ADAPT_INTERVAL = 256;
+    static constexpr double HIGH_RATIO = 0.3;
+    static constexpr double LOW_RATIO = 0.05;
+
+    struct State {
+        uint8_t r = R_MAX;
+        uint8_t f = 0;
+        uint32_t avgGap = 0;
+        uint32_t lastEpoch = 0;
+    };
+
+    std::unordered_map<uint64_t, State> cache_;
+    GhostField ghost_;
+    size_t cap_;
+    size_t hits_ = 0, misses_ = 0, evictions_ = 0;
+    uint32_t epoch_ = 0;
+    size_t opCount_ = 0;
+
+    size_t ghostHits_ = 0;
+    size_t totalEvictions_ = 0;
+    double ghostDecayRate_ = (double)DECAY_NUM / DECAY_DEN;
+
+    static uint8_t decayR(uint8_t r) {
+        return (uint8_t)((uint16_t)r * DECAY_NUM / DECAY_DEN);
+    }
+
+    static uint8_t decayF(uint8_t f) {
+        return f > 0 ? f - 1 : 0;
+    }
+
+    void adaptGhostDecay() {
+        if (totalEvictions_ == 0) return;
+        double ratio = (double)ghostHits_ / (double)totalEvictions_;
+        if (ratio > HIGH_RATIO) ghostDecayRate_ *= 0.99;
+        if (ratio < LOW_RATIO) ghostDecayRate_ *= 1.01;
+        ghostDecayRate_ = std::max(0.5, std::min(0.95, ghostDecayRate_));
+        ghostHits_ = 0;
+        totalEvictions_ = 0;
+    }
+
+    double ghostProtectFactor(uint64_t key) const {
+        auto gs = ghost_.peek(key);
+        if (!gs.has_value() || *gs == 0) return 1.0;
+        double protection = 1.0 - GHOST_PROTECT_SCALE * (double)*gs / R_MAX;
+        return std::max(GHOST_PROTECT_FLOOR, protection);
+    }
+
+    uint32_t evictScore(uint64_t key, const State& s) const {
+        uint32_t gap = epoch_ - s.lastEpoch;
+        uint8_t r = s.r;
+        for (uint32_t i = 0; i < gap && r > 0; i++) r = decayR(r);
+        double gapPerR = ((double)s.avgGap + 1.0) / (double)std::max((uint32_t)1, (uint32_t)r);
+        double freqFactor = 1.0 + (double)s.f / (double)F_MAX;
+        return (uint32_t)(gapPerR * freqFactor * ghostProtectFactor(key));
+    }
+
+    void evictOne() {
+        uint64_t bestKey = 0;
+        uint32_t bestScore = 0;
+        for (const auto& [key, state] : cache_) {
+            uint32_t score = evictScore(key, state);
+            if (score > bestScore) {
+                bestScore = score;
+                bestKey = key;
+            }
+        }
+        if (bestKey == 0) return;
+        auto it = cache_.find(bestKey);
+        ghost_.upsert(bestKey, it->second.r);
+        cache_.erase(it);
+        evictions_++;
+        totalEvictions_++;
+    }
+
+public:
+    BareREMARC_HistAtom_RATIO(size_t capacity, const RemarcConfig& cfg = RemarcConfig{})
+        : ghost_(capacity * 2), cap_(capacity) { (void)cfg; }
+
+    void access(uint64_t key) {
+        epoch_++;
+        opCount_++;
+        if (opCount_ % ADAPT_INTERVAL == 0) adaptGhostDecay();
+
+        auto it = cache_.find(key);
+        if (it != cache_.end()) {
+            uint32_t gap = epoch_ - it->second.lastEpoch;
+            uint8_t r = it->second.r;
+            for (uint32_t i = 0; i < gap && r > 0; i++) r = decayR(r);
+            uint8_t f = it->second.f;
+            for (uint32_t i = 0; i < gap && f > 0; i++) f = decayF(f);
+            if (gap > 0 && it->second.avgGap > 0) {
+                it->second.avgGap = (uint32_t)((double)it->second.avgGap * (1.0 - AVG_ALPHA)
+                    + (double)gap * AVG_ALPHA);
+            } else if (gap > 0) {
+                it->second.avgGap = gap;
+            }
+            it->second.r = std::min(R_MAX, (uint8_t)(r + R_BOOST));
+            it->second.f = std::min(F_MAX, (uint8_t)(f + F_BOOST));
+            it->second.lastEpoch = epoch_;
+            hits_++;
+            return;
+        }
+
+        misses_++;
+        uint8_t r_init = R_MAX;
+        uint8_t f_init = 0;
+        uint32_t avgGap_init = 0;
+        auto gs = ghost_.query(key);
+        if (gs.has_value() && *gs > 0) {
+            ghostHits_++;
+            uint8_t ghostScore = std::max((uint8_t)1,
+                (uint8_t)((double)*gs * ghostDecayRate_));
+            r_init = std::min(R_MAX,
+                (uint8_t)((double)ghostScore * GHOST_BOOST_SCALE / R_MAX));
+            f_init = std::min(F_MAX,
+                (uint8_t)((double)ghostScore * GHOST_BOOST_SCALE / R_MAX));
+            avgGap_init = 0;
+        }
+
+        if (cache_.size() >= cap_) evictOne();
+        cache_[key] = {r_init, f_init, avgGap_init, epoch_};
+    }
+
+    size_t hits() const { return hits_; }
+    size_t misses() const { return misses_; }
+    size_t evictions() const { return evictions_; }
+    size_t scans() const { return 0; }
+};
+// =====================================================================
+
+// =====================================================================
+//  BareREMARC_HistAtom_LOGLIN
+//
+//  HA5 state, log-compressed projection.
+//
+//  score = (log(avgGap + 1) * (R_MAX - r) + log(f + 1) * r) * ghostProtect
+//
+//  Log compression reduces dynamic range: small differences in cold keys
+//  become more significant, while large differences in hot keys are
+//  compressed. This changes the relative ranking of keys near the
+//  eviction boundary.
+//
+//  Probe target: all workloads — tests projection topology sensitivity.
+// =====================================================================
+
+class BareREMARC_HistAtom_LOGLIN {
+    static constexpr uint8_t R_MAX = 15;
+    static constexpr uint8_t F_MAX = 15;
+    static constexpr uint8_t DECAY_NUM = 7;
+    static constexpr uint8_t DECAY_DEN = 8;
+    static constexpr uint8_t R_BOOST = 2;
+    static constexpr uint8_t F_BOOST = 1;
+    static constexpr double AVG_ALPHA = 0.25;
+    static constexpr double GHOST_BOOST_SCALE = 10.0;
+    static constexpr double GHOST_PROTECT_SCALE = 1.0;
+    static constexpr double GHOST_PROTECT_FLOOR = 0.1;
+    static constexpr size_t ADAPT_INTERVAL = 256;
+    static constexpr double HIGH_RATIO = 0.3;
+    static constexpr double LOW_RATIO = 0.05;
+
+    struct State {
+        uint8_t r = R_MAX;
+        uint8_t f = 0;
+        uint32_t avgGap = 0;
+        uint32_t lastEpoch = 0;
+    };
+
+    std::unordered_map<uint64_t, State> cache_;
+    GhostField ghost_;
+    size_t cap_;
+    size_t hits_ = 0, misses_ = 0, evictions_ = 0;
+    uint32_t epoch_ = 0;
+    size_t opCount_ = 0;
+
+    size_t ghostHits_ = 0;
+    size_t totalEvictions_ = 0;
+    double ghostDecayRate_ = (double)DECAY_NUM / DECAY_DEN;
+
+    static uint8_t decayR(uint8_t r) {
+        return (uint8_t)((uint16_t)r * DECAY_NUM / DECAY_DEN);
+    }
+
+    static uint8_t decayF(uint8_t f) {
+        return f > 0 ? f - 1 : 0;
+    }
+
+    void adaptGhostDecay() {
+        if (totalEvictions_ == 0) return;
+        double ratio = (double)ghostHits_ / (double)totalEvictions_;
+        if (ratio > HIGH_RATIO) ghostDecayRate_ *= 0.99;
+        if (ratio < LOW_RATIO) ghostDecayRate_ *= 1.01;
+        ghostDecayRate_ = std::max(0.5, std::min(0.95, ghostDecayRate_));
+        ghostHits_ = 0;
+        totalEvictions_ = 0;
+    }
+
+    double ghostProtectFactor(uint64_t key) const {
+        auto gs = ghost_.peek(key);
+        if (!gs.has_value() || *gs == 0) return 1.0;
+        double protection = 1.0 - GHOST_PROTECT_SCALE * (double)*gs / R_MAX;
+        return std::max(GHOST_PROTECT_FLOOR, protection);
+    }
+
+    uint32_t evictScore(uint64_t key, const State& s) const {
+        uint32_t gap = epoch_ - s.lastEpoch;
+        uint8_t r = s.r;
+        for (uint32_t i = 0; i < gap && r > 0; i++) r = decayR(r);
+        double logGap = std::log((double)s.avgGap + 1.0);
+        double logF = std::log((double)s.f + 1.0);
+        double score = logGap * (R_MAX - r) + logF * r;
+        return (uint32_t)(score * ghostProtectFactor(key));
+    }
+
+    void evictOne() {
+        uint64_t bestKey = 0;
+        uint32_t bestScore = 0;
+        for (const auto& [key, state] : cache_) {
+            uint32_t score = evictScore(key, state);
+            if (score > bestScore) {
+                bestScore = score;
+                bestKey = key;
+            }
+        }
+        if (bestKey == 0) return;
+        auto it = cache_.find(bestKey);
+        ghost_.upsert(bestKey, it->second.r);
+        cache_.erase(it);
+        evictions_++;
+        totalEvictions_++;
+    }
+
+public:
+    BareREMARC_HistAtom_LOGLIN(size_t capacity, const RemarcConfig& cfg = RemarcConfig{})
+        : ghost_(capacity * 2), cap_(capacity) { (void)cfg; }
+
+    void access(uint64_t key) {
+        epoch_++;
+        opCount_++;
+        if (opCount_ % ADAPT_INTERVAL == 0) adaptGhostDecay();
+
+        auto it = cache_.find(key);
+        if (it != cache_.end()) {
+            uint32_t gap = epoch_ - it->second.lastEpoch;
+            uint8_t r = it->second.r;
+            for (uint32_t i = 0; i < gap && r > 0; i++) r = decayR(r);
+            uint8_t f = it->second.f;
+            for (uint32_t i = 0; i < gap && f > 0; i++) f = decayF(f);
+            if (gap > 0 && it->second.avgGap > 0) {
+                it->second.avgGap = (uint32_t)((double)it->second.avgGap * (1.0 - AVG_ALPHA)
+                    + (double)gap * AVG_ALPHA);
+            } else if (gap > 0) {
+                it->second.avgGap = gap;
+            }
+            it->second.r = std::min(R_MAX, (uint8_t)(r + R_BOOST));
+            it->second.f = std::min(F_MAX, (uint8_t)(f + F_BOOST));
+            it->second.lastEpoch = epoch_;
+            hits_++;
+            return;
+        }
+
+        misses_++;
+        uint8_t r_init = R_MAX;
+        uint8_t f_init = 0;
+        uint32_t avgGap_init = 0;
+        auto gs = ghost_.query(key);
+        if (gs.has_value() && *gs > 0) {
+            ghostHits_++;
+            uint8_t ghostScore = std::max((uint8_t)1,
+                (uint8_t)((double)*gs * ghostDecayRate_));
+            r_init = std::min(R_MAX,
+                (uint8_t)((double)ghostScore * GHOST_BOOST_SCALE / R_MAX));
+            f_init = std::min(F_MAX,
+                (uint8_t)((double)ghostScore * GHOST_BOOST_SCALE / R_MAX));
+            avgGap_init = 0;
+        }
+
+        if (cache_.size() >= cap_) evictOne();
+        cache_[key] = {r_init, f_init, avgGap_init, epoch_};
+    }
+
+    size_t hits() const { return hits_; }
+    size_t misses() const { return misses_; }
+    size_t evictions() const { return evictions_; }
+    size_t scans() const { return 0; }
+};
+// =====================================================================
+
+// =====================================================================
+//  BareREMARC_HistAtom_LOGLIN_VAR
+//
+//  Combines HA-LOGLIN (log-compressed projection) + HA-VAR (gap variance).
+//  The two strongest probes from the orthogonal decomposition experiment:
+//  log projection closes ScanRes +5.6pp; variance closes ScanRes +2.9pp.
+//
+//  score = (log(avgGap + 1) * (R_MAX - r) + log(f + 1) * r
+//          + VAR_SCALE * sqrt(gapVar)) * ghostProtect
+//
+//  Probe target: combined improvement on ScanRes and Looping.
+// =====================================================================
+
+class BareREMARC_HistAtom_LOGLIN_VAR {
+    static constexpr uint8_t R_MAX = 15;
+    static constexpr uint8_t F_MAX = 15;
+    static constexpr uint8_t DECAY_NUM = 7;
+    static constexpr uint8_t DECAY_DEN = 8;
+    static constexpr uint8_t R_BOOST = 2;
+    static constexpr uint8_t F_BOOST = 1;
+    static constexpr double AVG_ALPHA = 0.25;
+    static constexpr double VAR_ALPHA = 0.1;
+    static constexpr double GHOST_BOOST_SCALE = 10.0;
+    static constexpr double GHOST_PROTECT_SCALE = 1.0;
+    static constexpr double GHOST_PROTECT_FLOOR = 0.1;
+    static constexpr double VAR_SCALE = 1.0;
+    static constexpr size_t ADAPT_INTERVAL = 256;
+    static constexpr double HIGH_RATIO = 0.3;
+    static constexpr double LOW_RATIO = 0.05;
+
+    struct State {
+        uint8_t r = R_MAX;
+        uint8_t f = 0;
+        uint32_t avgGap = 0;
+        uint32_t lastEpoch = 0;
+        double gapVar = 0.0;
+    };
+
+    std::unordered_map<uint64_t, State> cache_;
+    GhostField ghost_;
+    size_t cap_;
+    size_t hits_ = 0, misses_ = 0, evictions_ = 0;
+    uint32_t epoch_ = 0;
+    size_t opCount_ = 0;
+
+    size_t ghostHits_ = 0;
+    size_t totalEvictions_ = 0;
+    double ghostDecayRate_ = (double)DECAY_NUM / DECAY_DEN;
+
+    static uint8_t decayR(uint8_t r) {
+        return (uint8_t)((uint16_t)r * DECAY_NUM / DECAY_DEN);
+    }
+
+    static uint8_t decayF(uint8_t f) {
+        return f > 0 ? f - 1 : 0;
+    }
+
+    void adaptGhostDecay() {
+        if (totalEvictions_ == 0) return;
+        double ratio = (double)ghostHits_ / (double)totalEvictions_;
+        if (ratio > HIGH_RATIO) ghostDecayRate_ *= 0.99;
+        if (ratio < LOW_RATIO) ghostDecayRate_ *= 1.01;
+        ghostDecayRate_ = std::max(0.5, std::min(0.95, ghostDecayRate_));
+        ghostHits_ = 0;
+        totalEvictions_ = 0;
+    }
+
+    double ghostProtectFactor(uint64_t key) const {
+        auto gs = ghost_.peek(key);
+        if (!gs.has_value() || *gs == 0) return 1.0;
+        double protection = 1.0 - GHOST_PROTECT_SCALE * (double)*gs / R_MAX;
+        return std::max(GHOST_PROTECT_FLOOR, protection);
+    }
+
+    uint32_t evictScore(uint64_t key, const State& s) const {
+        uint32_t gap = epoch_ - s.lastEpoch;
+        uint8_t r = s.r;
+        for (uint32_t i = 0; i < gap && r > 0; i++) r = decayR(r);
+        double logGap = std::log((double)s.avgGap + 1.0);
+        double logF = std::log((double)s.f + 1.0);
+        double score = logGap * (R_MAX - r) + logF * r + VAR_SCALE * std::sqrt(s.gapVar);
+        return (uint32_t)(score * ghostProtectFactor(key));
+    }
+
+    void evictOne() {
+        uint64_t bestKey = 0;
+        uint32_t bestScore = 0;
+        for (const auto& [key, state] : cache_) {
+            uint32_t score = evictScore(key, state);
+            if (score > bestScore) {
+                bestScore = score;
+                bestKey = key;
+            }
+        }
+        if (bestKey == 0) return;
+        auto it = cache_.find(bestKey);
+        ghost_.upsert(bestKey, it->second.r);
+        cache_.erase(it);
+        evictions_++;
+        totalEvictions_++;
+    }
+
+public:
+    BareREMARC_HistAtom_LOGLIN_VAR(size_t capacity, const RemarcConfig& cfg = RemarcConfig{})
+        : ghost_(capacity * 2), cap_(capacity) { (void)cfg; }
+
+    void access(uint64_t key) {
+        epoch_++;
+        opCount_++;
+        if (opCount_ % ADAPT_INTERVAL == 0) adaptGhostDecay();
+
+        auto it = cache_.find(key);
+        if (it != cache_.end()) {
+            uint32_t gap = epoch_ - it->second.lastEpoch;
+            uint8_t r = it->second.r;
+            for (uint32_t i = 0; i < gap && r > 0; i++) r = decayR(r);
+            uint8_t f = it->second.f;
+            for (uint32_t i = 0; i < gap && f > 0; i++) f = decayF(f);
+            double oldAvg = it->second.avgGap;
+            if (gap > 0 && oldAvg > 0) {
+                it->second.avgGap = (uint32_t)((double)oldAvg * (1.0 - AVG_ALPHA)
+                    + (double)gap * AVG_ALPHA);
+                double dev = (double)gap - oldAvg;
+                it->second.gapVar = it->second.gapVar * (1.0 - VAR_ALPHA)
+                    + dev * dev * VAR_ALPHA;
+            } else if (gap > 0) {
+                it->second.avgGap = gap;
+            }
+            it->second.r = std::min(R_MAX, (uint8_t)(r + R_BOOST));
+            it->second.f = std::min(F_MAX, (uint8_t)(f + F_BOOST));
+            it->second.lastEpoch = epoch_;
+            hits_++;
+            return;
+        }
+
+        misses_++;
+        uint8_t r_init = R_MAX;
+        uint8_t f_init = 0;
+        uint32_t avgGap_init = 0;
+        auto gs = ghost_.query(key);
+        if (gs.has_value() && *gs > 0) {
+            ghostHits_++;
+            uint8_t ghostScore = std::max((uint8_t)1,
+                (uint8_t)((double)*gs * ghostDecayRate_));
+            r_init = std::min(R_MAX,
+                (uint8_t)((double)ghostScore * GHOST_BOOST_SCALE / R_MAX));
+            f_init = std::min(F_MAX,
+                (uint8_t)((double)ghostScore * GHOST_BOOST_SCALE / R_MAX));
+            avgGap_init = 0;
+        }
+
+        if (cache_.size() >= cap_) evictOne();
+        cache_[key] = {r_init, f_init, avgGap_init, epoch_, 0.0};
+    }
+
+    size_t hits() const { return hits_; }
+    size_t misses() const { return misses_; }
+    size_t evictions() const { return evictions_; }
+    size_t scans() const { return 0; }
+};
+// =====================================================================
+
 // REMARC-1L: per-key eviction with REMARC TempCtrl scoring.
 // Bucket-indexed by EvictScore (16 buckets) for O(1) eviction.
 // Replaces O(N) scan with direct bucket lookup.
@@ -6248,9 +9437,11 @@ struct ModeConfig {
 };
 
 static void PrintUsage() {
-    std::cout << "Usage: PolicyBench [--quick|--paper]\n"
+    std::cout << "Usage: PolicyBench [--quick|--paper] [--policies P1,P2,...] [--limits]\n"
               << "  --quick : fast local profile (3 iterations, reduced sections).\n"
-              << "  --paper : publication mode (10 iterations, full sections).\n";
+              << "  --paper : publication mode (10 iterations, full sections).\n"
+              << "  --policies P1,P2,... : run only the named policies (e.g. --policies ARC,HA5,HA-LOGLIN).\n"
+              << "  --limits : run limit/correctness tests only.\n";
 }
 
 void RunLimitTests() {
@@ -6371,6 +9562,7 @@ int main(int argc, char** argv) {
     const size_t kpp = 32;
 
     ModeConfig mode{"quick", 100000, 3, false};
+    std::set<std::string> policyFilter;
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
         if (arg == "--paper") mode = {"paper", 300000, 10, true};
@@ -6380,6 +9572,25 @@ int main(int argc, char** argv) {
             PrintUsage();
             return 0;
         }
+        else if (arg == "--policies" && i + 1 < argc) {
+            std::string list(argv[++i]);
+            std::istringstream ss(list);
+            std::string tok;
+            while (std::getline(ss, tok, ',')) {
+                while (!tok.empty() && tok[0] == ' ') tok.erase(tok.begin());
+                while (!tok.empty() && tok.back() == ' ') tok.pop_back();
+                if (!tok.empty()) policyFilter.insert(tok);
+            }
+        }
+    }
+
+    if (!policyFilter.empty()) {
+        std::cout << "policy_filter=[" ;
+        for (auto it = policyFilter.begin(); it != policyFilter.end(); ++it) {
+            if (it != policyFilter.begin()) std::cout << ",";
+            std::cout << *it;
+        }
+        std::cout << "]" << std::endl;
     }
 
     std::cout << "=== POLICY BENCHMARK ===" << std::endl;
@@ -6477,92 +9688,153 @@ int main(int argc, char** argv) {
         "HISTATOM3",
         "HISTATOM4",
         "HISTATOM5",
+        "HA-FREQWT",
+        "HA-LOGFRQ",
+        "HA-POPCOLD",
+        "HA-FREQPOP",
+        "HA-RESIDFQ",
+        "HA-POPDEV",
+        "HA-RESIDPOP",
+        "HA-POPDEV-SM",
+        "HA-POPDEV-A",
+        "HA-RESIDFQ-A",
+        "HA-RESIDPOP-A",
+        "HA-VAR",
+        "HA-LIFE",
+        "HA-DENS",
+        "HA-MULT",
+        "HA-RATIO",
+        "HA-LOGLIN",
+        "HA-LOGLIN-VAR",
     };
     constexpr int NPOL = sizeof(policyNames) / sizeof(policyNames[0]);
 
     auto runWorkload = [&](const char* name, const std::vector<uint64_t>& wl) {
         std::map<std::string, std::vector<BenchResult>> samples;
-        for (int i = 0; i < NPOL; i++) samples[policyNames[i]] = {};
+        for (int i = 0; i < NPOL; i++) {
+            if (!policyFilter.empty() && policyFilter.count(policyNames[i]) == 0) continue;
+            samples[policyNames[i]] = {};
+        }
 
         for (int it = 0; it < mode.iterations; it++) {
+            auto run = [&](const char* name, auto& policy) {
+                if (!policyFilter.empty() && policyFilter.count(name) == 0) return;
+                samples[name].push_back(runBench(policy, wl));
+            };
             BareLRU lru(capacity);
-            samples["LRU"].push_back(runBench(lru, wl));
+            run("LRU", lru);
             BareARC arc(capacity);
-            samples["ARC"].push_back(runBench(arc, wl));
+            run("ARC", arc);
             BareARC_Flat arcflat(capacity);
-            samples["ARC-FLAT"].push_back(runBench(arcflat, wl));
+            run("ARC-FLAT", arcflat);
             BareARC_FlatLL arcflatll(capacity);
-            samples["ARC-FLATLL"].push_back(runBench(arcflatll, wl));
+            run("ARC-FLATLL", arcflatll);
             BareARC_FlatLL2 arcflatll2(capacity);
-            samples["ARC-FLATLL2"].push_back(runBench(arcflatll2, wl));
+            run("ARC-FLATLL2", arcflatll2);
             BareARC_Hybrid hybrid(capacity);
-            samples["HYBRID"].push_back(runBench(hybrid, wl));
+            run("HYBRID", hybrid);
             BareARC_Hybrid2 hybrid2(capacity);
-            samples["HYBRID-POS"].push_back(runBench(hybrid2, wl));
+            run("HYBRID-POS", hybrid2);
             BareARC_Hybrid3 hybrid3(capacity);
-            samples["HYBRID-FB"].push_back(runBench(hybrid3, wl));
+            run("HYBRID-FB", hybrid3);
             BareREMARC remarc(capacity, kpp, defaultCfg);
-            samples["REMARC"].push_back(runBench(remarc, wl));
+            run("REMARC", remarc);
             BareREMARC_Opt opt(capacity, kpp, defaultCfg);
-            samples["REMARC-OPT"].push_back(runBench(opt, wl));
+            run("REMARC-OPT", opt);
             BareREMARC_LazyInc li(capacity, kpp, defaultCfg);
-            samples["REMARC-LazyInc"].push_back(runBench(li, wl));
+            run("REMARC-LazyInc", li);
             BareREMARC_S3FIFO s3(capacity, kpp, defaultCfg);
-            samples["REMARC-S3"].push_back(runBench(s3, wl));
+            run("REMARC-S3", s3);
             BareREMARC_LFU lfu(capacity, kpp, defaultCfg);
-            samples["REMARC-LFU"].push_back(runBench(lfu, wl));
+            run("REMARC-LFU", lfu);
             BareREMARC_TinyLFU tlfu(capacity, kpp, defaultCfg);
-            samples["REMARC-TinyLFU"].push_back(runBench(tlfu, wl));
+            run("REMARC-TinyLFU", tlfu);
             BareREMARC_GhostField gf(capacity, kpp, defaultCfg);
-            samples["REMARC-GhostField"].push_back(runBench(gf, wl));
+            run("REMARC-GhostField", gf);
             BareREMARC_GhostGate gg(capacity, kpp, defaultCfg);
-            samples["REMARC-GhostGate"].push_back(runBench(gg, wl));
+            run("REMARC-GhostGate", gg);
             BareREMARC_BloomGate bg(capacity, kpp, defaultCfg);
-            samples["REMARC-BloomGate"].push_back(runBench(bg, wl));
+            run("REMARC-BloomGate", bg);
             BareREMARC_BloomMod bm(capacity, kpp, defaultCfg);
-            samples["REMARC-BloomMod"].push_back(runBench(bm, wl));
+            run("REMARC-BloomMod", bm);
             BareREMARC_Factorized fac(capacity, kpp, defaultCfg);
-            samples["REMARC-FACT"].push_back(runBench(fac, wl));
+            run("REMARC-FACT", fac);
             BareREMARC_TierGhost tg(capacity, kpp, defaultCfg);
-            samples["REMARC-TIER"].push_back(runBench(tg, wl));
+            run("REMARC-TIER", tg);
             BareREMARC_Dual dual(capacity, kpp, defaultCfg);
-            // samples["REMARC-Dual"].push_back(runBench(dual, wl)); // TODO: heap-use-after-free in SubCache::remove (line 2773)
+            run("REMARC-Dual", dual);
             BareREMARC_MultiScale ms(capacity, kpp, defaultCfg);
-            samples["REMARC-MS"].push_back(runBench(ms, wl));
+            run("REMARC-MS", ms);
             BareREMARC_Step step(capacity, kpp, defaultCfg);
-            samples["REMARC-STEP"].push_back(runBench(step, wl));
+            run("REMARC-STEP", step);
             BareREMARC_StepK stepk(capacity, kpp, defaultCfg);
-            samples["REMARC-STEPK"].push_back(runBench(stepk, wl));
+            run("REMARC-STEPK", stepk);
             BareREMARC_Aug_TS augTS4(capacity, kpp, defaultCfg, 64, 4);
-            samples["AUG-TS4"].push_back(runBench(augTS4, wl));
+            run("AUG-TS4", augTS4);
             BareREMARC_Aug_PRED augPRED(capacity, kpp, defaultCfg, 64, 4);
-            samples["AUG-PRED"].push_back(runBench(augPRED, wl));
+            run("AUG-PRED", augPRED);
             BareREMARC_Aug_HEAP augHEAP(capacity, kpp, defaultCfg, 64, 4);
-            samples["AUG-HEAP"].push_back(runBench(augHEAP, wl));
+            run("AUG-HEAP", augHEAP);
             BareREMARC_Aug_BothEnd augBE(capacity, kpp, defaultCfg, 64, 4);
-            samples["AUG-BOTHEND"].push_back(runBench(augBE, wl));
+            run("AUG-BOTHEND", augBE);
             BareREMARC_Aug_ADAPT augADAPT(capacity, kpp, defaultCfg, 64, 4);
-            samples["AUG-ADAPT"].push_back(runBench(augADAPT, wl));
+            run("AUG-ADAPT", augADAPT);
             BareREMARC_Aug_ADAPT_FLAT augADAPTflat(capacity, kpp, defaultCfg, 64, 4);
-            samples["AUG-ADAPT-FLAT"].push_back(runBench(augADAPTflat, wl));
+            run("AUG-ADAPT-FLAT", augADAPTflat);
             BareREMARC_QuotaFree qf(capacity, kpp, defaultCfg, 64, 4);
-            samples["QuotaFree"].push_back(runBench(qf, wl));
+            run("QuotaFree", qf);
             BareREMARC_1L remarc1l(capacity, defaultCfg);
-            samples["REMARC-1L"].push_back(runBench(remarc1l, wl));
+            run("REMARC-1L", remarc1l);
             BareREMARC_2L remarc2l(capacity, kpp, defaultCfg);
-            samples["REMARC-2L"].push_back(runBench(remarc2l, wl));
+            run("REMARC-2L", remarc2l);
             BareREMARC_BLOOM remarcBloom(capacity);
-            samples["REMARC-BLOOM"].push_back(runBench(remarcBloom, wl));
+            run("REMARC-BLOOM", remarcBloom);
             BareREMARC_HistAtom histAtom(capacity, defaultCfg);
-            samples["HISTATOM"].push_back(runBench(histAtom, wl));
+            run("HISTATOM", histAtom);
             BareREMARC_HistAtom2 histAtom2(capacity, defaultCfg);
-            samples["HISTATOM2"].push_back(runBench(histAtom2, wl));
+            run("HISTATOM2", histAtom2);
             BareREMARC_HistAtom3 histAtom3(capacity, defaultCfg);
-            samples["HISTATOM3"].push_back(runBench(histAtom3, wl));
+            run("HISTATOM3", histAtom3);
             BareREMARC_HistAtom4 histAtom4(capacity, defaultCfg);
-            samples["HISTATOM4"].push_back(runBench(histAtom4, wl));
+            run("HISTATOM4", histAtom4);
             BareREMARC_HistAtom5 histAtom5(capacity, defaultCfg);
-            samples["HISTATOM5"].push_back(runBench(histAtom5, wl));
+            run("HISTATOM5", histAtom5);
+            BareREMARC_HistAtom_FreqWeight haFW(capacity, defaultCfg);
+            run("HA-FREQWT", haFW);
+            BareREMARC_HistAtom_LogFreq haLF(capacity, defaultCfg);
+            run("HA-LOGFRQ", haLF);
+            BareREMARC_HistAtom_PopCold haPC(capacity, defaultCfg);
+            run("HA-POPCOLD", haPC);
+            BareREMARC_HistAtom_FreqPop haFP(capacity, defaultCfg);
+            run("HA-FREQPOP", haFP);
+            BareREMARC_HistAtom_ResidFreq haRF(capacity, defaultCfg);
+            run("HA-RESIDFQ", haRF);
+            BareREMARC_HistAtom_PopDev haPD(capacity, defaultCfg);
+            run("HA-POPDEV", haPD);
+            BareREMARC_HistAtom_ResidPop haRP(capacity, defaultCfg);
+            run("HA-RESIDPOP", haRP);
+            BareREMARC_HistAtom_PopDevSM haPDSM(capacity, defaultCfg);
+            run("HA-POPDEV-SM", haPDSM);
+            BareREMARC_HistAtom_PopDevADAPT haPDAD(capacity, defaultCfg);
+            run("HA-POPDEV-A", haPDAD);
+            BareREMARC_HistAtom_ResidFQADAPT haRFAD(capacity, defaultCfg);
+            run("HA-RESIDFQ-A", haRFAD);
+            BareREMARC_HistAtom_ResidPopADAPT haRPAD(capacity, defaultCfg);
+            run("HA-RESIDPOP-A", haRPAD);
+            BareREMARC_HistAtom_VAR haVAR(capacity, defaultCfg);
+            run("HA-VAR", haVAR);
+            BareREMARC_HistAtom_LIFETIME haLIFE(capacity, defaultCfg);
+            run("HA-LIFE", haLIFE);
+            BareREMARC_HistAtom_DENSITY haDENS(capacity, defaultCfg);
+            run("HA-DENS", haDENS);
+            BareREMARC_HistAtom_MULT haMULT(capacity, defaultCfg);
+            run("HA-MULT", haMULT);
+            BareREMARC_HistAtom_RATIO haRAT(capacity, defaultCfg);
+            run("HA-RATIO", haRAT);
+            BareREMARC_HistAtom_LOGLIN haLOG(capacity, defaultCfg);
+            run("HA-LOGLIN", haLOG);
+            BareREMARC_HistAtom_LOGLIN_VAR haLV(capacity, defaultCfg);
+            run("HA-LOGLIN-VAR", haLV);
         }
 
         std::map<std::string, AggBench> agg;
@@ -6590,6 +9862,7 @@ int main(int argc, char** argv) {
         std::cout << std::string(110, '-') << std::endl;
 
         for (int i = 0; i < NPOL; i++) {
+            if (!policyFilter.empty() && policyFilter.count(policyNames[i]) == 0) continue;
             const char* policy = policyNames[i];
             printAggRow(policy, agg[policy]);
 
