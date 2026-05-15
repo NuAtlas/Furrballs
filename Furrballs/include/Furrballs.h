@@ -327,6 +327,7 @@ namespace NuAtlas {
         FurrBall(const FurrConfig& config, size_t numPages) noexcept;
 
         void OnEvict(const size_t& key, Page*& page) noexcept;
+        void OnKeyEvict(int nodeID, const KeyMeta& meta) noexcept;
 
         size_t PageIndexForAddress(size_t address)const noexcept {
             return address & ~(PageSize - 1);

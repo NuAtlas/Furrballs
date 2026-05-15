@@ -9,7 +9,6 @@
 #include <cstring>
 #include <cassert>
 #include <new>
-#include <list>
 #include <string>
 #include <algorithm>
 #include <functional>
@@ -19,39 +18,106 @@
 
 namespace NuAtlas {
 
-    class ArcList {
-        std::list<HashPair> list_;
-        std::unordered_map<uint64_t, std::list<HashPair>::iterator> index_;
+    class FlatList {
+        static constexpr uint32_t NIL = UINT32_MAX;
+
+        struct Slot {
+            HashPair hashes;
+            uint32_t prev;
+            uint32_t next;
+        };
+
+        std::vector<Slot> slots_;
+        std::unordered_map<uint64_t, uint32_t> idx_;
+        uint32_t head_{NIL};
+        uint32_t tail_{NIL};
+        uint32_t freeHead_{NIL};
+        uint32_t count_{0};
+
+        uint32_t allocSlot() {
+            uint32_t s = freeHead_;
+            freeHead_ = slots_[s].next;
+            return s;
+        }
+
+        void freeSlot(uint32_t s) {
+            slots_[s].hashes = {};
+            slots_[s].prev = NIL;
+            slots_[s].next = freeHead_;
+            freeHead_ = s;
+        }
+
     public:
+        explicit FlatList(size_t maxEntries) {
+            slots_.resize(maxEntries);
+            for (size_t i = 0; i < maxEntries; i++) {
+                slots_[i] = {{}, NIL, static_cast<uint32_t>(i + 1)};
+            }
+            slots_[maxEntries - 1].next = NIL;
+            freeHead_ = 0;
+            idx_.reserve(maxEntries);
+        }
+
         bool contains(uint64_t h2) const {
-            return index_.find(h2) != index_.end();
+            return idx_.find(h2) != idx_.end();
         }
+
         void push_front(HashPair hashes) {
-            list_.push_front(hashes);
-            index_[hashes.h2] = list_.begin();
+            uint32_t s = allocSlot();
+            slots_[s].hashes = hashes;
+            slots_[s].prev = NIL;
+            slots_[s].next = head_;
+            if (head_ != NIL) slots_[head_].prev = s;
+            else tail_ = s;
+            head_ = s;
+            idx_[hashes.h2] = s;
+            count_++;
         }
+
         void pop_back() {
-            if (!list_.empty()) {
-                index_.erase(list_.back().h2);
-                list_.pop_back();
-            }
+            if (tail_ == NIL) return;
+            uint32_t s = tail_;
+            idx_.erase(slots_[s].hashes.h2);
+            uint32_t p = slots_[s].prev;
+            if (p != NIL) slots_[p].next = NIL;
+            else head_ = NIL;
+            tail_ = p;
+            freeSlot(s);
+            count_--;
         }
+
         void erase(uint64_t h2) {
-            auto it = index_.find(h2);
-            if (it != index_.end()) {
-                list_.erase(it->second);
-                index_.erase(it);
-            }
+            auto it = idx_.find(h2);
+            if (it == idx_.end()) return;
+            uint32_t s = it->second;
+            idx_.erase(it);
+            uint32_t p = slots_[s].prev, n = slots_[s].next;
+            if (p != NIL) slots_[p].next = n;
+            else head_ = n;
+            if (n != NIL) slots_[n].prev = p;
+            else tail_ = p;
+            freeSlot(s);
+            count_--;
         }
+
         void splice_front(uint64_t h2) {
-            auto it = index_.find(h2);
-            if (it != index_.end()) {
-                list_.splice(list_.begin(), list_, it->second);
-            }
+            auto it = idx_.find(h2);
+            if (it == idx_.end()) return;
+            uint32_t s = it->second;
+            if (s == head_) return;
+            uint32_t p = slots_[s].prev, n = slots_[s].next;
+            if (p != NIL) slots_[p].next = n;
+            if (n != NIL) slots_[n].prev = p;
+            else tail_ = p;
+            slots_[s].prev = NIL;
+            slots_[s].next = head_;
+            if (head_ != NIL) slots_[head_].prev = s;
+            head_ = s;
         }
-        HashPair back() const { return list_.back(); }
-        size_t size() const { return list_.size(); }
-        bool empty() const { return list_.empty(); }
+
+        HashPair back() const { return slots_[tail_].hashes; }
+        size_t size() const { return count_; }
+        bool empty() const { return count_ == 0; }
     };
 
     // TODO: Per-thread sharded PromoteBuf for high thread counts (100+).
@@ -67,7 +133,7 @@ namespace NuAtlas {
     //           }
     //           return *mine;
     //       }
-    //       void drainAll(ArcList& t1, ArcList& t2) {
+    //       void drainAll(FlatList& t1, FlatList& t2) {
     //           for (auto* buf = head.load(acquire); buf; buf = buf->next)
     //               buf->drain(t1, t2);
     //       }
@@ -99,7 +165,7 @@ namespace NuAtlas {
             return (pos + 1) % kDrainEvery != 0;
         }
 
-        void drain(ArcList& t1, ArcList& t2) {
+        void drain(FlatList& t1, FlatList& t2) {
             size_t head = writeHead_.load(std::memory_order_acquire);
             size_t drained = 0;
             while (drainTail_ < head && drained < kCapacity) {
@@ -449,7 +515,7 @@ namespace NuAtlas {
 
     private:
         CMap<Value> store_;
-        ArcList t1_, t2_, b1_, b2_;
+        FlatList t1_, t2_, b1_, b2_;
         SpinLock arcLock_;
         PromoteBuf promoteBuf_;
         size_t capacity_;
@@ -507,7 +573,8 @@ namespace NuAtlas {
 
     public:
         ConcurrentARC(size_t cap, CMapAllocFn af = CMapDefaultAlloc, CMapFreeFn ff = CMapDefaultFree)
-            : store_(cap, af, ff), capacity_(cap), p_(0) {}
+            : store_(cap, af, ff), t1_(2 * cap), t2_(2 * cap), b1_(2 * cap), b2_(2 * cap),
+              capacity_(cap), p_(0) {}
 
         void SetEvictionCallback(EvictionCallback cb) { evictionCallback_ = cb; }
 
@@ -856,7 +923,7 @@ namespace NuAtlas {
     //  AugAdaptStore: ARC cache with AugAdaptScorer
     // =================================================================
     //
-    //  Uses CMap<Value> for storage + ArcList for ARC structure +
+    //  Uses CMap<Value> for storage + FlatList for ARC structure +
     //  AugAdaptScorer for eviction decisions. Same public interface as
     //  ConcurrentARC so it's a drop-in Store replacement.
 
@@ -871,7 +938,7 @@ namespace NuAtlas {
         static constexpr uint8_t demoteThresh_ = 4;
 
         CMap<Value> store_;
-        ArcList t1_, t2_, b1_, b2_;
+        FlatList t1_, t2_, b1_, b2_;
         AugAdaptScorer scorer_;
         SpinLock lock_;
         PromoteBuf promoteBuf_;
@@ -943,7 +1010,8 @@ namespace NuAtlas {
 
     public:
         AugAdaptStore(size_t cap, CMapAllocFn af = CMapDefaultAlloc, CMapFreeFn ff = CMapDefaultFree)
-            : store_(cap, af, ff), scorer_(cap), capacity_(cap), p_(0) {}
+            : store_(cap, af, ff), t1_(2 * cap), t2_(2 * cap), b1_(2 * cap), b2_(2 * cap),
+              scorer_(cap), capacity_(cap), p_(0) {}
 
         void SetEvictionCallback(EvictionCallback cb) { evictionCallback_ = cb; }
 

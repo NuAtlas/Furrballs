@@ -241,6 +241,37 @@ void NuAtlas::FurrBall<Policy>::OnEvict(const size_t& key, Page*& page) noexcept
 }
 
 template<typename Policy>
+void NuAtlas::FurrBall<Policy>::OnKeyEvict(int nodeID, const KeyMeta& meta) noexcept {
+    auto* details = DataMembers->privateNumaState->NodeDetails[nodeID];
+    if (!details || meta.PageIndex >= details->NodePages.size()) return;
+
+    Page& page = details->NodePages[meta.PageIndex];
+    if (meta.TempCtrlIdx >= page.KeyIndex.size()) return;
+
+    HashPair swappedHp = page.RemoveKeyEntry(meta.TempCtrlIdx);
+
+    size_t offset = reinterpret_cast<size_t>(meta.DataOffset) -
+                    reinterpret_cast<size_t>(page.Data);
+    page.AddFreeSlot(static_cast<uint32_t>(offset), static_cast<uint32_t>(meta.DataSize));
+
+    if (swappedHp.h2 != 0) {
+        details->KeyStore.UpdateInPlaceByHash(swappedHp,
+            [idx = meta.TempCtrlIdx](KeyMeta& m) {
+                m.TempCtrlIdx = static_cast<uint8_t>(idx);
+            });
+    }
+
+    if (page.ActiveKeys.load(std::memory_order_relaxed) == 0) {
+        page.Recycle();
+        page.Tier.store(PageTier::Hot, std::memory_order_release);
+        Stats.PagesReclaimed.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    Stats.EvictionCount.fetch_add(1, std::memory_order_relaxed);
+    Stats.PerKeyEvictionCount.fetch_add(1, std::memory_order_relaxed);
+}
+
+template<typename Policy>
 void* NuAtlas::FurrBall<Policy>::Get(void* vAddress) noexcept {
     if (!vAddress) return nullptr;
 
@@ -1510,7 +1541,7 @@ FurrBall<Policy> *FurrBall<Policy>::CreateBall(const std::string &DBpath, const 
                 }
                 
                 pNumaState->NodeDetails[i] = details;
-                
+
                 wg.Done();
                 Logger::getInstance().info("NUMA Node page allocator called WaitGroup::Done().");
             });
@@ -1543,7 +1574,17 @@ FurrBall<Policy> *FurrBall<Policy>::CreateBall(const std::string &DBpath, const 
     fb->DataMembers->db = db;
     fb->DataMembers->privateNumaState = pNumaState;
     fb->cache.SetEvictionCallback([fb](const size_t& k, Page*& v)->void { fb->OnEvict(k, v); });
-    
+
+    for (int i = 0; i < Detail::globalNumaState.NumaNodeCount; i++) {
+        auto* details = pNumaState->NodeDetails[i];
+        if (details) {
+            details->KeyStore.SetEvictionCallback(
+                [fb, nodeID = i](const KeyMeta& meta) noexcept {
+                    fb->OnKeyEvict(nodeID, meta);
+                });
+        }
+    }
+
     OpenBalls.push_back(fb);
     
     return fb;
