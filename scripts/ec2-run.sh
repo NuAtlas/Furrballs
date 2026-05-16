@@ -50,6 +50,17 @@ numactl --cpunodebind=0 --membind=0 \
   --benchmark_repetitions=3 \
   2>&1 | tee "$RESULTS_DIR/baselines-node0-$TIMESTAMP.log"
 
+# 4. NUMA topology benchmark — multi-threaded, per-node pinning
+#    Tests: FurrBall ThreadLocal vs RoundRobin vs TBB (NUMA-blind)
+#    Workloads: partitioned, shared, trace replay
+#    This is the paper's core benchmark.
+echo "--- NUMA topology benchmark ---"
+"$BUILD_DIR/Benchmark/NUMABench" \
+  --benchmark_out="$RESULTS_DIR/numabench-$TIMESTAMP.json" \
+  --benchmark_out_format=json \
+  --benchmark_repetitions=3 \
+  2>&1 | tee "$RESULTS_DIR/numabench-$TIMESTAMP.log"
+
 echo "=== $(date) Run complete ==="
 echo "Results in $RESULTS_DIR/"
 ls -la "$RESULTS_DIR/"*$TIMESTAMP*

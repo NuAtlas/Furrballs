@@ -53,10 +53,11 @@ mkdir -p "$BUILD_DIR"
 cmake -S "$REPO_DIR" -B "$BUILD_DIR" \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
-cmake --build "$BUILD_DIR" --target FurrBench -j$(nproc)
+cmake --build "$BUILD_DIR" --target FurrBench NUMABench -j$(nproc)
 
 echo "=== $(date) Init complete ==="
 echo "Build: $BUILD_DIR/Benchmark/FurrBench"
+echo "       $BUILD_DIR/Benchmark/NUMABench"
 echo "Trace: $TRACE_DIR/twitter_cluster52.csv"
 echo "NUMA:  /tmp/furrballs-numa.txt"
 echo ""
