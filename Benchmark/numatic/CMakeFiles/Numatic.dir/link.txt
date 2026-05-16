@@ -1,2 +1,0 @@
-/usr/bin/ar qc libNumatic.a CMakeFiles/Numatic.dir/src/NumaticUnix.cpp.o
-/usr/bin/ranlib libNumatic.a

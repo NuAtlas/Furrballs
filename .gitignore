@@ -84,6 +84,17 @@ Benchmark/vcpkg_installed/
 vcpkg_installed/
 docs/policybench-2x2-factorial.txt
 
+# Benchmark build artifacts
+Benchmark/CMakeCache.txt
+Benchmark/CMakeFiles/
+Benchmark/Makefile
+Benchmark/cmake_install.cmake
+Benchmark/Benchmark/
+Benchmark/Furrballs/
+Benchmark/FurrballsSM/
+Benchmark/Sandbox/
+Benchmark/numatic/
+
 # .NET Core
 project.lock.json
 project.fragment.lock.json
