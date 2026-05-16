@@ -370,21 +370,64 @@ struct TBBAdapter {
     }
 };
 
-// --- cachelib placeholder adapter ---
-// Will be implemented when cachelib is available.
-// Uncomment and fill in when building with cachelib.
-//
-// struct CacheLibAdapter {
-//     static constexpr const char* Name = "CacheLib";
-//     // facebook::cachelib::LruAllocator::Config config;
-//     // facebook::cachelib::LruAllocator* allocator = nullptr;
-//     // facebook::cachelib::PoolId pool;
-//
-//     void create(int nodeCount, int pagesPerNode) { ... }
-//     bool get(const std::string& key, uint8_t* buf, size_t bufSize, size_t& outSize) { ... }
-//     void put(const std::string& key, const uint8_t* data, size_t size) { ... }
-//     void destroy() { ... }
-// };
+// --- cachelib adapter ---
+#ifdef USE_CACHELIB
+#include <cachelib/allocator/CacheAllocator.h>
+
+struct CacheLibAdapter {
+    static constexpr const char* Name = "CacheLib";
+
+    using LruAllocator = facebook::cachelib::LruAllocator;
+    using PoolId = facebook::cachelib::PoolId;
+
+    static constexpr size_t PAGE_SIZE = 4096;
+
+    std::unique_ptr<LruAllocator> cache;
+    PoolId pool;
+    size_t cacheSizeBytes;
+
+    void create(int, int pagesPerNode) {
+        cacheSizeBytes = (size_t)pagesPerNode * PAGE_SIZE;
+        if (cacheSizeBytes < 4 * 1024 * 1024) cacheSizeBytes = 4 * 1024 * 1024;
+
+        LruAllocator::Config config;
+        config.setCacheName("numabench_cachelib");
+        config.setCacheSize(cacheSizeBytes);
+        config.enablePoolRebalancing = false;
+        config.enablePoolResizing = false;
+
+        std::set<uint32_t> allocSizes = {64, 128, 256, 512, 1024, 2048};
+        config.setDefaultAllocSizes(allocSizes);
+
+        cache = std::make_unique<LruAllocator>(LruAllocator::SharedMemNewT{}, config);
+        pool = cache->addPool("default", cacheSizeBytes * 9 / 10);
+    }
+
+    bool get(const std::string& key, uint8_t* buf, size_t bufSize, size_t& outSize) {
+        auto handle = cache->find(key);
+        if (handle) {
+            outSize = handle->getSize();
+            if (bufSize >= outSize) {
+                memcpy(buf, handle->getMemory(), outSize);
+            }
+            return true;
+        }
+        return false;
+    }
+
+    void put(const std::string& key, const uint8_t* data, size_t size) {
+        auto handle = cache->allocate(pool, key, size);
+        if (handle) {
+            memcpy(handle->getMemory(), data, size);
+            cache->insertOrReplace(handle);
+        }
+    }
+
+    void destroy() {
+        cache.reset();
+    }
+};
+#endif
 
 // ============================================================================
 //  Thread runner — pins to NUMA node, runs workload, returns per-thread result
@@ -585,9 +628,26 @@ BENCHMARK_REGISTER_F(NUMABench_TBB, Run)
     ->Iterations(3)
     ->Unit(benchmark::kMicrosecond);
 
-// ============================================================================
-//  main — must TeardownNodes() after benchmarks to clean up FurrBall workers
-// ============================================================================
+// --- CacheLib (production LRU cache, Facebook/Meta) ---
+
+#ifdef USE_CACHELIB
+struct NUMABench_CacheLib : NUMABench<CacheLibAdapter> {};
+BENCHMARK_DEFINE_F(NUMABench_CacheLib, Run)(benchmark::State& state) {
+    RunNUMABench<CacheLibAdapter>(state, trace);
+}
+BENCHMARK_REGISTER_F(NUMABench_CacheLib, Run)
+    ->Args({1, 64, 0})
+    ->Args({1, 64, 1})
+    ->Args({2, 64, 0})
+    ->Args({2, 64, 1})
+    ->Args({2, 64, 2})
+    ->Args({2, 16, 0})
+    ->Args({2, 16, 1})
+    ->Args({2, 256, 0})
+    ->Args({2, 256, 1})
+    ->Iterations(3)
+    ->Unit(benchmark::kMicrosecond);
+#endif
 
 int main(int argc, char** argv) {
     benchmark::Initialize(&argc, argv);
