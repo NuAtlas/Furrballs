@@ -398,7 +398,7 @@ struct CacheLibAdapter {
         LruAllocator::Config config;
         config.setCacheName("numabench_cl");
         config.setCacheSize(cacheSizeBytes);
-        config.usePosixForShm = true;
+        config.usePosixForShm();
         config.cacheDir = cacheDir;
 
         std::set<uint32_t> allocSizes = {64, 128, 256, 512, 1024, 2048};
