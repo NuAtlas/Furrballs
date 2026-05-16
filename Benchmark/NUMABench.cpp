@@ -393,8 +393,6 @@ struct CacheLibAdapter {
         LruAllocator::Config config;
         config.setCacheName("numabench_cachelib");
         config.setCacheSize(cacheSizeBytes);
-        config.enablePoolRebalancing = false;
-        config.enablePoolResizing = false;
 
         std::set<uint32_t> allocSizes = {64, 128, 256, 512, 1024, 2048};
         config.setDefaultAllocSizes(allocSizes);
