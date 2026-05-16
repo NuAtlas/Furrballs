@@ -1249,7 +1249,8 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
 
     size_t pageIdx = details->CurrentPage.load(std::memory_order_relaxed);
     void* Loc = nullptr;
-    bool didRotate = false;
+    [[maybe_unused]] bool didRotate = false;
+
     while (true) {
         if (pageIdx >= details->NodePages.size()) {
             if constexpr (!Policy::HasStoreEviction) {
@@ -1368,10 +1369,24 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
         }
         Loc = details->NodePages[pageIdx].TryBump(size);
         if (Loc) break;
-        Loc = details->NodePages[pageIdx].TryAllocFromFree(size);
+        for (size_t p = 0; p < details->NodePages.size(); p++) {
+            Loc = details->NodePages[p].TryAllocFromFree(size);
+            if (Loc) { pageIdx = p; break; }
+        }
         if (Loc) break;
         size_t nextIdx = pageIdx + 1;
         if (nextIdx >= details->NodePages.size()) {
+            if constexpr (Policy::HasStoreEviction) {
+                bool evicted = details->KeyStore.ForceEvictOne();
+                if (evicted) {
+                    for (size_t p = 0; p < details->NodePages.size(); p++) {
+                        Loc = details->NodePages[p].TryAllocFromFree(size);
+                        if (Loc) { pageIdx = p; break; }
+                    }
+                }
+                if (!Loc) return OUT_OF_MEM;
+                break;
+            }
             size_t evictedSz = EvictOneKey(targetNode);
             if (evictedSz > 0) {
                 for (size_t r = 0; r < details->NodePages.size(); r++) {
@@ -1456,16 +1471,20 @@ void NuAtlas::FurrBall<Policy>::Shutdown()
     {
         delete fb;
     }
+    OpenBalls.clear();
 
     auto& gs = Detail::globalNumaState;
     if (!gs.Initialized) return;
     gs.Initialized = false;
 
     for(int i = 0; i < gs.NumaNodeCount; i++){
-        gs.Workers[i].~NodeJob();
+        if (gs.Workers) gs.Workers[i].Stop();
+    }
+    for(int i = 0; i < gs.NumaNodeCount; i++){
+        if (gs.Workers) gs.Workers[i].~NodeJob();
     }
     free(gs.Workers);
-    gs.Workers = nullptr;
+    gs = {};
 }
 
 template<typename Policy>

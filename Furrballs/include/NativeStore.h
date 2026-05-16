@@ -283,6 +283,11 @@ namespace NuAtlas {
             evictionCallback_ = std::move(cb);
         }
 
+        bool ForceEvictOne() {
+            std::lock_guard<SpinLock> guard(lock_);
+            return evictColdestLocked();
+        }
+
         uint8_t GetDesire(uint64_t h2) const noexcept {
             size_t idx = probe(h2);
             if (idx == SIZE_MAX || !slots_[idx].occupied) return 0;

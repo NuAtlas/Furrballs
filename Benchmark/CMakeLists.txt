@@ -26,3 +26,15 @@ target_include_directories(MultiNodeBench PRIVATE "${CMAKE_SOURCE_DIR}/Furrballs
 target_link_libraries(MultiNodeBench PRIVATE Furrballs Numatic Threads::Threads)
 find_package(RocksDB CONFIG REQUIRED)
 target_link_libraries(MultiNodeBench PRIVATE RocksDB::rocksdb)
+
+find_package(benchmark CONFIG REQUIRED)
+
+add_executable(FurrBench "FurrBench.cpp")
+target_include_directories(FurrBench PRIVATE "${CMAKE_SOURCE_DIR}/Furrballs/include" "${CMAKE_SOURCE_DIR}/numatic/include")
+target_link_libraries(FurrBench PRIVATE Furrballs Numatic Threads::Threads benchmark::benchmark)
+find_package(RocksDB CONFIG REQUIRED)
+target_link_libraries(FurrBench PRIVATE RocksDB::rocksdb)
+find_package(TBB CONFIG REQUIRED)
+target_link_libraries(FurrBench PRIVATE TBB::tbb)
+target_include_directories(FurrBench PRIVATE /usr/include)
+target_link_libraries(FurrBench PRIVATE memcached)

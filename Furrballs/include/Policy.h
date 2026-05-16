@@ -50,7 +50,7 @@ namespace NuAtlas {
         static constexpr bool HasMigration   = false;
         static constexpr bool HasScanner     = false;
         static constexpr bool HasDesire      = false;
-        static constexpr bool HasStoreEviction = false;
+        static constexpr bool HasStoreEviction = true;
         static constexpr bool HasRemarcConfig   = false;
 
         static Config MakeConfig(const RemarcConfig&) noexcept { return {}; }

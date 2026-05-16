@@ -578,6 +578,30 @@ namespace NuAtlas {
 
         void SetEvictionCallback(EvictionCallback cb) { evictionCallback_ = cb; }
 
+        bool ForceEvictOne() {
+            std::lock_guard<SpinLock> guard(arcLock_);
+            promoteBuf_.drain(t1_, t2_);
+            if (!t1_.empty() && (t1_.size() > p_ || t2_.empty())) {
+                HashPair old = t1_.back();
+                auto result = store_.FindAndEraseByHash(old);
+                if (result.err != NO_ERR) return false;
+                t1_.pop_back();
+                b1_.push_front(old);
+                if (result.value) evictionCallback_(*result.value);
+                return true;
+            }
+            if (!t2_.empty()) {
+                HashPair old = t2_.back();
+                auto result = store_.FindAndEraseByHash(old);
+                if (result.err != NO_ERR) return false;
+                t2_.pop_back();
+                b2_.push_front(old);
+                if (result.value) evictionCallback_(*result.value);
+                return true;
+            }
+            return false;
+        }
+
         uint8_t GetDesire(uint64_t) const { return 0; }
 
         std::optional<Value> Find(const std::string& key) {

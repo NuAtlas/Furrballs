@@ -96,6 +96,7 @@ namespace NuAtlas {
         size_t GetUsedMemory() const noexcept { return UsedMemory.load(); }
         size_t GetTotalAllocated() const noexcept { return TotalAllocated.load(); }
         unsigned int GetEvictionCount() const noexcept { return EvictionCount.load(); }
+        unsigned int GetPerKeyEvictionCount() const noexcept { return PerKeyEvictionCount.load(); }
         unsigned int GetHitCount() const noexcept { return HitCount.load(); }
         unsigned int GetMissCount() const noexcept { return MissCount.load(); }
         size_t GetBytesWritten() const noexcept { return BytesWritten.load(); }

@@ -75,6 +75,14 @@ dlldata.c
 
 # Benchmark Results
 BenchmarkDotNet.Artifacts/
+BP_P*/
+_bn_*/
+policy-bench*
+Benchmark/PolicyBench
+Benchmark/PolicyBench_fast
+Benchmark/vcpkg_installed/
+vcpkg_installed/
+docs/policybench-2x2-factorial.txt
 
 # .NET Core
 project.lock.json
