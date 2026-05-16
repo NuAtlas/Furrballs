@@ -404,7 +404,7 @@ struct CacheLibAdapter {
         config.setDefaultAllocSizes(allocSizes);
 
         cache = std::make_unique<LruAllocator>(config);
-        pool = cache->addPool("default", cache->getCacheMemoryAvailable());
+        pool = cache->addPool("default", cacheSizeBytes / 2);
     }
 
     bool get(const std::string& key, uint8_t* buf, size_t bufSize, size_t& outSize) {
