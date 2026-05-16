@@ -385,14 +385,21 @@ struct CacheLibAdapter {
     std::unique_ptr<LruAllocator> cache;
     PoolId pool;
     size_t cacheSizeBytes;
+    static int runId;
+    std::string cacheDir;
 
     void create(int, int pagesPerNode) {
         cacheSizeBytes = (size_t)pagesPerNode * PAGE_SIZE;
         if (cacheSizeBytes < 4 * 1024 * 1024) cacheSizeBytes = 4 * 1024 * 1024;
 
+        cacheDir = "/tmp/cachelib_numabench_" + std::to_string(runId++);
+        mkdir(cacheDir.c_str(), 0755);
+
         LruAllocator::Config config;
-        config.setCacheName("numabench_cachelib");
+        config.setCacheName("numabench_cl");
         config.setCacheSize(cacheSizeBytes);
+        config.usePosixForShm = true;
+        config.cacheDir = cacheDir;
 
         std::set<uint32_t> allocSizes = {64, 128, 256, 512, 1024, 2048};
         config.setDefaultAllocSizes(allocSizes);
@@ -423,8 +430,13 @@ struct CacheLibAdapter {
 
     void destroy() {
         cache.reset();
+        if (!cacheDir.empty()) {
+            std::string rm = "rm -rf " + cacheDir;
+            system(rm.c_str());
+        }
     }
 };
+int CacheLibAdapter::runId = 0;
 #endif
 
 // ============================================================================
