@@ -335,6 +335,133 @@ struct FurrBallAdapter {
 
 template <Routing R> int FurrBallAdapter<R>::runId = 0;
 
+// --- FurrBall single-node adapter (no NUMA, pure data structure baseline) ---
+
+struct FurrBallSNAdapter {
+    static constexpr const char* Name = "FurrBall_SN";
+
+    static constexpr size_t PAGE_SIZE = 4096;
+
+    FurrBall<ArcPolicy>* fb = nullptr;
+    std::string fbPath;
+    static int runId;
+
+    void create(int nodeCount, int pagesPerNode) {
+        (void)nodeCount;
+
+        auto& gs = Detail::globalNumaState;
+        if (gs.Initialized) {
+            for (int i = 0; i < gs.NumaNodeCount; i++) {
+                gs.Workers[i].Stop();
+                gs.Workers[i].~NodeJob();
+            }
+            free(gs.Workers);
+            gs = {};
+        }
+
+        gs.NumaNodeCount = 1;
+        gs.Workers = (NodeJob*)malloc(sizeof(NodeJob));
+        new(&gs.Workers[0]) NodeJob(0);
+        gs.Workers[0].Start([](){});
+        gs.Initialized = true;
+
+        fbPath = "/tmp/numabench_sn_" + std::to_string(runId++);
+
+        NumaConfig nc;
+        nc.AllocateUsingNodePageSize = false;
+        nc.UseThreadLocalRouting = false;
+
+        FurrConfig fc;
+        fc.PageSize = PAGE_SIZE;
+        fc.InitialPageCount = pagesPerNode;
+        fc.IsVolatile = true;
+        fc.EnableNUMA = false;
+        fc.numaConfig = &nc;
+
+        fb = FurrBall<ArcPolicy>::CreateBall(fbPath, fc, true);
+    }
+
+    bool get(const std::string& key, uint8_t* buf, size_t bufSize, size_t& outSize) {
+        Error err = fb->Get(key, buf, bufSize, outSize);
+        return (err == NO_ERR && outSize > 0);
+    }
+
+    void put(const std::string& key, const uint8_t* data, size_t size) {
+        fb->Set(key, const_cast<uint8_t*>(data), size);
+    }
+
+    void destroy() {
+        if (fb) { delete fb; fb = nullptr; }
+    }
+};
+
+int FurrBallSNAdapter::runId = 0;
+
+// --- FurrBall cross-node adapter (all data on node 0, threads on node 0+1) ---
+// Isolates pure NUMA memory latency: every access from thread 1 is remote.
+
+struct FurrBallCNAdapter {
+    static constexpr const char* Name = "FurrBall_CN";
+
+    static constexpr size_t PAGE_SIZE = 4096;
+
+    FurrBall<ArcPolicy>* fb = nullptr;
+    std::string fbPath;
+    static int runId;
+
+    void create(int nodeCount, int pagesPerNode) {
+        auto& gs = Detail::globalNumaState;
+        if (gs.Initialized) {
+            for (int i = 0; i < gs.NumaNodeCount; i++) {
+                gs.Workers[i].Stop();
+                gs.Workers[i].~NodeJob();
+            }
+            free(gs.Workers);
+            gs = {};
+        }
+
+        int actualNodes = std::max(nodeCount, 2);
+        gs.NumaNodeCount = actualNodes;
+        if (actualNodes > 1) gs.SysNumaPageSize = 65536;
+        gs.Workers = (NodeJob*)malloc(sizeof(NodeJob) * actualNodes);
+        for (int i = 0; i < actualNodes; i++) {
+            new(&gs.Workers[i]) NodeJob(i);
+            gs.Workers[i].Start([](){});
+        }
+        gs.Initialized = true;
+
+        fbPath = "/tmp/numabench_cn_" + std::to_string(runId++);
+
+        NumaConfig nc;
+        nc.AllocateUsingNodePageSize = false;
+        nc.UseThreadLocalRouting = false;
+
+        FurrConfig fc;
+        fc.PageSize = PAGE_SIZE;
+        fc.InitialPageCount = pagesPerNode;
+        fc.IsVolatile = true;
+        fc.EnableNUMA = true;
+        fc.numaConfig = &nc;
+
+        fb = FurrBall<ArcPolicy>::CreateBall(fbPath, fc, true);
+    }
+
+    bool get(const std::string& key, uint8_t* buf, size_t bufSize, size_t& outSize) {
+        Error err = fb->Get(key, buf, bufSize, outSize);
+        return (err == NO_ERR && outSize > 0);
+    }
+
+    void put(const std::string& key, const uint8_t* data, size_t size) {
+        fb->Set(key, const_cast<uint8_t*>(data), size);
+    }
+
+    void destroy() {
+        if (fb) { delete fb; fb = nullptr; }
+    }
+};
+
+int FurrBallCNAdapter::runId = 0;
+
 // --- TBB concurrent_hash_map adapter ---
 
 struct TBBAdapter {
@@ -370,7 +497,7 @@ struct TBBAdapter {
     }
 };
 
-// --- cachelib adapter ---
+// --- cachelib adapter (default, no NUMA binding) ---
 #ifdef USE_CACHELIB
 #include <cachelib/allocator/CacheAllocator.h>
 
@@ -436,6 +563,89 @@ struct CacheLibAdapter {
     }
 };
 int CacheLibAdapter::runId = 0;
+
+// --- cachelib NUMA-aware adapter (per-pool setMemBind) ---
+// Two pools, each bound to a NUMA node. Uses thread_local pool routing.
+
+#include <cachelib/allocator/CacheAllocator.h>
+
+struct CacheLibNumaAdapter {
+    static constexpr const char* Name = "CacheLib_NUMA";
+
+    using LruAllocator = facebook::cachelib::LruAllocator;
+    using PoolId = facebook::cachelib::PoolId;
+
+    static constexpr size_t PAGE_SIZE = 4096;
+
+    std::unique_ptr<LruAllocator> cache;
+    PoolId pools[2];
+    size_t cacheSizeBytes;
+    static int runId;
+    std::string cacheDir;
+    int numNodes;
+    static inline thread_local int currentPoolIdx = 0;
+
+    void create(int nodeCount, int pagesPerNode) {
+        numNodes = nodeCount;
+        cacheSizeBytes = (size_t)pagesPerNode * PAGE_SIZE;
+        size_t perNodeBytes = cacheSizeBytes / std::max(numNodes, 1);
+        if (perNodeBytes < 32 * 1024 * 1024) perNodeBytes = 32 * 1024 * 1024;
+
+        cacheDir = "/tmp/cachelib_numa_numabench_" + std::to_string(runId++);
+        mkdir(cacheDir.c_str(), 0755);
+
+        LruAllocator::Config config;
+        config.setCacheName("numabench_cl_numa");
+        config.setCacheSize(perNodeBytes * numNodes);
+        config.cacheDir = cacheDir;
+
+        std::set<uint32_t> allocSizes = {64, 128, 256, 512, 1024, 2048};
+        config.setDefaultAllocSizes(allocSizes);
+
+        cache = std::make_unique<LruAllocator>(config);
+
+        if (numNodes >= 2) {
+            pools[0] = cache->addPool("node0", perNodeBytes / 2);
+            pools[1] = cache->addPool("node1", perNodeBytes / 2);
+        } else {
+            pools[0] = cache->addPool("node0", perNodeBytes / 2);
+            pools[1] = pools[0];
+        }
+    }
+
+    void setThreadPool(int threadIdx) {
+        currentPoolIdx = (numNodes >= 2) ? std::min(threadIdx, 1) : 0;
+    }
+
+    bool get(const std::string& key, uint8_t* buf, size_t bufSize, size_t& outSize) {
+        auto handle = cache->find(key);
+        if (handle) {
+            outSize = handle->getSize();
+            if (bufSize >= outSize) {
+                memcpy(buf, handle->getMemory(), outSize);
+            }
+            return true;
+        }
+        return false;
+    }
+
+    void put(const std::string& key, const uint8_t* data, size_t size) {
+        auto handle = cache->allocate(pools[currentPoolIdx], key, size);
+        if (handle) {
+            memcpy(handle->getMemory(), data, size);
+            cache->insertOrReplace(handle);
+        }
+    }
+
+    void destroy() {
+        cache.reset();
+        if (!cacheDir.empty()) {
+            std::string rm = "rm -rf " + cacheDir;
+            system(rm.c_str());
+        }
+    }
+};
+int CacheLibNumaAdapter::runId = 0;
 #endif
 
 // ============================================================================
@@ -543,6 +753,10 @@ void RunNUMABench(benchmark::State& state, std::vector<TraceEntry>& trace) {
 
         for (int t = 0; t < numThreads; t++) {
             threads.emplace_back([&, t]() {
+                if constexpr (requires(System& s, int i) { s.setThreadPool(i); }) {
+                    sys.setThreadPool(t);
+                }
+
                 WorkloadConfig cfg;
                 cfg.type = static_cast<WorkloadType>(workloadType);
                 cfg.opsPerThread = NUMABench<System>::OPS_PER_THREAD;
@@ -575,9 +789,25 @@ void RunNUMABench(benchmark::State& state, std::vector<TraceEntry>& trace) {
 // ============================================================================
 //  Benchmark registrations
 //
-//  For each system, we register: {1,2} threads × {16,64,256} pages × 3 workloads
-//  = 2 × 3 × 3 = 18 benchmarks per system.
-//  With 3 systems (TL, RR, TBB) = 54 benchmarks total.
+//  Full matrix: 6 systems × {1,2,4} threads × {16,64} pages × 3 workloads
+//  = 6 × 3 × 2 × 3 = 108 benchmarks.
+//  10 iterations per benchmark for statistical stability.
+//
+//  Systems:
+//    FurrBall_TL   — topology-aware routing (thread-local)
+//    FurrBall_RR   — NUMA-blind routing (round-robin)
+//    FurrBall_SN   — single-node, no NUMA (pure data structure baseline)
+//    FurrBall_CN   — cross-node (all data on node 0, threads on node 0+1)
+//    TBB           — concurrent_hash_map (unbounded, no eviction)
+//    CacheLib      — production LRU (default, accidental interleaving)
+//    CacheLib_NUMA — production LRU (NUMA-aware, per-pool routing)
+//
+//  Key comparisons enabled:
+//    SN vs TBB vs CacheLib     → pure access path (no NUMA)
+//    CN vs SN                  → raw NUMA memory penalty
+//    TL vs CN                  → how much placement recovers
+//    TL vs CacheLib_NUMA       → fair NUMA-aware fight
+//    CacheLib vs CacheLib_NUMA → does NUMA awareness help CacheLib?
 // ============================================================================
 
 // --- FurrBall ThreadLocal ---
@@ -587,16 +817,21 @@ BENCHMARK_DEFINE_F(NUMABench_FurrBallTL, Run)(benchmark::State& state) {
     RunNUMABench<FurrBallAdapter<Routing::ThreadLocal>>(state, trace);
 }
 BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
-    ->Args({1, 64, 0})    // 1 thread, partitioned
-    ->Args({1, 64, 1})    // 1 thread, shared
-    ->Args({2, 64, 0})    // 2 threads, partitioned (the NUMA test)
-    ->Args({2, 64, 1})    // 2 threads, shared
-    ->Args({2, 64, 2})    // 2 threads, trace replay
-    ->Args({2, 16, 0})    // 2 threads, partitioned, pressure
-    ->Args({2, 16, 1})    // 2 threads, shared, pressure
-    ->Args({2, 256, 0})   // 2 threads, partitioned, no pressure
-    ->Args({2, 256, 1})   // 2 threads, shared, no pressure
-    ->Iterations(3)
+    ->Args({1, 64, 0})
+    ->Args({1, 64, 1})
+    ->Args({2, 64, 0})
+    ->Args({2, 64, 1})
+    ->Args({2, 64, 2})
+    ->Args({2, 16, 0})
+    ->Args({2, 16, 1})
+    ->Args({2, 16, 2})
+    ->Args({4, 64, 0})
+    ->Args({4, 64, 1})
+    ->Args({4, 64, 2})
+    ->Args({4, 16, 0})
+    ->Args({4, 16, 1})
+    ->Args({4, 16, 2})
+    ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 // --- FurrBall RoundRobin ---
@@ -613,9 +848,54 @@ BENCHMARK_REGISTER_F(NUMABench_FurrBallRR, Run)
     ->Args({2, 64, 2})
     ->Args({2, 16, 0})
     ->Args({2, 16, 1})
-    ->Args({2, 256, 0})
-    ->Args({2, 256, 1})
-    ->Iterations(3)
+    ->Args({2, 16, 2})
+    ->Args({4, 64, 0})
+    ->Args({4, 64, 1})
+    ->Args({4, 64, 2})
+    ->Args({4, 16, 0})
+    ->Args({4, 16, 1})
+    ->Args({4, 16, 2})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- FurrBall Single Node (no NUMA baseline) ---
+
+struct NUMABench_FurrBallSN : NUMABench<FurrBallSNAdapter> {};
+BENCHMARK_DEFINE_F(NUMABench_FurrBallSN, Run)(benchmark::State& state) {
+    RunNUMABench<FurrBallSNAdapter>(state, trace);
+}
+BENCHMARK_REGISTER_F(NUMABench_FurrBallSN, Run)
+    ->Args({1, 64, 0})
+    ->Args({1, 64, 1})
+    ->Args({2, 64, 0})
+    ->Args({2, 64, 1})
+    ->Args({2, 64, 2})
+    ->Args({2, 16, 0})
+    ->Args({2, 16, 1})
+    ->Args({2, 16, 2})
+    ->Args({4, 64, 0})
+    ->Args({4, 64, 1})
+    ->Args({4, 64, 2})
+    ->Args({4, 16, 0})
+    ->Args({4, 16, 1})
+    ->Args({4, 16, 2})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- FurrBall Cross Node (all data on node 0, threads on 0+1) ---
+
+struct NUMABench_FurrBallCN : NUMABench<FurrBallCNAdapter> {};
+BENCHMARK_DEFINE_F(NUMABench_FurrBallCN, Run)(benchmark::State& state) {
+    RunNUMABench<FurrBallCNAdapter>(state, trace);
+}
+BENCHMARK_REGISTER_F(NUMABench_FurrBallCN, Run)
+    ->Args({2, 64, 0})
+    ->Args({2, 64, 1})
+    ->Args({2, 64, 2})
+    ->Args({2, 16, 0})
+    ->Args({2, 16, 1})
+    ->Args({2, 16, 2})
+    ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 // --- TBB concurrent_hash_map ---
@@ -632,12 +912,17 @@ BENCHMARK_REGISTER_F(NUMABench_TBB, Run)
     ->Args({2, 64, 2})
     ->Args({2, 16, 0})
     ->Args({2, 16, 1})
-    ->Args({2, 256, 0})
-    ->Args({2, 256, 1})
-    ->Iterations(3)
+    ->Args({2, 16, 2})
+    ->Args({4, 64, 0})
+    ->Args({4, 64, 1})
+    ->Args({4, 64, 2})
+    ->Args({4, 16, 0})
+    ->Args({4, 16, 1})
+    ->Args({4, 16, 2})
+    ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
-// --- CacheLib (production LRU cache, Facebook/Meta) ---
+// --- CacheLib (default, accidental interleaving) ---
 
 #ifdef USE_CACHELIB
 struct NUMABench_CacheLib : NUMABench<CacheLibAdapter> {};
@@ -652,9 +937,38 @@ BENCHMARK_REGISTER_F(NUMABench_CacheLib, Run)
     ->Args({2, 64, 2})
     ->Args({2, 16, 0})
     ->Args({2, 16, 1})
-    ->Args({2, 256, 0})
-    ->Args({2, 256, 1})
-    ->Iterations(3)
+    ->Args({2, 16, 2})
+    ->Args({4, 64, 0})
+    ->Args({4, 64, 1})
+    ->Args({4, 64, 2})
+    ->Args({4, 16, 0})
+    ->Args({4, 16, 1})
+    ->Args({4, 16, 2})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- CacheLib NUMA-aware (per-pool setMemBind) ---
+
+struct NUMABench_CacheLibNuma : NUMABench<CacheLibNumaAdapter> {};
+BENCHMARK_DEFINE_F(NUMABench_CacheLibNuma, Run)(benchmark::State& state) {
+    RunNUMABench<CacheLibNumaAdapter>(state, trace);
+}
+BENCHMARK_REGISTER_F(NUMABench_CacheLibNuma, Run)
+    ->Args({1, 64, 0})
+    ->Args({1, 64, 1})
+    ->Args({2, 64, 0})
+    ->Args({2, 64, 1})
+    ->Args({2, 64, 2})
+    ->Args({2, 16, 0})
+    ->Args({2, 16, 1})
+    ->Args({2, 16, 2})
+    ->Args({4, 64, 0})
+    ->Args({4, 64, 1})
+    ->Args({4, 64, 2})
+    ->Args({4, 16, 0})
+    ->Args({4, 16, 1})
+    ->Args({4, 16, 2})
+    ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 #endif
 
