@@ -390,7 +390,7 @@ struct CacheLibAdapter {
 
     void create(int, int pagesPerNode) {
         cacheSizeBytes = (size_t)pagesPerNode * PAGE_SIZE;
-        if (cacheSizeBytes < 4 * 1024 * 1024) cacheSizeBytes = 4 * 1024 * 1024;
+        if (cacheSizeBytes < 32 * 1024 * 1024) cacheSizeBytes = 32 * 1024 * 1024;
 
         cacheDir = "/tmp/cachelib_numabench_" + std::to_string(runId++);
         mkdir(cacheDir.c_str(), 0755);
