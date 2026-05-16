@@ -104,6 +104,12 @@ struct TraceEntry {
     uint32_t size;
 };
 
+static std::string getTracePath() {
+    const char* env = std::getenv("FURRBALL_TRACE");
+    if (env && env[0]) return std::string(env);
+    return "/home/ubuntu/source/repos/libCacheSim/data/twitter_cluster52.csv";
+}
+
 static std::vector<TraceEntry> loadTrace(const std::string& path, size_t maxEntries = 0) {
     std::vector<TraceEntry> trace;
     std::ifstream f(path);
@@ -172,7 +178,7 @@ struct FurrBench : public benchmark::Fixture {
         state.PauseTiming();
         if (trace.empty()) {
             trace = loadTrace(
-                "/home/ubuntu/source/repos/libCacheSim/data/twitter_cluster52.csv",
+                getTracePath(),
                 2000000);
             fprintf(stderr, "Loaded %zu trace entries\n", trace.size());
         }
@@ -519,7 +525,7 @@ struct BaselineBench : public benchmark::Fixture {
         state.PauseTiming();
         if (trace.empty()) {
             trace = loadTrace(
-                "/home/ubuntu/source/repos/libCacheSim/data/twitter_cluster52.csv",
+                getTracePath(),
                 2000000);
             fprintf(stderr, "[Baseline] Loaded %zu trace entries\n", trace.size());
         }
@@ -731,7 +737,7 @@ struct MemcachedBench : public benchmark::Fixture {
         }
         if (trace.empty()) {
             trace = loadTrace(
-                "/home/ubuntu/source/repos/libCacheSim/data/twitter_cluster52.csv",
+                getTracePath(),
                 2000000);
             fprintf(stderr, "[Memcached] Loaded %zu trace entries\n", trace.size());
         }
