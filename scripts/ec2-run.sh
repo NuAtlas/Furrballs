@@ -14,6 +14,9 @@ echo "=== $(date) FurrBench EC2 run ==="
 echo "Trace: $FURRBALL_TRACE"
 echo "Results: $RESULTS_DIR/"
 
+# 0. Raise FD limit (RocksDB opens many files across iterations)
+ulimit -n 65536
+
 # 1. NUMA topology
 numactl --hardware > "$RESULTS_DIR/numa-topology-$TIMESTAMP.txt" 2>&1
 lscpu >> "$RESULTS_DIR/numa-topology-$TIMESTAMP.txt" 2>&1
@@ -25,42 +28,27 @@ if ! pgrep -x memcached > /dev/null; then
   echo "memcached started"
 fi
 
-# 3. Run FurrBench — all benchmarks, JSON output
-echo "--- Running FurrBench (all benchmarks) ---"
+# 3. Full benchmark suite — all systems, no NUMA binding
+#    FurrBall manages its own NUMA, so numactl on the process is irrelevant.
+#    This run gives: ARC vs LRU vs TBB vs memcached, all on the same hardware.
+echo "--- Full benchmark suite (all systems) ---"
 "$BUILD_DIR/Benchmark/FurrBench" \
-  --benchmark_out="$RESULTS_DIR/furrbench-$TIMESTAMP.json" \
+  --benchmark_out="$RESULTS_DIR/all-systems-$TIMESTAMP.json" \
   --benchmark_out_format=json \
   --benchmark_repetitions=3 \
-  2>&1 | tee "$RESULTS_DIR/furrbench-$TIMESTAMP.log"
+  2>&1 | tee "$RESULTS_DIR/all-systems-$TIMESTAMP.log"
 
-# 4. Per-Numa-node run (bind to node 0, then node 1)
-echo "--- Running on NUMA node 0 ---"
+# 4. Baselines pinned to single NUMA node (fair comparison)
+#    LRU/TBB/memcached have no NUMA awareness — binding shows best-case
+#    for systems that don't manage topology.
+echo "--- Baselines pinned to NUMA node 0 ---"
 numactl --cpunodebind=0 --membind=0 \
   "$BUILD_DIR/Benchmark/FurrBench" \
-  --benchmark_filter="FurrBench" \
-  --benchmark_out="$RESULTS_DIR/furrbench-node0-$TIMESTAMP.json" \
+  --benchmark_filter="BaselineBench|TBBBench|MemcachedBench" \
+  --benchmark_out="$RESULTS_DIR/baselines-node0-$TIMESTAMP.json" \
   --benchmark_out_format=json \
   --benchmark_repetitions=3 \
-  2>&1 | tee "$RESULTS_DIR/furrbench-node0-$TIMESTAMP.log"
-
-echo "--- Running on NUMA node 1 ---"
-numactl --cpunodebind=1 --membind=1 \
-  "$BUILD_DIR/Benchmark/FurrBench" \
-  --benchmark_filter="FurrBench" \
-  --benchmark_out="$RESULTS_DIR/furrbench-node1-$TIMESTAMP.json" \
-  --benchmark_out_format=json \
-  --benchmark_repetitions=3 \
-  2>&1 | tee "$RESULTS_DIR/furrbench-node1-$TIMESTAMP.log"
-
-# 5. Cross-node (CPU on node 0, memory on node 1 — worst case)
-echo "--- Running cross-NUMA (cpu=0, mem=1) ---"
-numactl --cpunodebind=0 --membind=1 \
-  "$BUILD_DIR/Benchmark/FurrBench" \
-  --benchmark_filter="FurrBench" \
-  --benchmark_out="$RESULTS_DIR/furrbench-cross-$TIMESTAMP.json" \
-  --benchmark_out_format=json \
-  --benchmark_repetitions=3 \
-  2>&1 | tee "$RESULTS_DIR/furrbench-cross-$TIMESTAMP.log"
+  2>&1 | tee "$RESULTS_DIR/baselines-node0-$TIMESTAMP.log"
 
 echo "=== $(date) Run complete ==="
 echo "Results in $RESULTS_DIR/"

@@ -36,14 +36,14 @@ fi
 cd "$REPO_DIR"
 git pull
 
-# 5. Download Twitter trace
+# 5. Trace will be scp'd from VPS (no reliable public URL)
 TRACE_DIR="$REPO_DIR/data"
 mkdir -p "$TRACE_DIR"
-if [ ! -f "$TRACE_DIR/twitter_cluster52.csv" ]; then
-  echo "Downloading Twitter cluster52 trace..."
-  wget -q -O "$TRACE_DIR/twitter_cluster52.csv" \
-    "https://ftp.pdl.cmu.edu/pub/datasets/twemcacheWorkload.trace" \
-    || echo "WARN: trace download failed, benchmarks will use Zipfian only"
+if [ ! -s "$TRACE_DIR/twitter_cluster52.csv" ]; then
+  echo "WARN: No trace file at $TRACE_DIR/twitter_cluster52.csv"
+  echo "      scp it from VPS: scp twitter_cluster52.csv ubuntu@<IP>:/tmp/"
+  echo "      Then: sudo cp /tmp/twitter_cluster52.csv $TRACE_DIR/"
+  echo "      Benchmarks will use Zipfian-only if trace is missing."
 fi
 
 # 6. Build FurrBench
