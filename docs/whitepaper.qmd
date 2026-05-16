@@ -44,7 +44,7 @@ format:
 ---
 
 ## Status
-**v1.27.0** --- PRELIMINARY multi-baseline NUMA comparison. Corrected capacity ratio (62.5×, not 32×). Corrected all table numbers to match raw benchmark data. Added 16pg and 256pg capacity sweep. Documented RR partitioned outlier (CV=65%, N=3 insufficient). Disclosed trace replay uses 200K/1M entries. Added per-node asymmetry note and TL-vs-RR decomposition as publication requirement. Migration remains untested.
+**v1.28.0** --- PRELIMINARY multi-baseline NUMA comparison. Added NUMABench methodology section (adapter architecture, thread placement, workload specs, latency measurement, per-system memory allocation). Documented CacheLib's accidental NUMA interleaving (shm allocated from unpinned main thread, no setMemBind configured). All prior v1.27.0 corrections remain.
 
 ## Abstract
 Furrballs is a topology-aware resource placement library for asymmetric memory systems. Asymmetric memory --- where memory domains have different access latencies (NUMA, CXL-attached memory, HBM tiers) --- is the defining characteristic of modern server memory hierarchies. Furrballs uses memory topology as a first-class input to per-page placement and eviction decisions. The core contribution is per-page allocation on specific memory domains, with ARC (Adaptive Replacement Cache) for eviction and SimpleMigratePolicy for tier-aware migration. SimpleMigratePolicy uses two 4-bit saturating counters per key (local and remote access counts) with exponential decay, providing migration decisions without the overhead of REMARC's framework (lookup tables, SIMD scanning, algebraic composition). Pages are pre-allocated at initialization via one physical allocation per memory domain (NUMA node in the current implementation), subdivided into logical pages filled by a bump allocator. Key routing supports round-robin distribution and thread-local placement (via a runtime config flag). The library is implemented in C++20, uses a platform abstraction layer (Numatic) for memory topology operations, and integrates a custom synchronization library (StreamLine) for thread coordination.
@@ -2203,14 +2203,30 @@ Full analysis and methodology are documented in the REMARC companion paper (Find
 
 **Platform:** AWS c6i.metal (spot), Intel Xeon Platinum 8375C @ 3.5GHz, 2 sockets, 64 cores/socket, 128 vCPUs (HT), ~257 GB RAM, NUMA distance matrix 10/20. Ubuntu 24.04, GCC 14.2.0, Release build. 3 repetitions per benchmark.
 
-**Systems compared:**
+#### Methodology
 
-| System | Effective Capacity | Concurrency | Eviction Policy | Pool Size |
-|--------|----:|---|----:|----:|
-| FurrBall TL | 512 KB (2 × 256 KB pages) | 1 SpinLock per node | ARC (FlatList) | — |
-| FurrBall RR | 512 KB (same) | 1 SpinLock per node | ARC (FlatList) | — |
-| TBB | Unbounded | Per-bucket | None (no eviction) | — |
-| CacheLib | 32 MB (clamped minimum) | Per-bucket striped | LRU | ~16 MB pool |
+**Benchmark architecture.** NUMABench (`Benchmark/NUMABench.cpp`) uses a template-parameterized adapter pattern. Each system (FurrBall TL, FurrBall RR, TBB, CacheLib) implements a four-method interface: `create(nodeCount, pagesPerNode)`, `get(key, buf, bufSize, outSize) → bool`, `put(key, data, size)`, `destroy()`. No virtual dispatch — each adapter is a compile-time template parameter. Google Benchmark manages iteration counting and timing; the benchmark code runs the full workload inside each iteration and aggregates per-thread latency vectors.
+
+**Thread placement.** Each worker thread is pinned to a NUMA node via `Numatic::PinCurrentThreadToNode(n)`, which calls `numa_run_on_node(n)` + `sched_setaffinity`. With 2 threads, thread 0 is pinned to node 0 and thread 1 to node 1. The main benchmark thread (which calls `sys.create()` and `sys.destroy()`) is not pinned.
+
+**Workloads.** Each thread processes 100,000 operations (`OPS_PER_THREAD = 100000`). Value size is fixed at 64 bytes for all workloads and all systems.
+
+- *Partitioned (Zipfian, theta=0.99, universe=100K):* Each thread accesses a disjoint key range (`[T × 50000, (T+1) × 50000)`). On a miss, the key is inserted with a 64-byte value. This measures per-thread-local access latency under NUMA-aware vs NUMA-blind routing.
+- *Shared (Zipfian, theta=0.99, universe=100K):* Both threads access the same 100K-key space. This measures contention behavior under concurrent access to the same keys.
+- *Trace replay (Twitter cluster 52):* The first 200K entries of a 1M-entry trace are loaded. Thread 0 processes even-indexed entries, thread 1 processes odd-indexed entries, for a total of 200K operations across both threads. Keys from the trace are used directly as string keys; the trace's original sizes are ignored and all values are 64 bytes.
+
+**Latency measurement.** Each individual `get()` and `put()` is timed with `std::chrono::high_resolution_clock`. Per-thread latency vectors are sorted at the end of each iteration to compute p50 and p99. The reported p50 is the overall p50 across all threads (not the mean of per-thread p50s). Per-node p50s are also reported for local-vs-remote analysis.
+
+**Systems configuration.**
+
+| System | Effective Capacity | Concurrency | Eviction Policy | Memory Allocation | NUMA Awareness |
+|--------|----:|---|----:|---|---|
+| FurrBall TL | 512 KB (2 × 256 KB) | 1 SpinLock/node | ARC (FlatList) | `numa_alloc_local()` per node | Explicit: pages on local node |
+| FurrBall RR | 512 KB (same) | 1 SpinLock/node | ARC (FlatList) | `numa_alloc_local()` per node | Explicit: pages on local node |
+| TBB | Unbounded | Per-bucket | None | `operator new` | None (kernel default) |
+| CacheLib | 32 MB (clamped min) | Per-bucket striped | LRU | SysV shm from main thread | **None configured** (see note) |
+
+**CacheLib NUMA note:** CacheLib supports NUMA-aware allocation via `MemoryTierCacheConfig::setMemBind()`, which calls `mbind()` on its shared memory segments. Our adapter does not configure this — it uses CacheLib's default constructor with no `setMemBind()`. The `create()` call runs on the unpinned main benchmark thread. CacheLib allocates via SysV shared memory (`shmget`/`shmat`), and the kernel places pages according to the calling thread's NUMA policy. Since the main thread is unpinned, the kernel's default policy applies (typically interleaved across both nodes). This means CacheLib's 32MB slab pool is almost certainly **interleaved** across NUMA nodes — approximately half local, half remote from any single thread's perspective. This is accidental, not designed: CacheLib does not know which thread will access which data. This gives CacheLib a ~50% NUMA penalty on average for every access, while FurrBall TL pays ~0% for local hits. This asymmetry benefits FurrBall TL in the partitioned comparison and should be controlled in future runs (either by pinning CacheLib's allocation thread, or by configuring `setMemBind` per-pool).
 
 **Known handicaps for FurrBall:**
 
