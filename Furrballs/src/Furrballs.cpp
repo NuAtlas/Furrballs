@@ -1681,3 +1681,4 @@ template class FurrBall<ArcPolicy>;
 template class FurrBall<SimpleMigratePolicy>;
 template class FurrBall<AugAdaptPolicy>;
 template class FurrBall<NativeRemarcPolicy>;
+template class FurrBall<LruPolicy>;

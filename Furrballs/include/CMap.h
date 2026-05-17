@@ -1168,6 +1168,95 @@ namespace NuAtlas {
 
     template<typename Value>
         requires std::is_move_constructible_v<Value> && std::is_trivially_copyable_v<Value>
+    class ConcurrentLRU {
+        CMap<Value> store_;
+        FlatList lru_;
+        SpinLock lock_;
+        size_t capacity_;
+        using EvictionCallback = std::function<void(const Value&)>;
+        EvictionCallback evictionCallback_;
+
+        bool evictTailLocked() {
+            if (lru_.empty()) return false;
+            HashPair victim = lru_.back();
+            auto result = store_.FindAndEraseByHash(victim);
+            if (result.err != NO_ERR) return false;
+            lru_.pop_back();
+            if (result.value && evictionCallback_) evictionCallback_(*result.value);
+            return true;
+        }
+
+    public:
+        ConcurrentLRU(size_t cap,
+                      CMapAllocFn af = CMapDefaultAlloc,
+                      CMapFreeFn ff = CMapDefaultFree)
+            : store_(cap, af, ff), lru_(2 * cap), capacity_(cap) {}
+
+        void SetEvictionCallback(EvictionCallback cb) {
+            evictionCallback_ = std::move(cb);
+        }
+
+        bool ForceEvictOne() {
+            std::lock_guard<SpinLock> guard(lock_);
+            return evictTailLocked();
+        }
+
+        uint8_t GetDesire(uint64_t) const { return 0; }
+
+        std::optional<Value> Find(const std::string& key) {
+            auto val = store_.Find(key);
+            if (!val) return std::nullopt;
+            HashPair hashes = HashKey(key);
+            std::lock_guard<SpinLock> guard(lock_);
+            lru_.splice_front(hashes.h2);
+            return val;
+        }
+
+        template <typename Fn>
+        Error UpdateInPlace(const std::string& key, Fn&& fn) {
+            return store_.UpdateInPlace(key, std::forward<Fn>(fn));
+        }
+
+        template <typename Fn>
+        Error UpdateInPlaceByHash(const HashPair& hashes, Fn&& fn) {
+            return store_.UpdateInPlaceByHash(hashes, std::forward<Fn>(fn));
+        }
+
+        typename CMap<Value>::FindAndEraseResult Erase(const std::string& key) {
+            std::lock_guard<SpinLock> guard(lock_);
+            HashPair hashes = HashKey(key);
+            lru_.erase(hashes.h2);
+            return store_.FindAndErase(std::string_view(key));
+        }
+
+        auto EraseByHash(const HashPair& hashes) {
+            std::lock_guard<SpinLock> guard(lock_);
+            lru_.erase(hashes.h2);
+            return store_.FindAndEraseByHash(hashes);
+        }
+
+        Error Set(const std::string& key, const Value& val) {
+            std::lock_guard<SpinLock> guard(lock_);
+            HashPair hashes = HashKey(key);
+            uint64_t h2 = hashes.h2;
+            CMapSetResult result = store_.Set(key, val);
+            if (result.err != NO_ERR) return result.err;
+
+            if (!result.inserted) {
+                lru_.splice_front(h2);
+                return NO_ERR;
+            }
+
+            while (lru_.size() >= capacity_) {
+                if (!evictTailLocked()) break;
+            }
+            lru_.push_front(hashes);
+            return NO_ERR;
+        }
+    };
+
+    template<typename Value>
+        requires std::is_move_constructible_v<Value> && std::is_trivially_copyable_v<Value>
     class RawCMapStore {
         CMap<Value> store_;
     public:

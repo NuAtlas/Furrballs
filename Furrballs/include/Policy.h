@@ -20,6 +20,10 @@ namespace NuAtlas {
         requires std::is_move_constructible_v<Value> && std::is_trivially_copyable_v<Value>
     class NativeRemarcStore;
 
+    template<typename Value>
+        requires std::is_move_constructible_v<Value> && std::is_trivially_copyable_v<Value>
+    class ConcurrentLRU;
+
     // --- Policy Concept ---
     //
     // A cache Policy IS the cache. It owns the key store, manages admission
@@ -166,6 +170,25 @@ namespace NuAtlas {
         static bool ShouldHotNode(uint8_t tc, const Config& cfg) noexcept {
             return UnpackSRemote(tc) >= cfg.MigrateThreshold;
         }
+    };
+
+    // --- LRU Policy: simple LRU with no per-key state ---
+    // Uses ConcurrentLRU store: single flat list, evict tail on pressure.
+    // No ghost lists, no adaptive threshold, no desire tracking.
+
+    struct LruPolicy {
+        template<typename Value> using Store = ConcurrentLRU<Value>;
+        using Config = struct {};
+
+        static constexpr bool HasPerKeyState = false;
+        static constexpr bool HasMigration   = false;
+        static constexpr bool HasScanner     = false;
+        static constexpr bool HasDesire      = false;
+        static constexpr bool HasStoreEviction = true;
+        static constexpr bool HasRemarcConfig   = false;
+
+        static Config MakeConfig(const RemarcConfig&) noexcept { return {}; }
+        static uint8_t InitialState() noexcept { return 0; }
     };
 
     // --- Standard 2-node REMARC: s_local (recency) + s_remote (frequency) ---

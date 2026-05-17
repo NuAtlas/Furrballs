@@ -264,14 +264,14 @@ static std::vector<Op> generateWorkload(const WorkloadConfig& cfg) {
 
 enum class Routing { ThreadLocal, RoundRobin };
 
-template <Routing R>
+template <Routing R, typename Policy = ArcPolicy>
 struct FurrBallAdapter {
     static constexpr const char* Name = (R == Routing::ThreadLocal)
         ? "FurrBall_TL" : "FurrBall_RR";
 
     static constexpr size_t PAGE_SIZE = 4096;
 
-    FurrBall<ArcPolicy>* fb = nullptr;
+    FurrBall<Policy>* fb = nullptr;
     std::string fbPath;
     int nodeCount = 1;
     int pageCount = 64;
@@ -316,7 +316,7 @@ struct FurrBallAdapter {
         fc.EnableNUMA = true;
         fc.numaConfig = &nc;
 
-        fb = FurrBall<ArcPolicy>::CreateBall(fbPath, fc, true);
+        fb = FurrBall<Policy>::CreateBall(fbPath, fc, true);
     }
 
     bool get(const std::string& key, uint8_t* buf, size_t bufSize, size_t& outSize) {
@@ -334,16 +334,17 @@ struct FurrBallAdapter {
 
     int numNodes() const { return nodeCount; }
 };
-template <Routing R> int FurrBallAdapter<R>::runId = 0;
+template <Routing R, typename Policy> int FurrBallAdapter<R, Policy>::runId = 0;
 
 // --- FurrBall Single Node (no NUMA baseline) ---
 
-struct FurrBallSNAdapter {
+template <typename Policy = ArcPolicy>
+struct FurrBallSNAdapterT {
     static constexpr const char* Name = "FurrBall_SN";
 
     static constexpr size_t PAGE_SIZE = 4096;
 
-    FurrBall<ArcPolicy>* fb = nullptr;
+    FurrBall<Policy>* fb = nullptr;
     std::string fbPath;
     static int runId;
 
@@ -379,7 +380,7 @@ struct FurrBallSNAdapter {
         fc.EnableNUMA = true;
         fc.numaConfig = &nc;
 
-        fb = FurrBall<ArcPolicy>::CreateBall(fbPath, fc, true);
+        fb = FurrBall<Policy>::CreateBall(fbPath, fc, true);
     }
 
     bool get(const std::string& key, uint8_t* buf, size_t bufSize, size_t& outSize) {
@@ -397,8 +398,10 @@ struct FurrBallSNAdapter {
 
     static int numNodes() { return 1; }
 };
+template <typename Policy> int FurrBallSNAdapterT<Policy>::runId = 0;
 
-int FurrBallSNAdapter::runId = 0;
+using FurrBallSNAdapter = FurrBallSNAdapterT<ArcPolicy>;
+
 
 // --- FurrBall cross-node adapter (all data on node 0, threads on node 0+1) ---
 
@@ -944,6 +947,47 @@ BENCHMARK_REGISTER_F(NUMABench_TBB, Run)
     ->Args({4, 16, 0, 64, 100000})
     ->Args({4, 16, 1, 64, 100000})
     ->Args({4, 16, 2, 64, 100000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- FurrBall LRU ThreadLocal ---
+
+using FurrBallLRUTLAdapter = FurrBallAdapter<Routing::ThreadLocal, LruPolicy>;
+using FurrBallLRUSNAdapter = FurrBallSNAdapterT<LruPolicy>;
+
+struct NUMABench_FurrBallLRUTL : NUMABench<FurrBallLRUTLAdapter> {};
+BENCHMARK_DEFINE_F(NUMABench_FurrBallLRUTL, Run)(benchmark::State& state) {
+    RunNUMABench<FurrBallLRUTLAdapter>(state, trace);
+}
+
+// --- FurrBall LRU SingleNode ---
+
+struct NUMABench_FurrBallLRUSN : NUMABench<FurrBallLRUSNAdapter> {};
+BENCHMARK_DEFINE_F(NUMABench_FurrBallLRUSN, Run)(benchmark::State& state) {
+    RunNUMABench<FurrBallLRUSNAdapter>(state, trace);
+}
+
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUTL, Run)
+    ->Args({1, 64, 0, 64, 100000})
+    ->Args({1, 64, 1, 64, 100000})
+    ->Args({2, 64, 0, 64, 100000})
+    ->Args({2, 64, 1, 64, 100000})
+    ->Args({2, 64, 2, 64, 100000})
+    ->Args({4, 64, 0, 64, 100000})
+    ->Args({4, 64, 1, 64, 100000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- FurrBall LRU SingleNode ---
+
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUSN, Run)
+    ->Args({1, 64, 0, 64, 100000})
+    ->Args({1, 64, 1, 64, 100000})
+    ->Args({2, 64, 0, 64, 100000})
+    ->Args({2, 64, 1, 64, 100000})
+    ->Args({2, 64, 2, 64, 100000})
+    ->Args({4, 64, 0, 64, 100000})
+    ->Args({4, 64, 1, 64, 100000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
