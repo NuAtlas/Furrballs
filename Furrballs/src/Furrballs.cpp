@@ -1052,9 +1052,9 @@ Error NuAtlas::FurrBall<Policy>::Get(const std::string &key, void* outBuf, size_
                                     });
                             }
 
-                            details->KeyStore.EraseByHash(coldHp);
+                            details->KeyStore.EraseByHash(HashPair{0, coldH2});
                             if (DataMembers && DataMembers->db) {
-                                std::string rkey(reinterpret_cast<const char*>(&coldHp), sizeof(HashPair));
+                                std::string rkey(reinterpret_cast<const char*>(&coldH2), sizeof(uint32_t));
                             }
 
                             warmPage.AddKeyEntry(hp, hotTc);
@@ -1317,15 +1317,15 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
                                         fe.offset = reinterpret_cast<size_t>(meta->DataOffset) -
                                                     reinterpret_cast<size_t>(coldPage.Data);
                                         fe.size = meta->DataSize;
-                                        details->FrozenIndex[khp.h2] = std::move(fe);
+                                        details->FrozenIndex[h2] = std::move(fe);
                                     }
                                     details->FrozenLock.unlock();
 
                                     Stats.FrozenPagesPersisted.fetch_add(1, std::memory_order_relaxed);
                                 }
 
-                                for (const auto& khp : keys) {
-                                    details->KeyStore.EraseByHash(khp);
+                                for (uint32_t h2 : h2s) {
+                                    details->KeyStore.EraseByHash(HashPair{0, h2});
                                 }
 
                                 coldPage.Recycle();
