@@ -20,7 +20,6 @@ namespace NuAtlas
         std::thread Worker;
         std::deque<std::function<void()>> funcQueue;
         std::atomic<bool> IsRunning{false};
-        std::atomic<bool> FinishedWork{true};
         std::mutex NodeMutex;
 
         const int NodeId;

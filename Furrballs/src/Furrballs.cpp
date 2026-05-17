@@ -139,8 +139,6 @@ struct PerNodeDetails{
     size_t PrevDeadKeys = 0;
     float AdaptiveStep = 0.05f;
     uint8_t MaxDeadAge = 8;
-    size_t SetFailsSinceMP = 0;
-    static constexpr size_t MPTriggerThreshold = 4096ULL;
 
     struct FrozenEntry {
         std::string key;
@@ -394,15 +392,13 @@ bool NuAtlas::FurrBall<Policy>::MigrateKey(const std::string& key, const HashPai
 
     KeyMeta dstMeta;
     dstMeta.DataSize = dataSize;
-    dstMeta.NodeID = destNode;
     dstMeta.PageIndex = dstPageIdx;
     dstMeta.DataOffset = dstLoc;
 
     Page& dstPage = dstDetails->NodePages[dstPageIdx];
     uint8_t initTC = Policy::InitialState();
-    dstPage.AddKeyEntry(hp, initTC, static_cast<uint8_t>(destNode));
+    dstPage.AddKeyEntry(hp, initTC);
     dstMeta.TempCtrlIdx = static_cast<uint8_t>(dstPage.TempCtrl.size() - 1);
-    dstMeta.HotNode = static_cast<uint8_t>(destNode);
 
     Error insertErr = dstDetails->KeyStore.Set(key, dstMeta);
     if (insertErr != NO_ERR) {
@@ -1139,12 +1135,8 @@ Error NuAtlas::FurrBall<Policy>::Get(const std::string &key, void* outBuf, size_
 
                         if constexpr (Policy::HasMigration) {
                             if(isRemote && Policy::ShouldHotNode(tc, policyConfig)) {
-                                details->KeyStore.UpdateInPlace(key, [currentNode](KeyMeta& m) {
-                                    m.HotNode = static_cast<uint8_t>(currentNode);
+                                details->KeyStore.UpdateInPlace(key, [](KeyMeta&) {
                                 });
-                                if(meta->TempCtrlIdx < page.HotNodes.size()) {
-                                    page.HotNodes[meta->TempCtrlIdx] = static_cast<uint8_t>(currentNode);
-                                }
                             }
                         }
                     }
@@ -1411,7 +1403,6 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
     Page& page = details->NodePages[pageIdx];
     KeyMeta metadata;
     metadata.DataSize = size;
-    metadata.NodeID = targetNode;
     metadata.PageIndex = pageIdx;
     metadata.DataOffset = Loc;
     metadata.PageGeneration = page.Generation;

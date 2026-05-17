@@ -63,8 +63,6 @@ namespace NuAtlas {
     struct KeyMeta {
         size_t PageIndex, DataSize;
         void* DataOffset;
-        int NodeID;
-        uint8_t HotNode;
         uint8_t TempCtrlIdx;
         uint32_t PageGeneration = 0;
     };
