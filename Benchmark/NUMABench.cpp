@@ -376,7 +376,7 @@ struct FurrBallSNAdapter {
         fc.PageSize = PAGE_SIZE;
         fc.InitialPageCount = pagesPerNode;
         fc.IsVolatile = true;
-        fc.EnableNUMA = false;
+        fc.EnableNUMA = true;
         fc.numaConfig = &nc;
 
         fb = FurrBall<ArcPolicy>::CreateBall(fbPath, fc, true);
@@ -401,7 +401,6 @@ struct FurrBallSNAdapter {
 int FurrBallSNAdapter::runId = 0;
 
 // --- FurrBall cross-node adapter (all data on node 0, threads on node 0+1) ---
-// Isolates pure NUMA memory latency: every access from thread 1 is remote.
 
 struct FurrBallCNAdapter {
     static constexpr const char* Name = "FurrBall_CN";
