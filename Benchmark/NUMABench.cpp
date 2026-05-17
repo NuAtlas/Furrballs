@@ -998,6 +998,74 @@ BENCHMARK_REGISTER_F(NUMABench_CacheLibNuma, Run)
 #endif
 
 // ============================================================================
+//  Equal-capacity CacheLib benchmarks (inside USE_CACHELIB guard)
+//  CacheLib: pagesPerNode=8192 → 8192*4KB = 32MB (already at minimum floor)
+// ============================================================================
+#ifdef USE_CACHELIB
+
+// --- Equal cap: Partitioned 2t ---
+BENCHMARK_REGISTER_F(NUMABench_CacheLib, Run)
+    ->Args({2, 8192, 0, 64, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- Equal cap: Shared 2t ---
+BENCHMARK_REGISTER_F(NUMABench_CacheLib, Run)
+    ->Args({2, 8192, 1, 64, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- Equal cap: Trace 2t ---
+BENCHMARK_REGISTER_F(NUMABench_CacheLib, Run)
+    ->Args({2, 8192, 2, 64, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- Equal cap: Partitioned 2t, large values ---
+BENCHMARK_REGISTER_F(NUMABench_CacheLib, Run)
+    ->Args({2, 8192, 0, 1024, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- Equal cap: Partitioned 4t ---
+BENCHMARK_REGISTER_F(NUMABench_CacheLib, Run)
+    ->Args({4, 8192, 0, 64, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- Equal cap: Shared 4t ---
+BENCHMARK_REGISTER_F(NUMABench_CacheLib, Run)
+    ->Args({4, 8192, 1, 64, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- Equal cap: Single-thread ---
+BENCHMARK_REGISTER_F(NUMABench_CacheLib, Run)
+    ->Args({1, 8192, 0, 64, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- Equal cap: CacheLibNuma Partitioned 2t ---
+BENCHMARK_REGISTER_F(NUMABench_CacheLibNuma, Run)
+    ->Args({2, 8192, 0, 64, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- Equal cap: CacheLibNuma Shared 2t ---
+BENCHMARK_REGISTER_F(NUMABench_CacheLibNuma, Run)
+    ->Args({2, 8192, 1, 64, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- Equal cap: CacheLibNuma Single-thread ---
+BENCHMARK_REGISTER_F(NUMABench_CacheLibNuma, Run)
+    ->Args({1, 8192, 0, 64, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+#endif
+
+// ============================================================================
 //  NUMA-dominant workloads: larger values to make remote memory cost dominate
 //  With 1KB values, a remote memcpy (~200ns) dwarfs lock overhead (~50ns)
 // ============================================================================
