@@ -31,6 +31,8 @@
 #include <emmintrin.h>
 #endif
 
+} // namespace NuAtlas
+
 namespace {
     std::atomic<double> tscCyclesPerNs{0.0};
 
@@ -1414,7 +1416,38 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
                     }
                 }
                 if (!Loc) return OUT_OF_MEM;
-                break;
+                memcpy(Loc, data, size);
+
+                Page& page = details->NodePages[pageIdx];
+                KeyMeta metadata;
+                metadata.DataSize = size;
+                metadata.PageIndex = pageIdx;
+                metadata.DataOffset = Loc;
+                metadata.PageGeneration = page.Generation;
+
+                HashPair hp = HashKey(key);
+                uint8_t initTC = Policy::InitialState();
+                page.AddKeyEntry(hp, initTC);
+                metadata.TempCtrlIdx = static_cast<uint8_t>(page.TempCtrl.size() - 1);
+
+                Error err = details->KeyStore.Set(key, metadata);
+                if (err == NO_ERR) {
+                    Stats.BytesWritten.fetch_add(size, std::memory_order_relaxed);
+                    if (!Volatile) {
+                        details->FrozenLock.lock();
+                        details->KeyNames[hp.h2] = key;
+                        details->FrozenIndex.erase(hp.h2);
+                        details->FrozenLock.unlock();
+                    }
+                    if constexpr (Policy::HasDesire && Policy::HasPerKeyState) {
+                        uint8_t desire = details->ShadowDesire.get(hp.h2);
+                        desire = Policy::OnLocalAccess(desire, policyConfig);
+                        details->ShadowDesire.set(hp.h2, desire);
+                    }
+                } else {
+                    page.RemoveKeyEntry(page.TempCtrl.size() - 1);
+                }
+                return err;
             }
             size_t evictedSz = EvictOneKey(targetNode);
             if (evictedSz > 0) {

@@ -183,6 +183,22 @@ namespace NuAtlas {
                 ++drained;
             }
         }
+
+        void drainSingle(FlatList& lru) {
+            size_t head = writeHead_.load(std::memory_order_acquire);
+            size_t drained = 0;
+            while (drainTail_ < head && drained < kCapacity) {
+                size_t idx = drainTail_ % kCapacity;
+                if (!slots_[idx].ready.load(std::memory_order_acquire)) break;
+                slots_[idx].ready.store(false, std::memory_order_relaxed);
+                uint64_t h2 = slots_[idx].hashes.h2;
+                if (lru.contains(h2)) {
+                    lru.splice_front(h2);
+                }
+                ++drainTail_;
+                ++drained;
+            }
+        }
     };
 
     using CMapAllocFn = void*(*)(size_t);
@@ -654,6 +670,72 @@ namespace NuAtlas {
         Error Set(const std::string& key, const Value& val) {
             std::lock_guard<SpinLock> guard(arcLock_);
             promoteBuf_.drain(t1_, t2_);
+
+            HashPair hashes = HashKey(key);
+            uint64_t h2 = hashes.h2;
+            CMapSetResult result = store_.Set(key, val);
+            if (result.err != NO_ERR) return result.err;
+
+            if (!result.inserted) {
+                if (t1_.contains(h2)) {
+                    t1_.erase(h2);
+                    t2_.push_front(hashes);
+                } else if (t2_.contains(h2)) {
+                    t2_.splice_front(h2);
+                }
+                return NO_ERR;
+            }
+
+            if (b1_.contains(h2)) {
+                size_t delta1 = b1_.size() > 0 ? b2_.size() / b1_.size() : 1;
+                p_ = std::min(capacity_, p_ + std::max(delta1, (size_t)1));
+                if (!replaceLocked(h2)) return ABANDONED_SET;
+                b1_.erase(h2);
+                t2_.push_front(hashes);
+                return NO_ERR;
+            }
+
+            if (b2_.contains(h2)) {
+                size_t delta2 = b2_.size() > 0 ? b1_.size() / b2_.size() : 1;
+                size_t dec = std::max(delta2, (size_t)1);
+                p_ = (p_ >= dec) ? p_ - dec : 0;
+                if (!replaceLocked(h2)) return ABANDONED_SET;
+                b2_.erase(h2);
+                t2_.push_front(hashes);
+                return NO_ERR;
+            }
+
+            if (!evictLocked()) return ABANDONED_SET;
+            t1_.push_front(hashes);
+            return NO_ERR;
+        }
+
+        Error EvictAndSet(const std::string& key, const Value& val) {
+            std::lock_guard<SpinLock> guard(arcLock_);
+            promoteBuf_.drain(t1_, t2_);
+
+            bool evicted = false;
+            if (!t1_.empty() && (t1_.size() > p_ || t2_.empty())) {
+                HashPair old = t1_.back();
+                auto result = store_.FindAndEraseByHash(old);
+                if (result.err == NO_ERR) {
+                    t1_.pop_back();
+                    b1_.push_front(old);
+                    if (result.value) evictionCallback_(*result.value);
+                    evicted = true;
+                }
+            }
+            if (!evicted && !t2_.empty()) {
+                HashPair old = t2_.back();
+                auto result = store_.FindAndEraseByHash(old);
+                if (result.err == NO_ERR) {
+                    t2_.pop_back();
+                    b2_.push_front(old);
+                    if (result.value) evictionCallback_(*result.value);
+                    evicted = true;
+                }
+            }
+            if (!evicted) return ABANDONED_SET;
 
             HashPair hashes = HashKey(key);
             uint64_t h2 = hashes.h2;
@@ -1172,6 +1254,7 @@ namespace NuAtlas {
         CMap<Value> store_;
         FlatList lru_;
         SpinLock lock_;
+        PromoteBuf promoteBuf_;
         size_t capacity_;
         using EvictionCallback = std::function<void(const Value&)>;
         EvictionCallback evictionCallback_;
@@ -1198,6 +1281,7 @@ namespace NuAtlas {
 
         bool ForceEvictOne() {
             std::lock_guard<SpinLock> guard(lock_);
+            promoteBuf_.drainSingle(lru_);
             return evictTailLocked();
         }
 
@@ -1207,8 +1291,12 @@ namespace NuAtlas {
             auto val = store_.Find(key);
             if (!val) return std::nullopt;
             HashPair hashes = HashKey(key);
-            std::lock_guard<SpinLock> guard(lock_);
-            lru_.splice_front(hashes.h2);
+            if (!promoteBuf_.enqueue(hashes)) {
+                if (lock_.try_lock()) {
+                    promoteBuf_.drainSingle(lru_);
+                    lock_.unlock();
+                }
+            }
             return val;
         }
 
@@ -1224,6 +1312,7 @@ namespace NuAtlas {
 
         typename CMap<Value>::FindAndEraseResult Erase(const std::string& key) {
             std::lock_guard<SpinLock> guard(lock_);
+            promoteBuf_.drainSingle(lru_);
             HashPair hashes = HashKey(key);
             lru_.erase(hashes.h2);
             return store_.FindAndErase(std::string_view(key));
@@ -1231,12 +1320,37 @@ namespace NuAtlas {
 
         auto EraseByHash(const HashPair& hashes) {
             std::lock_guard<SpinLock> guard(lock_);
+            promoteBuf_.drainSingle(lru_);
             lru_.erase(hashes.h2);
             return store_.FindAndEraseByHash(hashes);
         }
 
         Error Set(const std::string& key, const Value& val) {
             std::lock_guard<SpinLock> guard(lock_);
+            promoteBuf_.drainSingle(lru_);
+            HashPair hashes = HashKey(key);
+            uint64_t h2 = hashes.h2;
+            CMapSetResult result = store_.Set(key, val);
+            if (result.err != NO_ERR) return result.err;
+
+            if (!result.inserted) {
+                lru_.splice_front(h2);
+                return NO_ERR;
+            }
+
+            while (lru_.size() >= capacity_) {
+                if (!evictTailLocked()) break;
+            }
+            lru_.push_front(hashes);
+            return NO_ERR;
+        }
+
+        Error EvictAndSet(const std::string& key, const Value& val) {
+            std::lock_guard<SpinLock> guard(lock_);
+            promoteBuf_.drainSingle(lru_);
+
+            if (!evictTailLocked()) return ABANDONED_SET;
+
             HashPair hashes = HashKey(key);
             uint64_t h2 = hashes.h2;
             CMapSetResult result = store_.Set(key, val);

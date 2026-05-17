@@ -1057,6 +1057,65 @@ BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUSN, Run)
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
+// Equal-capacity 1024B value benchmarks — NUMA-locality evidence
+// At 1KB values, remote memcpy (~200ns) dwarfs lock overhead, showing
+// whether TL routing reduces remote memory access cost.
+
+// --- ARC 1024B: Partitioned 2t ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
+    ->Args({2, 4096, 0, 1024, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(NUMABench_FurrBallSN, Run)
+    ->Args({2, 8192, 0, 1024, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- LRU 1024B: Partitioned 2t ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUTL, Run)
+    ->Args({2, 4096, 0, 1024, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUSN, Run)
+    ->Args({2, 8192, 0, 1024, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- ARC 1024B: Shared 2t ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
+    ->Args({2, 4096, 1, 1024, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(NUMABench_FurrBallSN, Run)
+    ->Args({2, 8192, 1, 1024, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- LRU 1024B: Shared 2t ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUTL, Run)
+    ->Args({2, 4096, 1, 1024, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUSN, Run)
+    ->Args({2, 8192, 1, 1024, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- ARC 1024B: 1t baseline ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
+    ->Args({1, 8192, 0, 1024, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUTL, Run)
+    ->Args({1, 8192, 0, 1024, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
 // --- CacheLib (default, accidental interleaving) ---
 
 #ifdef USE_CACHELIB
