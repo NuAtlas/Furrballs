@@ -25,7 +25,7 @@ namespace NuAtlas
         std::atomic<PageTier> Tier{PageTier::Hot};
         std::atomic<uint16_t> ActiveKeys{0};
         std::vector<uint8_t> TempCtrl;
-        std::vector<HashPair> KeyIndex;
+        std::vector<uint32_t> KeyH2;
         std::vector<FreeSlot> FreeSlots;
 
         uint32_t Generation = 0;
@@ -41,7 +41,7 @@ namespace NuAtlas
 
         Page(Page&& other) noexcept
             : Data(other.Data), PageIndex(other.PageIndex), PageSize(other.PageSize), Dirty(other.Dirty),
-              TempCtrl(std::move(other.TempCtrl)), KeyIndex(std::move(other.KeyIndex)),
+              TempCtrl(std::move(other.TempCtrl)), KeyH2(std::move(other.KeyH2)),
               FreeSlots(std::move(other.FreeSlots))
         {
             UsedBytes.store(other.UsedBytes.load(std::memory_order_relaxed), std::memory_order_relaxed);
@@ -64,7 +64,7 @@ namespace NuAtlas
                 Tier.store(other.Tier.load(std::memory_order_relaxed), std::memory_order_relaxed);
                 ActiveKeys.store(other.ActiveKeys.load(std::memory_order_relaxed), std::memory_order_relaxed);
                 TempCtrl = std::move(other.TempCtrl);
-                KeyIndex = std::move(other.KeyIndex);
+                KeyH2 = std::move(other.KeyH2);
                 FreeSlots = std::move(other.FreeSlots);
                 other.Data = nullptr;
             }
@@ -129,26 +129,26 @@ namespace NuAtlas
 
         void AddKeyEntry(const HashPair& hp, uint8_t initialTC = PackTempCtrl(REMARC_MAX, 0)) {
             CompactLock.lock();
-            KeyIndex.push_back(hp);
+            KeyH2.push_back(hp.h2);
             TempCtrl.push_back(initialTC);
             CompactLock.unlock();
             ActiveKeys.fetch_add(1, std::memory_order_relaxed);
         }
 
-        HashPair RemoveKeyEntry(size_t idx) {
+        uint32_t RemoveKeyEntry(size_t idx) {
             CompactLock.lock();
-            assert(idx < KeyIndex.size() && idx < TempCtrl.size());
-            size_t last = KeyIndex.size() - 1;
-            HashPair swappedHp = KeyIndex[last];
+            assert(idx < KeyH2.size() && idx < TempCtrl.size());
+            size_t last = KeyH2.size() - 1;
+            uint32_t swappedH2 = KeyH2[last];
             if (idx != last) {
-                KeyIndex[idx] = KeyIndex[last];
+                KeyH2[idx] = KeyH2[last];
                 TempCtrl[idx] = TempCtrl[last];
             }
-            KeyIndex.pop_back();
+            KeyH2.pop_back();
             TempCtrl.pop_back();
             CompactLock.unlock();
             ActiveKeys.fetch_sub(1, std::memory_order_relaxed);
-            return swappedHp;
+            return swappedH2;
         }
 
         void RemoveKeyByHash(const HashPair& hp) noexcept {
@@ -163,8 +163,8 @@ namespace NuAtlas
         }
 
         size_t FindKeyIndex(const HashPair& hp) const noexcept {
-            for (size_t i = 0; i < KeyIndex.size(); i++) {
-                if (KeyIndex[i].h2 == hp.h2) return i;
+            for (size_t i = 0; i < KeyH2.size(); i++) {
+                if (KeyH2[i] == hp.h2) return i;
             }
             return SIZE_MAX;
         }
@@ -177,7 +177,7 @@ namespace NuAtlas
 
         void Recycle() noexcept {
             CompactLock.lock();
-            KeyIndex.clear();
+            KeyH2.clear();
             TempCtrl.clear();
             FreeSlots.clear();
             DeadAge = 0;

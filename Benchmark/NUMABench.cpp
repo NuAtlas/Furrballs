@@ -189,7 +189,7 @@ static void reportAgg(benchmark::State& state, const AggregateResult& ar) {
 //  Trace: replay Twitter trace across all threads (interleaved)
 // ============================================================================
 
-enum class WorkloadType { Partitioned, Shared, Trace };
+enum class WorkloadType { Partitioned, Shared, Trace, ReadOnly };
 
 struct Op {
     std::string key;
@@ -666,7 +666,8 @@ template <typename System>
 static ThreadResult runWorker(
     System& sys,
     const WorkloadConfig& cfg,
-    int numaNode)
+    int numaNode,
+    size_t valueSize)
 {
     ThreadResult result;
     result.numaNode = numaNode;
@@ -675,9 +676,19 @@ static ThreadResult runWorker(
         Numatic::PinCurrentThreadToNode(numaNode);
     }
 
-    uint8_t outBuf[4096];
-    uint8_t val[64];
-    memset(val, 'x', 64);
+    uint8_t outBuf[8192];
+    std::vector<uint8_t> val(valueSize, 'x');
+
+    if (cfg.type == WorkloadType::ReadOnly) {
+        uint64_t zState = 42 + cfg.threadIndex * 1000;
+        uint64_t rangeSize = cfg.zipfianUniverse / cfg.totalThreads;
+        uint64_t base = (uint64_t)cfg.threadIndex * rangeSize;
+        for (size_t i = 0; i < cfg.opsPerThread; i++) {
+            uint64_t ki = base + (zipfian(rangeSize, cfg.zipfianTheta, zState) % rangeSize);
+            std::string key = "key_" + std::to_string(ki);
+            sys.put(key, val.data(), valueSize);
+        }
+    }
 
     for (const auto& op : generateWorkload(cfg)) {
         if (op.isRead) {
@@ -690,10 +701,10 @@ static ThreadResult runWorker(
             result.gets++;
             if (found) {
                 result.hits++;
-            } else {
+            } else if (cfg.type != WorkloadType::ReadOnly) {
                 result.misses++;
                 auto ts0 = std::chrono::high_resolution_clock::now();
-                sys.put(op.key, val, 64);
+                sys.put(op.key, val.data(), valueSize);
                 auto ts1 = std::chrono::high_resolution_clock::now();
                 result.setLatencies.push_back(
                     std::chrono::duration_cast<std::chrono::nanoseconds>(ts1 - ts0).count());
@@ -712,13 +723,15 @@ static ThreadResult runWorker(
 // Args encoding (Google Benchmark only supports int64_t args):
 //   state.range(0) = numThreads (== numNodes for ThreadLocal routing)
 //   state.range(1) = pagesPerNode
-//   state.range(2) = workload type (0=Partitioned, 1=Shared, 2=Trace)
+//   state.range(2) = workload type (0=Partitioned, 1=Shared, 2=Trace, 3=ReadOnly)
+//   state.range(3) = value size in bytes (64, 256, 1024)
 
 static const char* workloadName(int w) {
     switch (w) {
     case 0: return "Partitioned";
     case 1: return "Shared";
     case 2: return "Trace";
+    case 3: return "ReadOnly";
     default: return "?";
     }
 }
@@ -747,6 +760,7 @@ void RunNUMABench(benchmark::State& state, std::vector<TraceEntry>& trace) {
     int numThreads = state.range(0);
     int pagesPerNode = state.range(1);
     int workloadType = state.range(2);
+    size_t valueSize = state.range(3);
 
     for (auto _ : state) {
         state.PauseTiming();
@@ -777,7 +791,7 @@ void RunNUMABench(benchmark::State& state, std::vector<TraceEntry>& trace) {
                 cfg.trace = &trace;
 
                 int nn = sys.numNodes();
-                results[t] = runWorker(sys, cfg, nn > 0 ? (t % nn) : -1);
+                results[t] = runWorker(sys, cfg, nn > 0 ? (t % nn) : -1, valueSize);
             });
         }
 
@@ -828,20 +842,20 @@ BENCHMARK_DEFINE_F(NUMABench_FurrBallTL, Run)(benchmark::State& state) {
     RunNUMABench<FurrBallAdapter<Routing::ThreadLocal>>(state, trace);
 }
 BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
-    ->Args({1, 64, 0})
-    ->Args({1, 64, 1})
-    ->Args({2, 64, 0})
-    ->Args({2, 64, 1})
-    ->Args({2, 64, 2})
-    ->Args({2, 16, 0})
-    ->Args({2, 16, 1})
-    ->Args({2, 16, 2})
-    ->Args({4, 64, 0})
-    ->Args({4, 64, 1})
-    ->Args({4, 64, 2})
-    ->Args({4, 16, 0})
-    ->Args({4, 16, 1})
-    ->Args({4, 16, 2})
+    ->Args({1, 64, 0, 64})
+    ->Args({1, 64, 1, 64})
+    ->Args({2, 64, 0, 64})
+    ->Args({2, 64, 1, 64})
+    ->Args({2, 64, 2, 64})
+    ->Args({2, 16, 0, 64})
+    ->Args({2, 16, 1, 64})
+    ->Args({2, 16, 2, 64})
+    ->Args({4, 64, 0, 64})
+    ->Args({4, 64, 1, 64})
+    ->Args({4, 64, 2, 64})
+    ->Args({4, 16, 0, 64})
+    ->Args({4, 16, 1, 64})
+    ->Args({4, 16, 2, 64})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
@@ -852,20 +866,20 @@ BENCHMARK_DEFINE_F(NUMABench_FurrBallRR, Run)(benchmark::State& state) {
     RunNUMABench<FurrBallAdapter<Routing::RoundRobin>>(state, trace);
 }
 BENCHMARK_REGISTER_F(NUMABench_FurrBallRR, Run)
-    ->Args({1, 64, 0})
-    ->Args({1, 64, 1})
-    ->Args({2, 64, 0})
-    ->Args({2, 64, 1})
-    ->Args({2, 64, 2})
-    ->Args({2, 16, 0})
-    ->Args({2, 16, 1})
-    ->Args({2, 16, 2})
-    ->Args({4, 64, 0})
-    ->Args({4, 64, 1})
-    ->Args({4, 64, 2})
-    ->Args({4, 16, 0})
-    ->Args({4, 16, 1})
-    ->Args({4, 16, 2})
+    ->Args({1, 64, 0, 64})
+    ->Args({1, 64, 1, 64})
+    ->Args({2, 64, 0, 64})
+    ->Args({2, 64, 1, 64})
+    ->Args({2, 64, 2, 64})
+    ->Args({2, 16, 0, 64})
+    ->Args({2, 16, 1, 64})
+    ->Args({2, 16, 2, 64})
+    ->Args({4, 64, 0, 64})
+    ->Args({4, 64, 1, 64})
+    ->Args({4, 64, 2, 64})
+    ->Args({4, 16, 0, 64})
+    ->Args({4, 16, 1, 64})
+    ->Args({4, 16, 2, 64})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
@@ -876,20 +890,20 @@ BENCHMARK_DEFINE_F(NUMABench_FurrBallSN, Run)(benchmark::State& state) {
     RunNUMABench<FurrBallSNAdapter>(state, trace);
 }
 BENCHMARK_REGISTER_F(NUMABench_FurrBallSN, Run)
-    ->Args({1, 64, 0})
-    ->Args({1, 64, 1})
-    ->Args({2, 64, 0})
-    ->Args({2, 64, 1})
-    ->Args({2, 64, 2})
-    ->Args({2, 16, 0})
-    ->Args({2, 16, 1})
-    ->Args({2, 16, 2})
-    ->Args({4, 64, 0})
-    ->Args({4, 64, 1})
-    ->Args({4, 64, 2})
-    ->Args({4, 16, 0})
-    ->Args({4, 16, 1})
-    ->Args({4, 16, 2})
+    ->Args({1, 64, 0, 64})
+    ->Args({1, 64, 1, 64})
+    ->Args({2, 64, 0, 64})
+    ->Args({2, 64, 1, 64})
+    ->Args({2, 64, 2, 64})
+    ->Args({2, 16, 0, 64})
+    ->Args({2, 16, 1, 64})
+    ->Args({2, 16, 2, 64})
+    ->Args({4, 64, 0, 64})
+    ->Args({4, 64, 1, 64})
+    ->Args({4, 64, 2, 64})
+    ->Args({4, 16, 0, 64})
+    ->Args({4, 16, 1, 64})
+    ->Args({4, 16, 2, 64})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
@@ -900,12 +914,12 @@ BENCHMARK_DEFINE_F(NUMABench_FurrBallCN, Run)(benchmark::State& state) {
     RunNUMABench<FurrBallCNAdapter>(state, trace);
 }
 BENCHMARK_REGISTER_F(NUMABench_FurrBallCN, Run)
-    ->Args({2, 64, 0})
-    ->Args({2, 64, 1})
-    ->Args({2, 64, 2})
-    ->Args({2, 16, 0})
-    ->Args({2, 16, 1})
-    ->Args({2, 16, 2})
+    ->Args({2, 64, 0, 64})
+    ->Args({2, 64, 1, 64})
+    ->Args({2, 64, 2, 64})
+    ->Args({2, 16, 0, 64})
+    ->Args({2, 16, 1, 64})
+    ->Args({2, 16, 2, 64})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
@@ -916,20 +930,20 @@ BENCHMARK_DEFINE_F(NUMABench_TBB, Run)(benchmark::State& state) {
     RunNUMABench<TBBAdapter>(state, trace);
 }
 BENCHMARK_REGISTER_F(NUMABench_TBB, Run)
-    ->Args({1, 64, 0})
-    ->Args({1, 64, 1})
-    ->Args({2, 64, 0})
-    ->Args({2, 64, 1})
-    ->Args({2, 64, 2})
-    ->Args({2, 16, 0})
-    ->Args({2, 16, 1})
-    ->Args({2, 16, 2})
-    ->Args({4, 64, 0})
-    ->Args({4, 64, 1})
-    ->Args({4, 64, 2})
-    ->Args({4, 16, 0})
-    ->Args({4, 16, 1})
-    ->Args({4, 16, 2})
+    ->Args({1, 64, 0, 64})
+    ->Args({1, 64, 1, 64})
+    ->Args({2, 64, 0, 64})
+    ->Args({2, 64, 1, 64})
+    ->Args({2, 64, 2, 64})
+    ->Args({2, 16, 0, 64})
+    ->Args({2, 16, 1, 64})
+    ->Args({2, 16, 2, 64})
+    ->Args({4, 64, 0, 64})
+    ->Args({4, 64, 1, 64})
+    ->Args({4, 64, 2, 64})
+    ->Args({4, 16, 0, 64})
+    ->Args({4, 16, 1, 64})
+    ->Args({4, 16, 2, 64})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
@@ -941,20 +955,20 @@ BENCHMARK_DEFINE_F(NUMABench_CacheLib, Run)(benchmark::State& state) {
     RunNUMABench<CacheLibAdapter>(state, trace);
 }
 BENCHMARK_REGISTER_F(NUMABench_CacheLib, Run)
-    ->Args({1, 64, 0})
-    ->Args({1, 64, 1})
-    ->Args({2, 64, 0})
-    ->Args({2, 64, 1})
-    ->Args({2, 64, 2})
-    ->Args({2, 16, 0})
-    ->Args({2, 16, 1})
-    ->Args({2, 16, 2})
-    ->Args({4, 64, 0})
-    ->Args({4, 64, 1})
-    ->Args({4, 64, 2})
-    ->Args({4, 16, 0})
-    ->Args({4, 16, 1})
-    ->Args({4, 16, 2})
+    ->Args({1, 64, 0, 64})
+    ->Args({1, 64, 1, 64})
+    ->Args({2, 64, 0, 64})
+    ->Args({2, 64, 1, 64})
+    ->Args({2, 64, 2, 64})
+    ->Args({2, 16, 0, 64})
+    ->Args({2, 16, 1, 64})
+    ->Args({2, 16, 2, 64})
+    ->Args({4, 64, 0, 64})
+    ->Args({4, 64, 1, 64})
+    ->Args({4, 64, 2, 64})
+    ->Args({4, 16, 0, 64})
+    ->Args({4, 16, 1, 64})
+    ->Args({4, 16, 2, 64})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
@@ -965,23 +979,70 @@ BENCHMARK_DEFINE_F(NUMABench_CacheLibNuma, Run)(benchmark::State& state) {
     RunNUMABench<CacheLibNumaAdapter>(state, trace);
 }
 BENCHMARK_REGISTER_F(NUMABench_CacheLibNuma, Run)
-    ->Args({1, 64, 0})
-    ->Args({1, 64, 1})
-    ->Args({2, 64, 0})
-    ->Args({2, 64, 1})
-    ->Args({2, 64, 2})
-    ->Args({2, 16, 0})
-    ->Args({2, 16, 1})
-    ->Args({2, 16, 2})
-    ->Args({4, 64, 0})
-    ->Args({4, 64, 1})
-    ->Args({4, 64, 2})
-    ->Args({4, 16, 0})
-    ->Args({4, 16, 1})
-    ->Args({4, 16, 2})
+    ->Args({1, 64, 0, 64})
+    ->Args({1, 64, 1, 64})
+    ->Args({2, 64, 0, 64})
+    ->Args({2, 64, 1, 64})
+    ->Args({2, 64, 2, 64})
+    ->Args({2, 16, 0, 64})
+    ->Args({2, 16, 1, 64})
+    ->Args({2, 16, 2, 64})
+    ->Args({4, 64, 0, 64})
+    ->Args({4, 64, 1, 64})
+    ->Args({4, 64, 2, 64})
+    ->Args({4, 16, 0, 64})
+    ->Args({4, 16, 1, 64})
+    ->Args({4, 16, 2, 64})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 #endif
+
+// ============================================================================
+//  NUMA-dominant workloads: larger values to make remote memory cost dominate
+//  With 1KB values, a remote memcpy (~200ns) dwarfs lock overhead (~50ns)
+// ============================================================================
+
+// --- FurrBall TL, large values ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
+    ->Args({2, 64, 0, 256})
+    ->Args({2, 64, 0, 1024})
+    ->Args({4, 64, 0, 256})
+    ->Args({4, 64, 0, 1024})
+    ->Args({2, 1024, 3, 64})
+    ->Args({2, 1024, 3, 1024})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- FurrBall SN, large values ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallSN, Run)
+    ->Args({2, 64, 0, 256})
+    ->Args({2, 64, 0, 1024})
+    ->Args({4, 64, 0, 256})
+    ->Args({4, 64, 0, 1024})
+    ->Args({2, 1024, 3, 64})
+    ->Args({2, 1024, 3, 1024})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- FurrBall CN, large values ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallCN, Run)
+    ->Args({2, 64, 0, 256})
+    ->Args({2, 64, 0, 1024})
+    ->Args({2, 1024, 3, 64})
+    ->Args({2, 1024, 3, 1024})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- TBB, large values ---
+BENCHMARK_REGISTER_F(NUMABench_TBB, Run)
+    ->Args({2, 64, 0, 256})
+    ->Args({2, 64, 0, 1024})
+    ->Args({4, 64, 0, 256})
+    ->Args({4, 64, 0, 1024})
+    ->Args({2, 1024, 3, 64})
+    ->Args({2, 1024, 3, 1024})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
 
 int main(int argc, char** argv) {
     benchmark::Initialize(&argc, argv);
