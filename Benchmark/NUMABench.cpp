@@ -1232,6 +1232,33 @@ BENCHMARK_REGISTER_F(NUMABench_CacheLibNuma, Run)
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
+// --- Equal cap 1024B: CacheLib ---
+BENCHMARK_REGISTER_F(NUMABench_CacheLib, Run)
+    ->Args({1, 8192, 0, 1024, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(NUMABench_CacheLib, Run)
+    ->Args({2, 8192, 0, 1024, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(NUMABench_CacheLib, Run)
+    ->Args({2, 8192, 1, 1024, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- Equal cap 1024B: CacheLibNuma ---
+BENCHMARK_REGISTER_F(NUMABench_CacheLibNuma, Run)
+    ->Args({2, 8192, 0, 1024, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(NUMABench_CacheLibNuma, Run)
+    ->Args({2, 8192, 1, 1024, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
 #endif
 
 // ============================================================================
