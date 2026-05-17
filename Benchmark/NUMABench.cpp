@@ -273,16 +273,16 @@ struct FurrBallAdapter {
 
     FurrBall<ArcPolicy>* fb = nullptr;
     std::string fbPath;
-    int numNodes = 1;
+    int nodeCount = 1;
     int pageCount = 64;
     static int runId;
 
     void create(int nodeCount, int pagesPerNode) {
-        numNodes = nodeCount;
+        this->nodeCount = nodeCount;
         pageCount = pagesPerNode;
 
         auto& gs = Detail::globalNumaState;
-        bool needsInit = !gs.Initialized || gs.NumaNodeCount != numNodes;
+        bool needsInit = !gs.Initialized || gs.NumaNodeCount != nodeCount;
         if (needsInit) {
             if (gs.Initialized) {
                 for (int i = 0; i < gs.NumaNodeCount; i++) {
@@ -293,10 +293,10 @@ struct FurrBallAdapter {
                 gs = {};
             }
 
-            gs.NumaNodeCount = numNodes;
-            if (numNodes > 1) gs.SysNumaPageSize = 65536;
-            gs.Workers = (NodeJob*)malloc(sizeof(NodeJob) * numNodes);
-            for (int i = 0; i < numNodes; i++) {
+            gs.NumaNodeCount = nodeCount;
+            if (nodeCount > 1) gs.SysNumaPageSize = 65536;
+            gs.Workers = (NodeJob*)malloc(sizeof(NodeJob) * nodeCount);
+            for (int i = 0; i < nodeCount; i++) {
                 new(&gs.Workers[i]) NodeJob(i);
                 gs.Workers[i].Start([](){});
             }
@@ -331,11 +331,12 @@ struct FurrBallAdapter {
     void destroy() {
         if (fb) { delete fb; fb = nullptr; }
     }
-};
 
+    int numNodes() const { return nodeCount; }
+};
 template <Routing R> int FurrBallAdapter<R>::runId = 0;
 
-// --- FurrBall single-node adapter (no NUMA, pure data structure baseline) ---
+// --- FurrBall Single Node (no NUMA baseline) ---
 
 struct FurrBallSNAdapter {
     static constexpr const char* Name = "FurrBall_SN";
@@ -393,6 +394,8 @@ struct FurrBallSNAdapter {
     void destroy() {
         if (fb) { delete fb; fb = nullptr; }
     }
+
+    static int numNodes() { return 1; }
 };
 
 int FurrBallSNAdapter::runId = 0;
@@ -458,6 +461,8 @@ struct FurrBallCNAdapter {
     void destroy() {
         if (fb) { delete fb; fb = nullptr; }
     }
+
+    static int numNodes() { return 2; }
 };
 
 int FurrBallCNAdapter::runId = 0;
@@ -495,6 +500,8 @@ struct TBBAdapter {
     void destroy() {
         delete map; map = nullptr;
     }
+
+    static int numNodes() { return 0; }
 };
 
 // --- cachelib adapter (default, no NUMA binding) ---
@@ -561,6 +568,8 @@ struct CacheLibAdapter {
             system(rm.c_str());
         }
     }
+
+    static int numNodes() { return 0; }
 };
 int CacheLibAdapter::runId = 0;
 
@@ -582,13 +591,13 @@ struct CacheLibNumaAdapter {
     size_t cacheSizeBytes;
     static int runId;
     std::string cacheDir;
-    int numNodes;
+    int nodeCount;
     static inline thread_local int currentPoolIdx = 0;
 
     void create(int nodeCount, int pagesPerNode) {
-        numNodes = nodeCount;
+        this->nodeCount = nodeCount;
         cacheSizeBytes = (size_t)pagesPerNode * PAGE_SIZE;
-        size_t perNodeBytes = cacheSizeBytes / std::max(numNodes, 1);
+        size_t perNodeBytes = cacheSizeBytes / std::max(nodeCount, 1);
         if (perNodeBytes < 32 * 1024 * 1024) perNodeBytes = 32 * 1024 * 1024;
 
         cacheDir = "/tmp/cachelib_numa_numabench_" + std::to_string(runId++);
@@ -596,7 +605,7 @@ struct CacheLibNumaAdapter {
 
         LruAllocator::Config config;
         config.setCacheName("numabench_cl_numa");
-        config.setCacheSize(perNodeBytes * numNodes);
+        config.setCacheSize(perNodeBytes * nodeCount);
         config.cacheDir = cacheDir;
 
         std::set<uint32_t> allocSizes = {64, 128, 256, 512, 1024, 2048};
@@ -604,7 +613,7 @@ struct CacheLibNumaAdapter {
 
         cache = std::make_unique<LruAllocator>(config);
 
-        if (numNodes >= 2) {
+        if (nodeCount >= 2) {
             pools[0] = cache->addPool("node0", perNodeBytes / 2);
             pools[1] = cache->addPool("node1", perNodeBytes / 2);
         } else {
@@ -614,7 +623,7 @@ struct CacheLibNumaAdapter {
     }
 
     void setThreadPool(int threadIdx) {
-        currentPoolIdx = (numNodes >= 2) ? std::min(threadIdx, 1) : 0;
+        currentPoolIdx = (nodeCount >= 2) ? std::min(threadIdx, 1) : 0;
     }
 
     bool get(const std::string& key, uint8_t* buf, size_t bufSize, size_t& outSize) {
@@ -644,6 +653,8 @@ struct CacheLibNumaAdapter {
             system(rm.c_str());
         }
     }
+
+    static int numNodes() { return 0; }
 };
 int CacheLibNumaAdapter::runId = 0;
 #endif
@@ -766,7 +777,8 @@ void RunNUMABench(benchmark::State& state, std::vector<TraceEntry>& trace) {
                 cfg.totalThreads = numThreads;
                 cfg.trace = &trace;
 
-                results[t] = runWorker(sys, cfg, t % numThreads);
+                int nn = sys.numNodes();
+                results[t] = runWorker(sys, cfg, nn > 0 ? (t % nn) : -1);
             });
         }
 
