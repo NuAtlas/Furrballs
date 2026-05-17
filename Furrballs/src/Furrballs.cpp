@@ -492,7 +492,7 @@ size_t NuAtlas::FurrBall<Policy>::EvictOneKey(int nodeID) noexcept {
         }
     }
 
-    auto eraseResult = details->KeyStore.EraseByHash(victimHp);
+    auto eraseResult = details->KeyStore.EraseByHash(HashPair{0, victimH2});
     size_t freedSize = 0;
     if (eraseResult.err == NO_ERR && eraseResult.value.has_value()) {
         const KeyMeta& meta = eraseResult.value.value();
@@ -513,8 +513,8 @@ size_t NuAtlas::FurrBall<Policy>::EvictOneKey(int nodeID) noexcept {
     Stats.PerKeyEvictionCount.fetch_add(1, std::memory_order_relaxed);
 
     details->FrozenLock.lock();
-    details->KeyNames.erase(victimHp.h2);
-    details->FrozenIndex.erase(victimHp.h2);
+    details->KeyNames.erase(victimH2);
+    details->FrozenIndex.erase(victimH2);
     details->FrozenLock.unlock();
 
     return freedSize;
@@ -549,7 +549,7 @@ void NuAtlas::FurrBall<Policy>::ScanAndExecute(int nodeID) noexcept {
         }
 
         page.Recycle();
-        Stats.EvictionCount.fetch_add(static_cast<unsigned int>(keys.size()),
+        Stats.EvictionCount.fetch_add(static_cast<unsigned int>(h2s.size()),
             std::memory_order_relaxed);
     }
 
@@ -809,16 +809,16 @@ FurrBall<Policy>::ManagePages(int nodeID, bool simulateIO) noexcept {
                             });
                     }
 
-                    srcWarmPage.AddKeyEntry(hotHp, hotTc);
-                    details->KeyStore.UpdateInPlaceByHash(hotHp,
+                    srcWarmPage.AddKeyEntry(HashPair{0, hotH2}, hotTc);
+                    details->KeyStore.UpdateInPlaceByHash(HashPair{0, hotH2},
                         [pi = warmPI.idx, d = details](KeyMeta& m) {
                             m.PageIndex = pi;
                             m.TempCtrlIdx = static_cast<uint8_t>(
                                 d->NodePages[pi].KeyH2.size() - 1);
                         });
 
-                    srcColdPage.AddKeyEntry(coldHp, coldTc);
-                    details->KeyStore.UpdateInPlaceByHash(coldHp,
+                    srcColdPage.AddKeyEntry(HashPair{0, coldH2}, coldTc);
+                    details->KeyStore.UpdateInPlaceByHash(HashPair{0, coldH2},
                         [pi = coldPI.idx, d = details](KeyMeta& m) {
                             m.PageIndex = pi;
                             m.TempCtrlIdx = static_cast<uint8_t>(
