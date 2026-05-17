@@ -140,6 +140,41 @@ struct PerNodeDetails{
     float AdaptiveStep = 0.05f;
     uint8_t MaxDeadAge = 8;
 
+    // --- Persistence bookkeeping (cold-path only in volatile mode) ---
+    //
+    // DESIGN DEBT: FrozenLock guards KeyNames and FrozenIndex, which are
+    // ONLY needed for persistence recovery (looking up key strings from
+    // h2 hashes after a crash/restart, and mapping frozen-page entries).
+    //
+    // In volatile mode (IsVolatile=true), NONE of this matters:
+    //   - FrozenIndex is never read (Get's frozen-page fallback at ~line 1152
+    //     is guarded by !Volatile)
+    //   - KeyNames is only used to reconstruct key strings from h2 during
+    //     eviction (swap fixup at ~line 484) and cold-page freeze (~line 1305)
+    //   - Both eviction and cold-page freeze are themselves guarded by
+    //     !Volatile already
+    //
+    // PROBLEM: Three FrozenLock acquisition sites are NOT guarded by Volatile:
+    //   1. Set hot path (~line 1418): updates KeyNames[FrozenIndex] on every
+    //      successful insert. This is the WORST offender — it runs on every
+    //      Set even in volatile mode.
+    //   2. EvictOneKey swap fixup (~line 484): looks up KeyNames when
+    //      RemoveKeyEntry returns a swapped h2. In volatile mode this lookup
+    //      is useless because KeyNames was never populated (if fixed).
+    //   3. EvictOneKey cleanup (~line 515): erases from KeyNames/FrozenIndex.
+    //      Same — no-op in volatile mode if KeyNames was never populated.
+    //
+    // INTERIM FIX: Guard all three sites with `if (!Volatile)`.
+    //
+    // PROPER FIX: The persistence subsystem should be decoupled from the
+    // hot path entirely. Options:
+    //   a) Separate VolatileDetails struct (no KeyNames/FrozenIndex/FrozenLock
+    //      at all) — selected at construction time based on IsVolatile.
+    //   b) Deferred batch: accumulate (h2, key) pairs in a lock-free buffer,
+    //      flush to KeyNames periodically from a background thread.
+    //   c) Concurrent hash map for KeyNames (folly::ConcurrentHashMap or
+    //      similar) — eliminates the SpinLock but not the hash lookups.
+    //
     struct FrozenEntry {
         std::string key;
         size_t pageIndex;
@@ -480,7 +515,7 @@ size_t NuAtlas::FurrBall<Policy>::EvictOneKey(int nodeID) noexcept {
     uint32_t victimH2 = page.KeyH2[bestKeyIdx];
 
     uint32_t swappedH2 = page.RemoveKeyEntry(bestKeyIdx);
-    if (swappedH2 != victimH2 && swappedH2 != 0) {
+    if (!Volatile && swappedH2 != victimH2 && swappedH2 != 0) {
         details->FrozenLock.lock();
         auto it = details->KeyNames.find(swappedH2);
         details->FrozenLock.unlock();
@@ -512,10 +547,12 @@ size_t NuAtlas::FurrBall<Policy>::EvictOneKey(int nodeID) noexcept {
     Stats.EvictionCount.fetch_add(1, std::memory_order_relaxed);
     Stats.PerKeyEvictionCount.fetch_add(1, std::memory_order_relaxed);
 
-    details->FrozenLock.lock();
-    details->KeyNames.erase(victimH2);
-    details->FrozenIndex.erase(victimH2);
-    details->FrozenLock.unlock();
+    if (!Volatile) {
+        details->FrozenLock.lock();
+        details->KeyNames.erase(victimH2);
+        details->FrozenIndex.erase(victimH2);
+        details->FrozenLock.unlock();
+    }
 
     return freedSize;
 }
@@ -1415,10 +1452,12 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
     Error err = details->KeyStore.Set(key, metadata);
     if (err == NO_ERR) {
         Stats.BytesWritten.fetch_add(size, std::memory_order_relaxed);
-        details->FrozenLock.lock();
-        details->KeyNames[hp.h2] = key;
-        details->FrozenIndex.erase(hp.h2);
-        details->FrozenLock.unlock();
+        if (!Volatile) {
+            details->FrozenLock.lock();
+            details->KeyNames[hp.h2] = key;
+            details->FrozenIndex.erase(hp.h2);
+            details->FrozenLock.unlock();
+        }
         if constexpr (Policy::HasDesire && Policy::HasPerKeyState) {
             uint8_t desire = details->ShadowDesire.get(hp.h2);
             desire = Policy::OnLocalAccess(desire, policyConfig);
