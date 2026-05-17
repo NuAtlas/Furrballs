@@ -246,14 +246,14 @@ void NuAtlas::FurrBall<Policy>::OnKeyEvict(int nodeID, const KeyMeta& meta) noex
     Page& page = details->NodePages[meta.PageIndex];
     if (meta.TempCtrlIdx >= page.KeyH2.size()) return;
 
-    HashPair swappedHp = page.RemoveKeyEntry(meta.TempCtrlIdx);
+    uint32_t swappedH2 = page.RemoveKeyEntry(meta.TempCtrlIdx);
 
     size_t offset = reinterpret_cast<size_t>(meta.DataOffset) -
                     reinterpret_cast<size_t>(page.Data);
     page.AddFreeSlot(static_cast<uint32_t>(offset), static_cast<uint32_t>(meta.DataSize));
 
-    if (swappedHp.h2 != 0) {
-        details->KeyStore.UpdateInPlaceByHash(swappedHp,
+    if (swappedH2 != 0) {
+        details->KeyStore.UpdateInPlaceByHash(HashPair{0, swappedH2},
             [idx = meta.TempCtrlIdx](KeyMeta& m) {
                 m.TempCtrlIdx = static_cast<uint8_t>(idx);
             });
