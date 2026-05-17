@@ -245,6 +245,15 @@ static std::vector<Op> generateWorkload(const WorkloadConfig& cfg) {
         }
         break;
     }
+    case WorkloadType::ReadOnly: {
+        uint64_t rangeSize = cfg.zipfianUniverse / cfg.totalThreads;
+        uint64_t base = (uint64_t)cfg.threadIndex * rangeSize;
+        for (size_t i = 0; i < cfg.opsPerThread; i++) {
+            uint64_t ki = base + (zipfian(rangeSize, cfg.zipfianTheta, zState) % rangeSize);
+            ops.push_back({"p_" + std::to_string(ki), true});
+        }
+        break;
+    }
     }
     return ops;
 }
@@ -967,27 +976,84 @@ BENCHMARK_DEFINE_F(NUMABench_FurrBallLRUSN, Run)(benchmark::State& state) {
     RunNUMABench<FurrBallLRUSNAdapter>(state, trace);
 }
 
+// Equal-capacity LRU benchmarks (32MB budget, 700K universe)
+// LRU_TL (2-node): pagesPerNode=4096 for 2t, 2048 for 4t, 8192 for 1t
+// LRU_SN (1-node): pagesPerNode=8192 always
+
+// --- LRU Equal cap: Partitioned 2t ---
 BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUTL, Run)
-    ->Args({1, 64, 0, 64, 100000})
-    ->Args({1, 64, 1, 64, 100000})
-    ->Args({2, 64, 0, 64, 100000})
-    ->Args({2, 64, 1, 64, 100000})
-    ->Args({2, 64, 2, 64, 100000})
-    ->Args({4, 64, 0, 64, 100000})
-    ->Args({4, 64, 1, 64, 100000})
+    ->Args({2, 4096, 0, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
-// --- FurrBall LRU SingleNode ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUSN, Run)
+    ->Args({2, 8192, 0, 64, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- LRU Equal cap: Shared 2t ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUTL, Run)
+    ->Args({2, 4096, 1, 64, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUSN, Run)
-    ->Args({1, 64, 0, 64, 100000})
-    ->Args({1, 64, 1, 64, 100000})
-    ->Args({2, 64, 0, 64, 100000})
-    ->Args({2, 64, 1, 64, 100000})
-    ->Args({2, 64, 2, 64, 100000})
-    ->Args({4, 64, 0, 64, 100000})
-    ->Args({4, 64, 1, 64, 100000})
+    ->Args({2, 8192, 1, 64, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- LRU Equal cap: Trace 2t ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUTL, Run)
+    ->Args({2, 4096, 2, 64, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUSN, Run)
+    ->Args({2, 8192, 2, 64, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- LRU Equal cap: ReadOnly 2t ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUTL, Run)
+    ->Args({2, 4096, 3, 64, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUSN, Run)
+    ->Args({2, 8192, 3, 64, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- LRU Equal cap: Partitioned 4t ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUTL, Run)
+    ->Args({4, 2048, 0, 64, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUSN, Run)
+    ->Args({4, 8192, 0, 64, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- LRU Equal cap: Shared 4t ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUTL, Run)
+    ->Args({4, 2048, 1, 64, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUSN, Run)
+    ->Args({4, 8192, 1, 64, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- LRU Equal cap: Single-thread baseline ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUTL, Run)
+    ->Args({1, 8192, 0, 64, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUSN, Run)
+    ->Args({1, 8192, 0, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
