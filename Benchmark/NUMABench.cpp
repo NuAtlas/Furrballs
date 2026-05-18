@@ -189,7 +189,7 @@ static void reportAgg(benchmark::State& state, const AggregateResult& ar) {
 //  Trace: replay Twitter trace across all threads (interleaved)
 // ============================================================================
 
-enum class WorkloadType { Partitioned, Shared, Trace, ReadOnly };
+enum class WorkloadType { Partitioned, Shared, Trace, ReadOnly, UniformRO };
 
 struct Op {
     std::string key;
@@ -250,6 +250,16 @@ static std::vector<Op> generateWorkload(const WorkloadConfig& cfg) {
         uint64_t base = (uint64_t)cfg.threadIndex * rangeSize;
         for (size_t i = 0; i < cfg.opsPerThread; i++) {
             uint64_t ki = base + (zipfian(rangeSize, cfg.zipfianTheta, zState) % rangeSize);
+            ops.push_back({"p_" + std::to_string(ki), true});
+        }
+        break;
+    }
+    case WorkloadType::UniformRO: {
+        uint64_t rangeSize = cfg.zipfianUniverse / cfg.totalThreads;
+        uint64_t base = (uint64_t)cfg.threadIndex * rangeSize;
+        std::mt19937_64 rng(42 + cfg.threadIndex * 1000);
+        for (size_t i = 0; i < cfg.opsPerThread; i++) {
+            uint64_t ki = base + (rng() % rangeSize);
             ops.push_back({"p_" + std::to_string(ki), true});
         }
         break;
@@ -851,14 +861,23 @@ static ThreadResult runWorker(
     uint8_t outBuf[8192];
     std::vector<uint8_t> val(valueSize, 'x');
 
-    if (cfg.type == WorkloadType::ReadOnly) {
+    if (cfg.type == WorkloadType::ReadOnly || cfg.type == WorkloadType::UniformRO) {
         uint64_t zState = 42 + cfg.threadIndex * 1000;
         uint64_t rangeSize = cfg.zipfianUniverse / cfg.totalThreads;
         uint64_t base = (uint64_t)cfg.threadIndex * rangeSize;
-        for (size_t i = 0; i < cfg.opsPerThread; i++) {
-            uint64_t ki = base + (zipfian(rangeSize, cfg.zipfianTheta, zState) % rangeSize);
-            std::string key = "key_" + std::to_string(ki);
-            sys.put(key, val.data(), valueSize);
+        if (cfg.type == WorkloadType::UniformRO) {
+            std::mt19937_64 rng(42 + cfg.threadIndex * 1000);
+            for (size_t i = 0; i < cfg.opsPerThread; i++) {
+                uint64_t ki = base + (rng() % rangeSize);
+                std::string key = "p_" + std::to_string(ki);
+                sys.put(key, val.data(), valueSize);
+            }
+        } else {
+            for (size_t i = 0; i < cfg.opsPerThread; i++) {
+                uint64_t ki = base + (zipfian(rangeSize, cfg.zipfianTheta, zState) % rangeSize);
+                std::string key = "p_" + std::to_string(ki);
+                sys.put(key, val.data(), valueSize);
+            }
         }
     }
 
@@ -873,7 +892,7 @@ static ThreadResult runWorker(
             result.gets++;
             if (found) {
                 result.hits++;
-            } else if (cfg.type != WorkloadType::ReadOnly) {
+            } else if (cfg.type != WorkloadType::ReadOnly && cfg.type != WorkloadType::UniformRO) {
                 result.misses++;
                 auto ts0 = std::chrono::high_resolution_clock::now();
                 sys.put(op.key, val.data(), valueSize);
@@ -904,6 +923,7 @@ static const char* workloadName(int w) {
     case 1: return "Shared";
     case 2: return "Trace";
     case 3: return "ReadOnly";
+    case 4: return "UniformRO";
     default: return "?";
     }
 }
@@ -1752,49 +1772,63 @@ BENCHMARK_REGISTER_F(NUMABench_TBB, Run)
     ->Unit(benchmark::kMicrosecond);
 
 // ============================================================================
-//  Working-set sweep: 32MB / 64MB / 128MB at 1024B ReadOnly
+//  Working-set sweep: 32MB / 64MB / 128MB at 1024B
+//  Uses UniformRO (workload=4) to spread access across all keys uniformly.
+//  Zipfian concentrates on ~30K hot keys regardless of capacity, so
+//  the hot set fits in L3. Uniform forces all allocated keys to be accessed,
+//  exceeding L3 at 64MB+.
+//
 //  L3 cache on Ice Lake 8375C is 56MB shared per socket.
-//  At 32MB the working set fits in L3 (no NUMA DRAM penalty).
-//  At 64MB+ it exceeds L3, forcing DRAM access where NUMA placement matters.
-//  Universe=700K, so ~30K hot keys × 1024B ≈ 30MB active working set.
 //  TL/SN/Remote at each size reveals the L3-to-DRAM crossover.
+//
+//  Also includes 32MB UniformRO baseline for comparison with Zipfian ReadOnly.
 // ============================================================================
 
-// --- 64MB: just above L3 ---
-// TL: 64MB/2 nodes = 16384 ppn
+// --- 32MB UniformRO baseline (compare with Zipfian ReadOnly at 32MB) ---
 BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
-    ->Args({2, 16384, 3, 1024, 700000})
+    ->Args({2, 4096, 4, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
-// SN: 64MB/1 node = 16384 ppn
 BENCHMARK_REGISTER_F(NUMABench_FurrBallSN, Run)
-    ->Args({2, 16384, 3, 1024, 700000})
+    ->Args({2, 8192, 4, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
-// Remote: 64MB/1 node = 16384 ppn (thread 1 on node 1, data on node 0)
 BENCHMARK_REGISTER_F(NUMABench_FurrBallRemote, Run)
-    ->Args({2, 16384, 3, 1024, 700000})
+    ->Args({2, 8192, 4, 1024, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- 64MB: just above L3 ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
+    ->Args({2, 16384, 4, 1024, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(NUMABench_FurrBallSN, Run)
+    ->Args({2, 16384, 4, 1024, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(NUMABench_FurrBallRemote, Run)
+    ->Args({2, 16384, 4, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 // --- 128MB: well above L3 ---
-// TL: 128MB/2 nodes = 32768 ppn (but CMap slots may be huge)
 BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
-    ->Args({2, 32768, 3, 1024, 700000})
+    ->Args({2, 32768, 4, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
-// SN: 128MB/1 node = 32768 ppn
 BENCHMARK_REGISTER_F(NUMABench_FurrBallSN, Run)
-    ->Args({2, 32768, 3, 1024, 700000})
+    ->Args({2, 32768, 4, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
-// Remote: 128MB/1 node = 32768 ppn
 BENCHMARK_REGISTER_F(NUMABench_FurrBallRemote, Run)
-    ->Args({2, 32768, 3, 1024, 700000})
+    ->Args({2, 32768, 4, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
