@@ -1751,6 +1751,53 @@ BENCHMARK_REGISTER_F(NUMABench_TBB, Run)
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
+// ============================================================================
+//  Working-set sweep: 32MB / 64MB / 128MB at 1024B ReadOnly
+//  L3 cache on Ice Lake 8375C is 56MB shared per socket.
+//  At 32MB the working set fits in L3 (no NUMA DRAM penalty).
+//  At 64MB+ it exceeds L3, forcing DRAM access where NUMA placement matters.
+//  Universe=700K, so ~30K hot keys × 1024B ≈ 30MB active working set.
+//  TL/SN/Remote at each size reveals the L3-to-DRAM crossover.
+// ============================================================================
+
+// --- 64MB: just above L3 ---
+// TL: 64MB/2 nodes = 16384 ppn
+BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
+    ->Args({2, 16384, 3, 1024, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// SN: 64MB/1 node = 16384 ppn
+BENCHMARK_REGISTER_F(NUMABench_FurrBallSN, Run)
+    ->Args({2, 16384, 3, 1024, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// Remote: 64MB/1 node = 16384 ppn (thread 1 on node 1, data on node 0)
+BENCHMARK_REGISTER_F(NUMABench_FurrBallRemote, Run)
+    ->Args({2, 16384, 3, 1024, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- 128MB: well above L3 ---
+// TL: 128MB/2 nodes = 32768 ppn (but CMap slots may be huge)
+BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
+    ->Args({2, 32768, 3, 1024, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// SN: 128MB/1 node = 32768 ppn
+BENCHMARK_REGISTER_F(NUMABench_FurrBallSN, Run)
+    ->Args({2, 32768, 3, 1024, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// Remote: 128MB/1 node = 32768 ppn
+BENCHMARK_REGISTER_F(NUMABench_FurrBallRemote, Run)
+    ->Args({2, 32768, 3, 1024, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
 int main(int argc, char** argv) {
     benchmark::Initialize(&argc, argv);
     if (benchmark::ReportUnrecognizedArguments(argc, argv)) return 1;
