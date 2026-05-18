@@ -555,6 +555,76 @@ template <typename Policy> int FurrBallCNAdapterT<Policy>::runId = 0;
 
 using FurrBallLRUCNAdapter = FurrBallCNAdapterT<LruPolicy>;
 
+// --- FurrBall Remote-Only adapter ---
+// All data on node 0. Thread 1 pinned to node 1 reads remote.
+// Thread 0 is local (node 0). Thread 1 is 100% remote.
+// Per-node p50 reveals: node0=local, node1=remote — no blending.
+
+template <typename Policy = ArcPolicy>
+struct FurrBallRemoteAdapter {
+    static constexpr const char* Name = "FurrBall_Remote";
+
+    static constexpr size_t PAGE_SIZE = 4096;
+
+    FurrBall<Policy>* fb = nullptr;
+    std::string fbPath;
+    size_t footprintBytes_ = 0;
+    static int runId;
+
+    void create(int nodeCount, int pagesPerNode) {
+        auto& gs = Detail::globalNumaState;
+        if (gs.Initialized) {
+            for (int i = 0; i < gs.NumaNodeCount; i++) {
+                gs.Workers[i].Stop();
+                gs.Workers[i].~NodeJob();
+            }
+            free(gs.Workers);
+            gs = {};
+        }
+
+        gs.NumaNodeCount = 1;
+        gs.Workers = (NodeJob*)malloc(sizeof(NodeJob));
+        new(&gs.Workers[0]) NodeJob(0);
+        gs.Workers[0].Start([](){});
+        gs.Initialized = true;
+
+        fbPath = "/tmp/numabench_remote_" + std::to_string(runId++);
+        footprintBytes_ = (size_t)pagesPerNode * PAGE_SIZE;
+
+        NumaConfig nc;
+        nc.AllocateUsingNodePageSize = false;
+        nc.UseThreadLocalRouting = false;
+
+        FurrConfig fc;
+        fc.PageSize = PAGE_SIZE;
+        fc.InitialPageCount = pagesPerNode;
+        fc.IsVolatile = true;
+        fc.EnableNUMA = true;
+        fc.numaConfig = &nc;
+
+        fb = FurrBall<Policy>::CreateBall(fbPath, fc, true);
+    }
+
+    bool get(const std::string& key, uint8_t* buf, size_t bufSize, size_t& outSize) {
+        Error err = fb->Get(key, buf, bufSize, outSize);
+        return (err == NO_ERR && outSize > 0);
+    }
+
+    void put(const std::string& key, const uint8_t* data, size_t size) {
+        fb->Set(key, const_cast<uint8_t*>(data), size);
+    }
+
+    void destroy() {
+        if (fb) { delete fb; fb = nullptr; }
+    }
+
+    static int numNodes() { return 2; }
+};
+
+template <typename Policy> int FurrBallRemoteAdapter<Policy>::runId = 0;
+
+using FurrBallLRURemoteAdapter = FurrBallRemoteAdapter<LruPolicy>;
+
 // --- TBB concurrent_hash_map adapter ---
 
 struct TBBAdapter {
@@ -1074,6 +1144,20 @@ BENCHMARK_DEFINE_F(NUMABench_FurrBallLRUCN, Run)(benchmark::State& state) {
     RunNUMABench<FurrBallLRUCNAdapter>(state, trace);
 }
 
+// --- FurrBall Remote-Only (ARC) ---
+
+struct NUMABench_FurrBallRemote : NUMABench<FurrBallRemoteAdapter<ArcPolicy>> {};
+BENCHMARK_DEFINE_F(NUMABench_FurrBallRemote, Run)(benchmark::State& state) {
+    RunNUMABench<FurrBallRemoteAdapter<ArcPolicy>>(state, trace);
+}
+
+// --- FurrBall Remote-Only (LRU) ---
+
+struct NUMABench_FurrBallLRURemote : NUMABench<FurrBallLRURemoteAdapter> {};
+BENCHMARK_DEFINE_F(NUMABench_FurrBallLRURemote, Run)(benchmark::State& state) {
+    RunNUMABench<FurrBallLRURemoteAdapter>(state, trace);
+}
+
 // Equal-capacity LRU benchmarks (32MB budget, 700K universe)
 // LRU_TL (2-node): pagesPerNode=4096 for 2t, 2048 for 4t, 8192 for 1t
 // LRU_SN (1-node): pagesPerNode=8192 always
@@ -1246,6 +1330,27 @@ BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUCN, Run)
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUCN, Run)
     ->Args({2, 4096, 3, 1024, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- Remote-Only 1024B: Partitioned + ReadOnly (thread 1 = 100% remote) ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallRemote, Run)
+    ->Args({2, 8192, 0, 1024, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(NUMABench_FurrBallRemote, Run)
+    ->Args({2, 8192, 3, 1024, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRURemote, Run)
+    ->Args({2, 8192, 0, 1024, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRURemote, Run)
+    ->Args({2, 8192, 3, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
