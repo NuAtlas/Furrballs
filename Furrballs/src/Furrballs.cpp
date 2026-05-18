@@ -1566,11 +1566,13 @@ FurrBall<Policy> *FurrBall<Policy>::CreateBall(const std::string &DBpath, const 
     options.create_if_missing = true;
     options.optimize_filters_for_hits = true;
 
-    rocksdb::Status status = rocksdb::DB::Open(options, DBpath, &db);
+    std::unique_ptr<rocksdb::DB> dbPtr;
+    auto status = rocksdb::DB::Open(options, DBpath, &dbPtr);
     if (!status.ok()) {
         Logger::getInstance().error("Failed to open RocksDB at " + DBpath + ": " + status.ToString());
         return nullptr;
     }
+    db = dbPtr.release();
 
     numPages = config.InitialPageCount;
     totalPhysicalPageSize = numPages * config.PageSize;
