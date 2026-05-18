@@ -1526,6 +1526,27 @@ BENCHMARK_REGISTER_F(NUMABench_CacheLibNuma, Run)
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
+// --- Working-set sweep: CacheLib UniformRO 64MB / 128MB ---
+BENCHMARK_REGISTER_F(NUMABench_CacheLib, Run)
+    ->Args({2, 16384, 4, 1024, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(NUMABench_CacheLib, Run)
+    ->Args({2, 32768, 4, 1024, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(NUMABench_CacheLibNuma, Run)
+    ->Args({2, 16384, 4, 1024, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(NUMABench_CacheLibNuma, Run)
+    ->Args({2, 32768, 4, 1024, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
 #endif
 
 // ============================================================================
