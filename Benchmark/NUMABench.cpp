@@ -284,11 +284,13 @@ struct FurrBallAdapter {
     std::string fbPath;
     int nodeCount = 1;
     int pageCount = 64;
+    size_t footprintBytes_ = 0;
     static int runId;
 
     void create(int nodeCount, int pagesPerNode) {
         this->nodeCount = nodeCount;
         pageCount = pagesPerNode;
+        footprintBytes_ = (size_t)pagesPerNode * PAGE_SIZE * nodeCount;
 
         auto& gs = Detail::globalNumaState;
         bool needsInit = !gs.Initialized || gs.NumaNodeCount != nodeCount;
@@ -355,10 +357,12 @@ struct FurrBallSNAdapterT {
 
     FurrBall<Policy>* fb = nullptr;
     std::string fbPath;
+    size_t footprintBytes_ = 0;
     static int runId;
 
     void create(int nodeCount, int pagesPerNode) {
         (void)nodeCount;
+        footprintBytes_ = (size_t)pagesPerNode * PAGE_SIZE;
 
         auto& gs = Detail::globalNumaState;
         if (gs.Initialized) {
@@ -421,6 +425,7 @@ struct FurrBallCNAdapter {
 
     FurrBall<ArcPolicy>* fb = nullptr;
     std::string fbPath;
+    size_t footprintBytes_ = 0;
     static int runId;
 
     void create(int nodeCount, int pagesPerNode) {
@@ -445,6 +450,7 @@ struct FurrBallCNAdapter {
         gs.Initialized = true;
 
         fbPath = "/tmp/numabench_cn_" + std::to_string(runId++);
+        footprintBytes_ = (size_t)pagesPerNode * PAGE_SIZE * 2;
 
         NumaConfig nc;
         nc.AllocateUsingNodePageSize = false;
@@ -478,6 +484,77 @@ struct FurrBallCNAdapter {
 
 int FurrBallCNAdapter::runId = 0;
 
+// --- FurrBall cross-node LRU adapter ---
+
+template <typename Policy = ArcPolicy>
+struct FurrBallCNAdapterT {
+    static constexpr const char* Name = "FurrBall_CN";
+
+    static constexpr size_t PAGE_SIZE = 4096;
+
+    FurrBall<Policy>* fb = nullptr;
+    std::string fbPath;
+    size_t footprintBytes_ = 0;
+    static int runId;
+
+    void create(int nodeCount, int pagesPerNode) {
+        auto& gs = Detail::globalNumaState;
+        if (gs.Initialized) {
+            for (int i = 0; i < gs.NumaNodeCount; i++) {
+                gs.Workers[i].Stop();
+                gs.Workers[i].~NodeJob();
+            }
+            free(gs.Workers);
+            gs = {};
+        }
+
+        int actualNodes = std::max(nodeCount, 2);
+        gs.NumaNodeCount = actualNodes;
+        if (actualNodes > 1) gs.SysNumaPageSize = 65536;
+        gs.Workers = (NodeJob*)malloc(sizeof(NodeJob) * actualNodes);
+        for (int i = 0; i < actualNodes; i++) {
+            new(&gs.Workers[i]) NodeJob(i);
+            gs.Workers[i].Start([](){});
+        }
+        gs.Initialized = true;
+
+        fbPath = "/tmp/numabench_cn_" + std::to_string(runId++);
+        footprintBytes_ = (size_t)pagesPerNode * PAGE_SIZE * actualNodes;
+
+        NumaConfig nc;
+        nc.AllocateUsingNodePageSize = false;
+        nc.UseThreadLocalRouting = false;
+
+        FurrConfig fc;
+        fc.PageSize = PAGE_SIZE;
+        fc.InitialPageCount = pagesPerNode;
+        fc.IsVolatile = true;
+        fc.EnableNUMA = true;
+        fc.numaConfig = &nc;
+
+        fb = FurrBall<Policy>::CreateBall(fbPath, fc, true);
+    }
+
+    bool get(const std::string& key, uint8_t* buf, size_t bufSize, size_t& outSize) {
+        Error err = fb->Get(key, buf, bufSize, outSize);
+        return (err == NO_ERR && outSize > 0);
+    }
+
+    void put(const std::string& key, const uint8_t* data, size_t size) {
+        fb->Set(key, const_cast<uint8_t*>(data), size);
+    }
+
+    void destroy() {
+        if (fb) { delete fb; fb = nullptr; }
+    }
+
+    static int numNodes() { return 2; }
+};
+
+template <typename Policy> int FurrBallCNAdapterT<Policy>::runId = 0;
+
+using FurrBallLRUCNAdapter = FurrBallCNAdapterT<LruPolicy>;
+
 // --- TBB concurrent_hash_map adapter ---
 
 struct TBBAdapter {
@@ -485,9 +562,11 @@ struct TBBAdapter {
 
     using Map = tbb::concurrent_hash_map<std::string, std::vector<uint8_t>>;
     Map* map = nullptr;
+    size_t footprintBytes_ = 0;
 
     void create(int, int) {
         map = new Map();
+        footprintBytes_ = 0;
     }
 
     bool get(const std::string& key, uint8_t* buf, size_t bufSize, size_t& outSize) {
@@ -527,29 +606,34 @@ struct CacheLibAdapter {
 
     static constexpr size_t PAGE_SIZE = 4096;
 
+    static constexpr size_t TARGET_USABLE_BYTES = 32 * 1024 * 1024;
+
     std::unique_ptr<LruAllocator> cache;
     PoolId pool;
-    size_t cacheSizeBytes;
+    size_t footprintBytes_ = 0;
     static int runId;
     std::string cacheDir;
 
     void create(int, int pagesPerNode) {
-        cacheSizeBytes = (size_t)pagesPerNode * PAGE_SIZE;
-        if (cacheSizeBytes < 32 * 1024 * 1024) cacheSizeBytes = 32 * 1024 * 1024;
+        size_t targetBytes = (size_t)pagesPerNode * PAGE_SIZE;
+        if (targetBytes < TARGET_USABLE_BYTES) targetBytes = TARGET_USABLE_BYTES;
+
+        size_t configSize = targetBytes * 2;
 
         cacheDir = "/tmp/cachelib_numabench_" + std::to_string(runId++);
         mkdir(cacheDir.c_str(), 0755);
 
         LruAllocator::Config config;
         config.setCacheName("numabench_cl");
-        config.setCacheSize(cacheSizeBytes);
+        config.setCacheSize(configSize);
         config.cacheDir = cacheDir;
 
         std::set<uint32_t> allocSizes = {64, 128, 256, 512, 1024, 2048};
         config.setDefaultAllocSizes(allocSizes);
 
         cache = std::make_unique<LruAllocator>(config);
-        pool = cache->addPool("default", cacheSizeBytes / 2);
+        pool = cache->addPool("default", targetBytes);
+        footprintBytes_ = configSize;
     }
 
     bool get(const std::string& key, uint8_t* buf, size_t bufSize, size_t& outSize) {
@@ -597,9 +681,11 @@ struct CacheLibNumaAdapter {
 
     static constexpr size_t PAGE_SIZE = 4096;
 
+    static constexpr size_t TARGET_USABLE_BYTES = 32 * 1024 * 1024;
+
     std::unique_ptr<LruAllocator> cache;
     PoolId pools[2];
-    size_t cacheSizeBytes;
+    size_t footprintBytes_ = 0;
     static int runId;
     std::string cacheDir;
     int nodeCount;
@@ -607,16 +693,19 @@ struct CacheLibNumaAdapter {
 
     void create(int nodeCount, int pagesPerNode) {
         this->nodeCount = nodeCount;
-        cacheSizeBytes = (size_t)pagesPerNode * PAGE_SIZE;
-        size_t perNodeBytes = cacheSizeBytes / std::max(nodeCount, 1);
-        if (perNodeBytes < 32 * 1024 * 1024) perNodeBytes = 32 * 1024 * 1024;
+        size_t totalTarget = (size_t)pagesPerNode * PAGE_SIZE;
+        if (totalTarget < TARGET_USABLE_BYTES) totalTarget = TARGET_USABLE_BYTES;
+
+        size_t perPoolUsable = totalTarget / std::max(nodeCount, 1);
+        size_t perPoolConfig = perPoolUsable * 2;
+        size_t totalConfig = perPoolConfig * std::max(nodeCount, 1);
 
         cacheDir = "/tmp/cachelib_numa_numabench_" + std::to_string(runId++);
         mkdir(cacheDir.c_str(), 0755);
 
         LruAllocator::Config config;
         config.setCacheName("numabench_cl_numa");
-        config.setCacheSize(perNodeBytes * nodeCount);
+        config.setCacheSize(totalConfig);
         config.cacheDir = cacheDir;
 
         std::set<uint32_t> allocSizes = {64, 128, 256, 512, 1024, 2048};
@@ -625,12 +714,13 @@ struct CacheLibNumaAdapter {
         cache = std::make_unique<LruAllocator>(config);
 
         if (nodeCount >= 2) {
-            pools[0] = cache->addPool("node0", perNodeBytes / 2);
-            pools[1] = cache->addPool("node1", perNodeBytes / 2);
+            pools[0] = cache->addPool("node0", perPoolUsable);
+            pools[1] = cache->addPool("node1", perPoolUsable);
         } else {
-            pools[0] = cache->addPool("node0", perNodeBytes / 2);
+            pools[0] = cache->addPool("node0", perPoolUsable);
             pools[1] = pools[0];
         }
+        footprintBytes_ = totalConfig;
     }
 
     void setThreadPool(int threadIdx) {
@@ -816,6 +906,7 @@ void RunNUMABench(benchmark::State& state, std::vector<TraceEntry>& trace) {
 
         AggregateResult ar = aggregate(results, elapsedSec);
         reportAgg(state, ar);
+        state.counters["footprint_mb"] = (double)sys.footprintBytes_ / (1024.0 * 1024.0);
 
         sys.destroy();
 
@@ -976,6 +1067,13 @@ BENCHMARK_DEFINE_F(NUMABench_FurrBallLRUSN, Run)(benchmark::State& state) {
     RunNUMABench<FurrBallLRUSNAdapter>(state, trace);
 }
 
+// --- FurrBall LRU Cross-Node ---
+
+struct NUMABench_FurrBallLRUCN : NUMABench<FurrBallLRUCNAdapter> {};
+BENCHMARK_DEFINE_F(NUMABench_FurrBallLRUCN, Run)(benchmark::State& state) {
+    RunNUMABench<FurrBallLRUCNAdapter>(state, trace);
+}
+
 // Equal-capacity LRU benchmarks (32MB budget, 700K universe)
 // LRU_TL (2-node): pagesPerNode=4096 for 2t, 2048 for 4t, 8192 for 1t
 // LRU_SN (1-node): pagesPerNode=8192 always
@@ -1057,9 +1155,11 @@ BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUSN, Run)
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
-// Equal-capacity 1024B value benchmarks — NUMA-locality evidence
-// At 1KB values, remote memcpy (~200ns) dwarfs lock overhead, showing
-// whether TL routing reduces remote memory access cost.
+// ============================================================================
+//  Equal-capacity 1024B value benchmarks — NUMA-locality evidence
+//  At 1KB values, remote memcpy (~200ns) becomes visible vs lock overhead.
+//  ReadOnly (workload=3) eliminates eviction confound for pure access path.
+// ============================================================================
 
 // --- ARC 1024B: Partitioned 2t ---
 BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
@@ -1116,7 +1216,38 @@ BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUTL, Run)
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
-// --- CacheLib (default, accidental interleaving) ---
+// --- LRU 1024B: ReadOnly 2t (pure Get throughput, no eviction) ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUTL, Run)
+    ->Args({2, 4096, 3, 1024, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUSN, Run)
+    ->Args({2, 8192, 3, 1024, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- ARC 1024B: ReadOnly 2t ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
+    ->Args({2, 4096, 3, 1024, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(NUMABench_FurrBallSN, Run)
+    ->Args({2, 8192, 3, 1024, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- LRU CN 1024B: Partitioned + ReadOnly 2t ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUCN, Run)
+    ->Args({2, 4096, 0, 1024, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUCN, Run)
+    ->Args({2, 4096, 3, 1024, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
 
 #ifdef USE_CACHELIB
 struct NUMABench_CacheLib : NUMABench<CacheLibAdapter> {};
@@ -1256,6 +1387,17 @@ BENCHMARK_REGISTER_F(NUMABench_CacheLibNuma, Run)
 
 BENCHMARK_REGISTER_F(NUMABench_CacheLibNuma, Run)
     ->Args({2, 8192, 1, 1024, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- Equal cap 1024B: CacheLib ReadOnly ---
+BENCHMARK_REGISTER_F(NUMABench_CacheLib, Run)
+    ->Args({2, 8192, 3, 1024, 700000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(NUMABench_CacheLibNuma, Run)
+    ->Args({2, 8192, 3, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
