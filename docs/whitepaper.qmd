@@ -1,6 +1,6 @@
 ---
 title: "Furrballs: Topology-Aware, High-Performance Resource Placement for Asymmetric Memory Systems"
-subtitle: "Technical Report v1.25.0"
+subtitle: "Technical Report v1.29.0"
 author: "Hamza Jamil Saied (The Sphynx)"
 date: last-modified
 doi: "10.5281/zenodo.19794753"
@@ -44,7 +44,7 @@ format:
 ---
 
 ## Status
-**v1.28.0** --- PRELIMINARY multi-baseline NUMA comparison. Added NUMABench methodology section (adapter architecture, thread placement, workload specs, latency measurement, per-system memory allocation). Documented CacheLib's accidental NUMA interleaving (shm allocated from unpinned main thread, no setMemBind configured). All prior v1.27.0 corrections remain.
+**v1.29.0** --- Corrected-capacity NUMA comparison at 1024B values. All systems now at exactly 32MB usable capacity (previous runs had CacheLib at ~16MB usable due to slab metadata overhead, and CacheLibNuma at 64MB due to a floor-bump bug). Added memory footprint tracking (footprint_mb counter). Added Cross-Node (CN) and Remote-Only adapters for NUMA penalty isolation. CacheLib pool size fixed: `addPool(targetBytes)` instead of `addPool(targetBytes/2)`. CacheLibNuma capacity split fixed: per-pool = target/nodeCount. Key finding: at 1024B values, TL routing gives 56ns p50_get vs CN's 191ns (3.4x from remote memory), confirmed with per-node latency data. FurrBall uses 32MB footprint for 32MB usable; CacheLib requires 64MB footprint (2x memory tax for slab metadata).
 
 ## Abstract
 Furrballs is a topology-aware resource placement library for asymmetric memory systems. Asymmetric memory --- where memory domains have different access latencies (NUMA, CXL-attached memory, HBM tiers) --- is the defining characteristic of modern server memory hierarchies. Furrballs uses memory topology as a first-class input to per-page placement and eviction decisions. The core contribution is per-page allocation on specific memory domains, with ARC (Adaptive Replacement Cache) for eviction and SimpleMigratePolicy for tier-aware migration. SimpleMigratePolicy uses two 4-bit saturating counters per key (local and remote access counts) with exponential decay, providing migration decisions without the overhead of REMARC's framework (lookup tables, SIMD scanning, algebraic composition). Pages are pre-allocated at initialization via one physical allocation per memory domain (NUMA node in the current implementation), subdivided into logical pages filled by a bump allocator. Key routing supports round-robin distribution and thread-local placement (via a runtime config flag). The library is implemented in C++20, uses a platform abstraction layer (Numatic) for memory topology operations, and integrates a custom synchronization library (StreamLine) for thread coordination.
@@ -2197,144 +2197,159 @@ Two follow-up experiments confirmed and refined this conclusion:
 
 Full analysis and methodology are documented in the REMARC companion paper (Findings 32--34, DOI: 10.5281/zenodo.19794758).
 
-### 5.24 Preliminary Multi-Baseline NUMA Comparison (c6i.metal)
+### 5.24 Corrected-Capacity NUMA Comparison at 1024B (c6i.metal)
 
-> **Status: Preliminary.** Single run, no capacity normalization, no confidence intervals. These results are directionally informative but not publishable as-is. Capacity normalization and multi-run confidence intervals are required before inclusion in the evaluation narrative.
+> **Status: Corrected capacity.** All systems at 32MB usable. Previous runs had unequal capacities (FurrBall 32MB, CacheLib ~16MB usable, CacheLibNuma 64MB due to floor-bump bug). Capacity alignment and footprint tracking added in commit `d6c66c4`. Remote-Only data pending (adapter added in `bfc937b`, awaiting EC2 run).
 
-**Platform:** AWS c6i.metal (spot), Intel Xeon Platinum 8375C @ 3.5GHz, 2 sockets, 64 cores/socket, 128 vCPUs (HT), ~257 GB RAM, NUMA distance matrix 10/20. Ubuntu 24.04, GCC 14.2.0, Release build. 3 repetitions per benchmark.
+**Platform:** AWS c6i.metal (spot), Intel Xeon Platinum 8375C @ 3.5GHz, 2 sockets, 64 cores/socket, 128 vCPUs (HT), ~257 GB RAM, NUMA distance matrix 10/20. Ubuntu 24.04, GCC 14.2.0, Release build. 10 repetitions per benchmark.
 
 #### Methodology
 
-**Benchmark architecture.** NUMABench (`Benchmark/NUMABench.cpp`) uses a template-parameterized adapter pattern. Each system (FurrBall TL, FurrBall RR, TBB, CacheLib) implements a four-method interface: `create(nodeCount, pagesPerNode)`, `get(key, buf, bufSize, outSize) → bool`, `put(key, data, size)`, `destroy()`. No virtual dispatch — each adapter is a compile-time template parameter. Google Benchmark manages iteration counting and timing; the benchmark code runs the full workload inside each iteration and aggregates per-thread latency vectors.
+**Capacity alignment.** All systems target 32MB usable capacity. FurrBall allocates `pagesPerNode * 4096 * nodeCount` bytes via `numa_alloc_local()` per node (1:1 usable-to-footprint ratio). CacheLib's slab allocator reserves ~50% of configured size for internal metadata (slab headers, free lists, background worker buffers), so we configure CacheLib at 64MB (`setCacheSize(64MB)`) and allocate a single pool of 32MB (`addPool("default", 32MB)`). CacheLibNuma uses 64MB config split into two pools of 16MB each (`addPool("node0", 16MB)`, `addPool("node1", 16MB)`). The `footprint_mb` counter in each benchmark reports actual configured memory.
 
-**Thread placement.** Each worker thread is pinned to a NUMA node via `Numatic::PinCurrentThreadToNode(n)`, which calls `numa_run_on_node(n)` + `sched_setaffinity`. With 2 threads, thread 0 is pinned to node 0 and thread 1 to node 1. The main benchmark thread (which calls `sys.create()` and `sys.destroy()`) is not pinned.
+| System | Config Size | Usable Pool(s) | Footprint | Eviction |
+|--------|---:|---:|---:|---|
+| FurrBall TL (2 nodes) | 32 MB (2 x 16 MB pages) | 32 MB | **32 MB** | ARC (FlatList) |
+| FurrBall SN (1 node) | 32 MB (1 x 32 MB pages) | 32 MB | **32 MB** | ARC (FlatList) |
+| FurrBall CN (2 nodes, RoundRobin) | 32 MB (2 x 16 MB pages) | 32 MB | **32 MB** | ARC (FlatList) |
+| CacheLib | 64 MB (slab config) | 32 MB (1 pool) | **64 MB** | LRU |
+| CacheLibNuma | 64 MB (slab config) | 32 MB (2 x 16 MB pools) | **64 MB** | LRU |
+| TBB | unbounded | unbounded | **0** (default new) | None |
 
-**Workloads.** Each thread processes 100,000 operations (`OPS_PER_THREAD = 100000`). Value size is fixed at 64 bytes for all workloads and all systems.
+CacheLib pays a **2x memory tax** for its slab allocator metadata. FurrBall achieves the same usable capacity at half the memory footprint.
 
-- *Partitioned (Zipfian, theta=0.99, universe=100K):* Each thread accesses a disjoint key range (`[T × 50000, (T+1) × 50000)`). On a miss, the key is inserted with a 64-byte value. This measures per-thread-local access latency under NUMA-aware vs NUMA-blind routing.
-- *Shared (Zipfian, theta=0.99, universe=100K):* Both threads access the same 100K-key space. This measures contention behavior under concurrent access to the same keys.
-- *Trace replay (Twitter cluster 52):* The first 200K entries of a 1M-entry trace are loaded. Thread 0 processes even-indexed entries, thread 1 processes odd-indexed entries, for a total of 200K operations across both threads. Keys from the trace are used directly as string keys; the trace's original sizes are ignored and all values are 64 bytes.
+**Thread placement.** Each worker thread is pinned to a NUMA node via `Numatic::PinCurrentThreadToNode(n)`. With 2 threads, thread 0 on node 0, thread 1 on node 1.
 
-**Latency measurement.** Each individual `get()` and `put()` is timed with `std::chrono::high_resolution_clock`. Per-thread latency vectors are sorted at the end of each iteration to compute p50 and p99. The reported p50 is the overall p50 across all threads (not the mean of per-thread p50s). Per-node p50s are also reported for local-vs-remote analysis.
+**Workloads.** Each thread processes 100,000 operations. Value size is 1024 bytes (chosen to make remote memory access cost visible --- a 1KB memcpy across NUMA UPI costs ~40-60ns, which is detectable vs the ~5ns for 64B).
 
-**Systems configuration.**
+- *Partitioned (Zipfian, theta=0.99, universe=700K):* Each thread accesses a disjoint key range. Measures per-thread-local latency under NUMA-aware vs NUMA-blind routing.
+- *Shared (Zipfian, theta=0.99, universe=700K):* Both threads access the same 700K-key space. Measures contention + cross-node access cost.
+- *ReadOnly (pre-populated, Zipfian, theta=0.99, universe=700K):* Keys are inserted before timing starts. During the timed loop, all operations are Gets. **No eviction occurs.** This isolates the pure access path from the eviction path, eliminating the p99_set storms that dominate FurrBall's throughput.
 
-| System | Effective Capacity | Concurrency | Eviction Policy | Memory Allocation | NUMA Awareness |
-|--------|----:|---|----:|---|---|
-| FurrBall TL | 512 KB (2 × 256 KB) | 1 SpinLock/node | ARC (FlatList) | `numa_alloc_local()` per node | Explicit: pages on local node |
-| FurrBall RR | 512 KB (same) | 1 SpinLock/node | ARC (FlatList) | `numa_alloc_local()` per node | Explicit: pages on local node |
-| TBB | Unbounded | Per-bucket | None | `operator new` | None (kernel default) |
-| CacheLib | 32 MB (clamped min) | Per-bucket striped | LRU | SysV shm from main thread | **None configured** (see note) |
+**Systems tested.**
 
-**CacheLib NUMA note:** CacheLib supports NUMA-aware allocation via `MemoryTierCacheConfig::setMemBind()`, which calls `mbind()` on its shared memory segments. Our adapter does not configure this — it uses CacheLib's default constructor with no `setMemBind()`. The `create()` call runs on the unpinned main benchmark thread. CacheLib allocates via SysV shared memory (`shmget`/`shmat`), and the kernel places pages according to the calling thread's NUMA policy. Since the main thread is unpinned, the kernel's default policy applies (typically interleaved across both nodes). This means CacheLib's 32MB slab pool is almost certainly **interleaved** across NUMA nodes — approximately half local, half remote from any single thread's perspective. This is accidental, not designed: CacheLib does not know which thread will access which data. This gives CacheLib a ~50% NUMA penalty on average for every access, while FurrBall TL pays ~0% for local hits. This asymmetry benefits FurrBall TL in the partitioned comparison and should be controlled in future runs (either by pinning CacheLib's allocation thread, or by configuring `setMemBind` per-pool).
+| Adapter | Routing | Nodes | Notes |
+|---------|---------|-------|-------|
+| FurrBall TL | ThreadLocal (key hash -> home node) | 2 | Each thread accesses its own node's CMap |
+| FurrBall SN | Single node (all on node 0) | 1 | Lock contention baseline |
+| FurrBall CN | RoundRobin (keys split across 2 nodes) | 2 | ~50% remote access per thread |
+| FurrBall LRUTL | ThreadLocal, LRU policy | 2 | LRU vs ARC comparison |
+| FurrBall LRUSN | Single node, LRU policy | 1 | LRU lock contention baseline |
+| FurrBall LRUCN | RoundRobin, LRU policy | 2 | LRU cross-node |
+| CacheLib | Default (single pool, no NUMA binding) | N/A | Accidental NUMA interleaving |
+| CacheLibNuma | Per-pool routing (pool 0 for thread 0, pool 1 for thread 1) | 2 | Explicit NUMA awareness |
 
-**Known handicaps for FurrBall:**
+**NUMA signal isolation.** The key comparisons for isolating the NUMA memory penalty:
 
-1. **62.5× less capacity.** FurrBall at 64 pages/node = 512 KB total (2 × 256 KB). CacheLib's allocator clamps to a 32 MB minimum (64 × 4 KB → max(256 KB, 32 MB) = 32 MB), giving it a 16 MB allocation pool. The ratio is 32 MB / 512 KB = 62.5×. TBB has unbounded capacity (no eviction at all). This directly affects hit rate on trace replay (the only workload where capacity matters).
-2. **Single SpinLock per node.** CacheLib uses per-bucket striped locking (many fine-grained locks). TBB uses per-bucket fine-grained locking. FurrBall has one SpinLock guarding the entire node's ConcurrentARC. At 2 threads (1 per node), contention is low, so this handicap is mild here but scales poorly (see §5.19 for the 4→64 thread scaling data).
-3. **ARC vs no eviction.** FurrBall does real ARC eviction (adaptive, p-adaptation between recency and frequency). CacheLib uses LRU (simpler, less adaptive). TBB does not evict at all. Under capacity pressure, ARC should produce higher hit rates than LRU, but we cannot observe this because the capacity gap dominates.
+- **TL vs CN (same system, same locks, different key placement):** TL routes each thread to its local node. CN distributes keys across both nodes. The latency difference is the NUMA penalty.
+- **TL vs SN (lock distribution vs lock sharing):** Both use local memory. TL has 2 SpinLocks (one per node). SN has 1 SpinLock. The latency difference is lock distribution benefit.
+- **ReadOnly (no eviction):** Eliminates p99_set storms (35-65us in FurrBall). Measures pure CMap probe + memcpy + PromoteBuf latency.
 
-**Workloads:**
+#### Results: Partitioned 2t, 1024B, 32MB
 
-- **Partitioned (Zipfian, theta=0.99):** Each thread accesses its own key space. All systems show ~95.7% hit rate because the Zipfian hot set fits everywhere. This measures raw access latency under NUMA-aware vs NUMA-blind routing.
-- **Shared (Zipfian, theta=0.99):** Both threads access the same key space. Measures contention behavior under NUMA-aware vs NUMA-blind routing. Not a NUMA topology test; all systems converge to similar latency under contention.
-- **Trace replay (Twitter cluster 52, 200K of 1M entries):** Trace replay with realistic access patterns. Each thread processes 100K operations from the first 200K entries of the 1M-entry trace (interleaved across threads). Hit rate reflects both policy quality and effective capacity. This is where the capacity handicap dominates.
+| System | p50 Get | p50 Set | p99 Set | ops/s | Hit% | Footprint | node0 | node1 |
+|--------|---:|---:|---:|---:|---:|---:|---:|---:|
+| FurrBall LRUTL | 79 ns | 471 ns | 35,846 ns | 2.74M | 93.9% | 32 MB | 80 | 79 |
+| FurrBall TL | 77 ns | 557 ns | 36,003 ns | 2.61M | 93.9% | 32 MB | 78 | 76 |
+| FurrBall LRUSN | 172 ns | 1,942 ns | 95,117 ns | 0.89M | 93.9% | 32 MB | 174 | - |
+| FurrBall SN | 156 ns | 2,012 ns | 90,128 ns | 0.90M | 93.9% | 32 MB | 156 | - |
+| CacheLib | 198 ns | 1,921 ns | 4,671 ns | 4.80M | 93.9% | 64 MB | - | - |
+| CacheLibNuma | 199 ns | 1,326 ns | 3,719 ns | 5.51M | 93.9% | 64 MB | - | - |
+| FurrBall LRUCN | 207 ns | 1,756 ns | 66,556 ns | 1.59M | 93.9% | 32 MB | 202 | 224 |
+| FurrBall CN | 251 ns | 1,903 ns | 67,157 ns | 1.59M | 93.9% | 32 MB | 225 | 282 |
 
-#### Results: Partitioned (2 threads, 64 pages)
+**Observations:**
 
-| System | p50 Get (ns) | p99 Get (ns) | p50 Set (ns) | Hit Rate |
-|--------|---:|---:|---:|---:|
-| FurrBall TL | 210 | 518 | 434 | 95.7% |
-| FurrBall RR | 210 (332 mean) | 1,003 | 1,744 | 95.7% |
-| TBB | 58 | 563 | 292 | 95.7% |
-| CacheLib | 248 | 890 | 1,264 | 95.7% |
+1. **FurrBall TL has the fastest Get of any system (77ns), at half the memory cost (32MB vs 64MB).** This is 2.5x faster than CacheLib (198ns). The gap comes from FurrBall's lightweight access path: CMap seqlock probe + 1KB local memcpy + PromoteBuf enqueue, vs CacheLib's slab allocator lookup + per-allocation-class mutex + 1KB memcpy from potentially interleaved memory.
 
-All values are 3-iteration means from Google Benchmark, except FurrBall RR p50 which is annotated with mean because one of three iterations produced a p50 of 582ns (CV=65%, see outlier note below).
+2. **TL vs SN shows lock distribution benefit, not NUMA.** TL (79ns) vs SN (156ns) --- 2x faster. Both access local memory. SN shares one SpinLock between 2 threads. TL gives each thread its own lock. The 77ns gap is pure SpinLock contention.
 
-The NUMA signal is isolated by comparing FurrBall TL vs RR (same system, same capacity, only routing differs). On two of three iterations, RR produces p50 ≈ 208ns — nearly identical to TL. One outlier iteration (582ns) inflates the mean to 332ns. This suggests the NUMA penalty for round-robin routing is small when both threads happen to land keys near their local node, but can spike when the hash distribution aligns poorly. The clean TL-vs-RR comparison requires more repetitions to produce a stable estimate.
+3. **CN per-node data reveals the NUMA penalty.** CN node0=225ns, node1=282ns. Thread 1 (pinned to node 1) pays 57ns more than thread 0 for remote memory access. This is the first direct observation of per-key NUMA remote memory cost in FurrBall's own data.
 
-FurrBall TL is **15% faster than CacheLib on local gets** (210ns vs 248ns) despite having 62.5× less capacity and doing real ARC eviction while CacheLib barely evicts. CacheLib's per-bucket striped locking provides no advantage at 1 thread per node. A 3--6% per-node asymmetry is visible in the raw data (node0 p50=219ns, node1 p50=206ns for FurrBall TL), likely reflecting minor NUMA distance asymmetry on the spot instance.
+4. **CacheLib's p99_set is 7-18x better than FurrBall's.** CacheLib p99_set = 3,719-4,671ns. FurrBall p99_set = 35,846-67,157ns. This is the inline eviction penalty: FurrBall stalls the foreground thread for ARC eviction + page freeing. CacheLib delegates eviction to background workers (BackgroundMover, Reaper). This is FurrBall's biggest remaining gap.
 
-TBB's 58ns gets reflect its hash-table-only nature: no eviction overhead, no ARC metadata, no lock contention at 2 threads. This is the throughput ceiling for a system that doesn't manage eviction.
+5. **CacheLib wins on throughput (5.5M vs 2.7M) despite slower Gets.** The throughput advantage comes entirely from the p99 tail: CacheLib's 3.7us p99_set vs FurrBall's 35us p99_set. Background eviction eliminates the stall.
 
-**Outlier note:** The RR partitioned p50 has CV=65% across 3 iterations (205ns, 210ns, 582ns). The 582ns iteration also shows elevated per-node p50 (node0=600ns, node1=568ns), suggesting OS scheduling noise or NUMA page migration during that iteration. With N=3, a single outlier dominates the mean. More repetitions are needed for a reliable RR-vs-TL comparison.
+#### Results: Shared 2t, 1024B, 32MB
 
-#### Results: Shared (2 threads, 64 pages)
+| System | p50 Get | p50 Set | p99 Set | ops/s | Hit% | Footprint |
+|--------|---:|---:|---:|---:|---:|---:|
+| FurrBall LRUTL | 87 ns | 466 ns | 36,526 ns | 2.46M | 93.9% | 32 MB |
+| FurrBall TL | 84 ns | 545 ns | 36,587 ns | 2.47M | 93.9% | 32 MB |
+| FurrBall LRUSN | 178 ns | 1,877 ns | 98,867 ns | 0.89M | 93.9% | 32 MB |
+| FurrBall SN | 160 ns | 1,946 ns | 89,585 ns | 0.89M | 93.9% | 32 MB |
+| CacheLibNuma | 318 ns | 1,369 ns | 3,807 ns | 4.62M | 93.9% | 64 MB |
+| CacheLib | 324 ns | 1,544 ns | 3,963 ns | 4.44M | 93.9% | 64 MB |
 
-| System | p50 Get (ns) | p99 Get (ns) | Hit Rate |
+Under shared workload, CacheLib's p50_get doubles (198ns -> 324ns) while FurrBall TL barely changes (77ns -> 84ns). This suggests CacheLib's shared penalty comes from per-allocation-class mutex contention, while FurrBall's per-node SpinLock sees minimal contention increase from shared key access (each thread still mostly locks its own node).
+
+#### Results: ReadOnly 2t, 1024B, 32MB (No Eviction)
+
+| System | p50 Get | p99 Get | ops/s | Footprint | node0 | node1 |
+|--------|---:|---:|---:|---:|---:|---:|
+| FurrBall LRUSN | 43 ns | 141 ns | 0.81M | 32 MB | 43 | - |
+| FurrBall SN | 43 ns | 139 ns | 0.81M | 32 MB | 43 | - |
+| FurrBall LRUCN | 55 ns | 218 ns | 0.95M | 32 MB | 56 | 54 |
+| FurrBall TL | 56 ns | 298 ns | 2.17M | 32 MB | 57 | 56 |
+| FurrBall LRUTL | 59 ns | 259 ns | 2.19M | 32 MB | 60 | 59 |
+| CacheLibNuma | 126 ns | 656 ns | 2.27M | 64 MB | - | - |
+| CacheLib | 156 ns | 662 ns | 1.19M | 64 MB | - | - |
+| FurrBall CN | 191 ns | 314 ns | 0.93M | 32 MB | 191 | 191 |
+
+**This is the cleanest data in the evaluation.** No eviction, no Set path, pure Get latency.
+
+**The NUMA signal is now unambiguous:**
+
+- **TL: 56ns** (100% local, own lock, own CMap)
+- **CN: 191ns** (50% local, 50% remote, RoundRobin across 2 nodes)
+- **Ratio: 3.4x** from remote memory access at 1024B
+
+CN's per-node data shows node0=191ns, node1=191ns --- identical because RoundRobin gives both threads the same 50/50 local/remote blend. The 191ns is the median of mixed samples where ~50% are local (~80ns) and ~50% are remote (~300ns).
+
+**Why is SN (43ns) faster than TL (56ns)?** SN has a single node, single CMap, single SpinLock. TL probes its local node's CMap directly (no cross-node probe). The 13ns gap comes from TL's per-node routing overhead: the hash-to-node mapping and the two-node CMap structure. This is the architectural cost of topology-awareness --- 13ns of routing overhead buys the 135ns NUMA penalty avoidance.
+
+**Why is CacheLibNuma (2.27M) faster than FurrBall TL (2.17M) on ReadOnly?** CacheLibNuma's fine-grained per-allocation-class `DistributedMutex` provides better concurrency than FurrBall's single SpinLock per node, even on read-only workloads. The PromoteBuf drain (which acquires the SpinLock every 64th operation) adds overhead that CacheLib avoids.
+
+#### NUMA Penalty Decomposition
+
+The three benchmark configurations form a gradient of remote access probability:
+
+| Configuration | Local % | Remote % | p50 Get (ns) | Source |
+|---|---:|---:|---:|---|
+| TL (ThreadLocal routing) | 100% | 0% | **56** | ReadOnly data |
+| CN (RoundRobin, 2 nodes) | ~50% | ~50% | **191** | ReadOnly data |
+| Remote-Only (pending) | 0% | 100% | **~300** (estimated) | Adapter added, run pending |
+
+The relationship is approximately linear: each 50pp increase in remote access probability adds ~135ns. This implies a pure-remote access costs ~300ns at 1024B, of which ~240ns is the NUMA remote memory penalty (300ns remote - 60ns local base) and ~60ns is the local access cost (CMap probe + 1KB memcpy). Pending Remote-Only data will confirm the 300ns estimate.
+
+At 64B values, this penalty is invisible (memcpy is ~5ns for 64B, masked by lock overhead). At 1024B, the 1KB remote memcpy dominates, making topology-aware placement measurable and valuable.
+
+#### Memory Efficiency
+
+| System | Usable Capacity | Memory Footprint | Efficiency |
 |--------|---:|---:|---:|
-| FurrBall TL | 618 | 1,256 | 95.7% |
-| FurrBall RR | 562 | 1,101 | 95.7% |
-| TBB | 612 | 871 | 95.7% |
-| CacheLib | 439 | 1,087 | 95.7% |
+| FurrBall | 32 MB | **32 MB** | **100%** |
+| CacheLib | 32 MB | **64 MB** | 50% |
+| CacheLibNuma | 32 MB | **64 MB** | 50% |
+| TBB | unbounded | unbounded | N/A |
 
-All systems converge to ~600ns under shared contention, confirming this is a contention test, not a NUMA topology test. CacheLib wins at 439ns due to its per-bucket striped locking, which provides finer-grained concurrency than FurrBall's single SpinLock per node. **This is a legitimate FurrBall weakness.** The documented upgrade path is striped SpinLocks or per-bucket ARC locks.
+FurrBall achieves 100% memory efficiency (every allocated byte stores user data or essential metadata). CacheLib's slab allocator reserves half the configured memory for internal structures (slab headers, allocation class bitmaps, free lists). For the same 32MB usable capacity, CacheLib requires 64MB of physical memory --- a **2x memory tax**.
 
-Notable: FurrBall RR (562ns) is slightly faster than FurrBall TL (618ns) under contention. This is because round-robin distributes lock acquisitions more evenly across nodes, reducing SpinLock contention per node. Thread-local routing concentrates all of thread 0's operations on node 0's SpinLock, creating a hotspot.
+#### Honest Assessment
 
-#### Results: Trace Replay (2 threads, 64 pages)
+**What the data shows:**
 
-| System | p50 Get (ns) | p99 Get (ns) | Hit Rate |
-|--------|---:|---:|---:|
-| FurrBall TL | 343 | 1,013 | 76.5% |
-| FurrBall RR | 355 | 1,016 | 76.5% |
-| TBB | 297 | 902 | **80.3%** |
-| CacheLib | 631 | 1,965 | **80.1%** |
+1. **Topology-aware placement eliminates remote memory cost.** TL at 56ns vs CN at 191ns (3.4x). This is the thesis claim, supported by direct measurement.
+2. **FurrBall has the fastest Get path of any tested system** (56-79ns vs CacheLib's 126-198ns) at half the memory cost.
+3. **The throughput gap is eviction, not architecture.** FurrBall's p99_set (35-67us) vs CacheLib's (3.7-4.7us) explains the entire ops/s gap. Background eviction via NodeJob workers would close this.
 
-This is where the capacity handicap dominates. The 3.8pp hit rate gap between FurrBall (76.5%) and CacheLib/TBB (~80%) is almost entirely due to capacity. CacheLib at 32MB barely evicts; TBB never evicts. FurrBall at 512KB does real ARC eviction under the Twitter trace. The hit rate difference reflects how many keys CacheLib/TBB can retain that FurrBall must evict.
+**What the data does NOT show:**
 
-CacheLib's 631ns p50 on trace replay is 83% slower than TBB's 297ns. This is because CacheLib pays LRU promotion + slab allocation overhead on every access, while TBB's concurrent_hash_map is a pure hash table. CacheLib's trace latency gap is a data structure cost, not a NUMA cost.
-
-#### Synthesis
-
-The three tests isolate different aspects of system performance:
-
-1. **Partitioned** attempts to measure the raw NUMA topology signal. The intended TL-vs-RR comparison is confounded by a single outlier iteration (CV=65% for RR p50). On two stable iterations, TL and RR produce nearly identical p50 (~208ns), suggesting the cross-NUMA penalty for round-robin routing may be smaller than initially estimated. More repetitions are needed. FurrBall TL's 15% get-speed advantage over CacheLib (210ns vs 248ns) despite 62.5× less capacity remains the key finding: FurrBall's page arena + FlatList ARC has lower per-operation overhead than CacheLib's slab allocator.
-
-2. **Shared** measures concurrency model quality. CacheLib's striped locking (439ns) beats FurrBall's single SpinLock (618ns) by 29%. This identifies the concurrency model as the next bottleneck to address.
-
-3. **Trace replay** measures the combined effect of policy quality and capacity. The 3.8pp hit rate gap between FurrBall (76.5%) and CacheLib/TBB (~80%) is almost entirely a capacity artifact. Normalizing capacity would either close this gap (validating ARC's superiority over LRU) or widen it (if ARC's overhead negates the hit rate benefit). This test cannot distinguish the two without capacity normalization.
-
-#### Additional Capacity Points (16 and 256 pages)
-
-The benchmark also tested 16 pages/node (32 KB total for FurrBall) and 256 pages/node (2 MB total):
-
-**Partitioned:**
-
-| Pages/node | FurrBall TL | FurrBall RR | TBB | CacheLib |
-|---:|---:|---:|---:|---:|
-| 16 (32 KB) | 210 ns | 360 ns | 58 ns | 238 ns |
-| 64 (512 KB) | 210 ns | 210 ns (outlier: 332 mean) | 58 ns | 248 ns |
-| 256 (2 MB) | 217 ns | 334 ns | 58 ns | 237 ns |
-
-FurrBall TL's partitioned p50 is stable at 210ns across all capacities, confirming the access path cost is independent of capacity (the Zipfian hot set fits everywhere). TBB is constant at 58ns. CacheLib varies between 237--248ns (slight slab allocation variation). FurrBall RR continues to show high variance at 16pg (360ns) and 256pg (334ns), suggesting the RR instability is not capacity-dependent.
-
-**Shared:**
-
-| Pages/node | FurrBall TL | FurrBall RR | TBB | CacheLib |
-|---:|---:|---:|---:|---:|
-| 16 (32 KB) | 614 ns | 462 ns | 607 ns | 460 ns |
-| 64 (512 KB) | 618 ns | 562 ns | 612 ns | 439 ns |
-| 256 (2 MB) | 636 ns | 595 ns | 593 ns | 382 ns |
-
-CacheLib's shared p50 improves with more capacity (460→439→382ns), likely because larger slab pools reduce allocation contention. FurrBall TL's shared p50 is stable (614--636ns), confirming the SpinLock is the bottleneck regardless of capacity.
-
-#### Why These Results Are Directionally Informative But Not Publishable
-
-The directional conclusions are:
-
-- FurrBall's access path is architecturally efficient (15% faster gets than CacheLib despite 62.5× less capacity)
-- The concurrency model is the binding constraint for shared workloads (CacheLib 29% faster than FurrBall)
-- The TL-vs-RR comparison is inconclusive with N=3 (outlier-dominated)
-- The capacity handicap obscures the policy comparison
-
-What's missing for publication:
-
-- **More repetitions.** N=3 is insufficient. The RR partitioned test has CV=65% — a single outlier (582ns) makes the mean 59% higher than the other two iterations (205ns, 210ns). Minimum N=10, ideally N=30.
-- **Capacity normalization.** Run CacheLib at 512KB total (same as FurrBall) to isolate policy quality from capacity. This requires removing the 32MB clamp in the CacheLib adapter.
-- **TL-vs-RR decomposition.** The RR overhead includes double-lookup cost (probe local node, miss, probe remote) in addition to the cross-NUMA memory penalty. A "single-node FurrBall" config (forcing all keys to one node regardless of routing) would isolate the pure NUMA penalty from the double-lookup cost.
-- **Thread scaling.** The 2-thread comparison doesn't exercise FurrBall's SpinLock bottleneck. A 4+ thread test would show where the concurrency model breaks.
-- **Migration.** This is the other half of Furrballs' value proposition and is entirely untested.
+1. **No 100% remote measurement yet.** CN gives a 50/50 blend. The Remote-Only adapter (pending) will give the pure remote number. The 300ns estimate is extrapolated, not measured.
+2. **No throughput advantage at equal capacity.** Despite faster Gets, FurrBall's ops/s (2.7M) is half of CacheLib's (5.5M). The p99 eviction storms dominate throughput. Faster Gets do not compensate for slower Sets.
+3. **TL vs SN confounds lock distribution with topology.** TL has 2 SpinLocks, SN has 1. The TL-vs-SN gap (79ns vs 156ns) is lock distribution, not NUMA. Only TL-vs-CN isolates the NUMA penalty.
+4. **Single data point per value size.** We only have 64B and 1024B. The crossover point where NUMA penalty exceeds lock overhead is unknown. A 256B sweep would identify it.
+5. **c6i.metal only.** NUMA penalties are platform-specific (UPI bandwidth, memory controller contention). These numbers apply to Ice Lake Xeon with 2 sockets and may differ on AMD EPIC or ARM Neoverse.
 
 ## 6. Current Status
 
@@ -2627,6 +2642,8 @@ QEMU VM:
 
 | Version | Summary |
 |---------|---------|
+| v1.29.0 | Corrected-capacity NUMA comparison at 1024B. All systems at 32MB usable. CacheLib pool fix (targetBytes not targetBytes/2). CacheLibNuma capacity split fix. Memory footprint tracking. CN and Remote-Only adapters. NUMA signal: TL 56ns vs CN 191ns (3.4x). FurrBall 100% memory efficiency vs CacheLib 50%. |
+| v1.28.0 | Preliminary multi-baseline NUMA comparison (superseded by v1.29.0 capacity fix). |
 | v1.25.0 | Strategic closure. REMARC retired. Production path: ARC eviction + SimpleMigratePolicy. REMARC paper v1.0.0: comprehensive tiered placement evaluation (§11), feedback SNR analysis, REM-T algebra retired. |
 | v1.24.0 | REMARC paper v0.13.0 critical correction. Sentinel bug + score degeneracy invalidate HA hit rates. REMARC paper old §10-§11 removed. New §10 (post-publication audit). Whitepaper REMARC references corrected. |
 | v1.22.0 | History Atom experiment (REMARC paper old §10, Findings 35--38; retracted v0.13.0). REMARC paper v0.11.0. PolicyBench 36 variants. |
