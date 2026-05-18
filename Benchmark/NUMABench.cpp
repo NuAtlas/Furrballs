@@ -810,7 +810,7 @@ struct CacheLibNumaAdapter {
             config.configureMemoryTiers(tierConfigs);
         }
 
-        cache = std::make_unique<LruAllocator>(LruAllocator::SharedMemNew{}, config);
+        cache = std::make_unique<LruAllocator>(LruAllocator::SharedMemNew, config);
 
         if (nodeCount >= 2) {
             pools[0] = cache->addPool("node0", perPoolUsable);
