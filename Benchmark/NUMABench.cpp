@@ -752,16 +752,12 @@ int CacheLibAdapter::runId = 0;
 // Two pools, each bound to a NUMA node. Uses thread_local pool routing.
 
 #include <cachelib/allocator/CacheAllocator.h>
-#include <cachelib/allocator/MemoryTierCacheConfig.h>
-#include <cachelib/shm/ShmCommon.h>
 
 struct CacheLibNumaAdapter {
     static constexpr const char* Name = "CacheLib_NUMA";
 
     using LruAllocator = facebook::cachelib::LruAllocator;
     using PoolId = facebook::cachelib::PoolId;
-    using MemoryTierCacheConfig = facebook::cachelib::MemoryTierCacheConfig;
-    using NumaBitMask = facebook::cachelib::NumaBitMask;
 
     static constexpr size_t PAGE_SIZE = 4096;
 
@@ -790,27 +786,12 @@ struct CacheLibNumaAdapter {
         LruAllocator::Config config;
         config.setCacheName("numabench_cl_numa");
         config.setCacheSize(totalConfig);
-        config.enableCachePersistence(cacheDir);
-        config.usePosixForShm();
+        config.cacheDir = cacheDir;
 
         std::set<uint32_t> allocSizes = {64, 128, 256, 512, 1024, 2048};
         config.setDefaultAllocSizes(allocSizes);
 
-        if (nodeCount >= 2) {
-            NumaBitMask mask0;
-            mask0.setBit(0);
-            NumaBitMask mask1;
-            mask1.setBit(1);
-
-            std::vector<MemoryTierCacheConfig> tierConfigs;
-            tierConfigs.push_back(
-                MemoryTierCacheConfig::fromShm().setRatio(1).setMemBind(mask0));
-            tierConfigs.push_back(
-                MemoryTierCacheConfig::fromShm().setRatio(1).setMemBind(mask1));
-            config.configureMemoryTiers(tierConfigs);
-        }
-
-        cache = std::make_unique<LruAllocator>(LruAllocator::SharedMemNew, config);
+        cache = std::make_unique<LruAllocator>(config);
 
         if (nodeCount >= 2) {
             pools[0] = cache->addPool("node0", perPoolUsable);
