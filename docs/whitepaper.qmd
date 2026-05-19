@@ -1,6 +1,6 @@
 ---
 title: "Furrballs: Topology-Aware, High-Performance Resource Placement for Asymmetric Memory Systems"
-subtitle: "Technical Report v1.30.0"
+subtitle: "Technical Report v1.31.0"
 author: "Hamza Jamil Saied (The Sphynx)"
 date: last-modified
 doi: "10.5281/zenodo.19794753"
@@ -44,7 +44,7 @@ format:
 ---
 
 ## Status
-**v1.30.0** --- Fixed ReadOnly key prefix bug (pre-populate used `"key_"`, workload used `"p_"`: all previous ReadOnly data measured empty CMap probes at 43ns, not data reads). All ReadOnly and UniformRO benchmarks re-run on c6i.metal. CacheLib updated from v2024.07 to v2026.02 (no meaningful performance difference, <4% delta). NUMA DRAM penalty measured via UniformRO workload at 64MB and 128MB: 171ns and 211ns per-node penalty. CacheLib's Memory Tiers feature (NUMA-aware memory placement) is not implemented in any open-source release (v2024 or v2026) --- the config API exists but the allocator throws at runtime with `// TODO: we support single tier so far`. FurrBallSN achieves 10.9x (64MB) and 13.9x (128MB) lower p50 latency than CacheLib at equal usable capacity.
+**v1.31.0** --- Staging pages eliminate the SET tail-latency bottleneck for ARC/LRU eviction policies. The SET path now has a guaranteed O(1) fast path (bump or staging), decoupling SET from space management. EC2 validation on c6i.metal (Intel Xeon Platinum 8375C): p99_set improved 24--63x (68K to 2.8K ns at 64B, 200K to 4.5K ns at 1024B) with zero GET regression. Page drain compaction (proactive maintenance) creates a virtuous cycle: eviction empties sparse pages, drain consolidates remaining keys, recycled pages become fresh bump targets. Destructor race condition fixed (refcount + double-check replaces heuristic 20ms sleep). CMap h2 truncation bug fixed (KeyH2 vector now stores full 64-bit hash, not truncated 32-bit). FurrBallSN vs CacheLib at equal usable capacity: 10.9x (64MB) and 13.9x (128MB) lower p50 GET latency, 100% vs 50% memory efficiency.
 
 ## Abstract
 Furrballs is a topology-aware resource placement library for asymmetric memory systems. Asymmetric memory --- where memory domains have different access latencies (NUMA, CXL-attached memory, HBM tiers) --- is the defining characteristic of modern server memory hierarchies. Furrballs uses memory topology as a first-class input to per-page placement and eviction decisions. The core contribution is per-page allocation on specific memory domains, with ARC (Adaptive Replacement Cache) for eviction and SimpleMigratePolicy for tier-aware migration. SimpleMigratePolicy uses two 4-bit saturating counters per key (local and remote access counts) with exponential decay, providing migration decisions without the overhead of REMARC's framework (lookup tables, SIMD scanning, algebraic composition). Pages are pre-allocated at initialization via one physical allocation per memory domain (NUMA node in the current implementation), subdivided into logical pages filled by a bump allocator. Key routing supports round-robin distribution and thread-local placement (via a runtime config flag). The library is implemented in C++20, uses a platform abstraction layer (Numatic) for memory topology operations, and integrates a custom synchronization library (StreamLine) for thread coordination.
@@ -197,7 +197,7 @@ CMap is a lock-free-read, CAS-based-write concurrent hash map that replaces the 
 
 - `alignas(64)` invariant: no false sharing on hot paths
 - Lock-free reads: Get() holds zero locks
-- No stored keys: 128-bit hash split into H1 (64-bit, group index) + H2 (64-bit, fingerprint). Collision = cache miss, acceptable for a cache. 64-bit fingerprint collision probability: ~2^-64 per pair.
+- No stored keys: 128-bit hash split into H1 (64-bit, group index) + H2 (64-bit, fingerprint). Collision = cache miss, acceptable for a cache. 64-bit fingerprint collision probability: ~2^-64 per pair. Page metadata stores full `HashPair{h1, h2}` (originally stored truncated `uint32_t` h2, fixed after discovering h2 truncation caused false-positive key lookups during staging relocation).
 - Fixed capacity, no resize (Phase 2a)
 - No iteration (ARC tracks entries externally)
 - Topology-blind: memory provided by caller at construction
@@ -644,6 +644,94 @@ Evicted pages accumulate in RocksDB. For the thesis, cleanup strategies:
 - **Separate process:** Persistent storage maintenance is orthogonal to the thesis contribution (topology-aware in-memory caching). Could be a standalone tool that compacts and prunes RocksDB independently of Furrballs.
 
 The `evictedKeyIndex_` (H2 → PageId) is in-memory only. If the process restarts, the index is lost --- but this is a cache, not a database. Cold restart warms up from scratch, which is the expected behavior for a caching layer.
+
+### 2.10 Staging Pages and Page Drain
+
+Phase 2c introduces staging pages to eliminate the SET tail-latency bottleneck caused by `TryAllocFromFree` scanning all pages after eviction. For policies with `HasStoreEviction = true` (ARC, LRU), the last page in each node's page pool is designated as a staging page.
+
+#### 2.10.1 The SET Bottleneck
+
+Without staging, the SET path under capacity pressure follows this sequence:
+
+1. `TryBump()` on CurrentPage fails (page full)
+2. Advance CurrentPage to next page; if all pages exhausted, enter fallback
+3. Fallback: `ForceEvictOne()` evicts one key via ARC
+4. `TryAllocFromFree()` scans all pages for the freed slot --- O(P) where P = pages per node
+5. Repeat if scan finds nothing
+
+Step 4 is the bottleneck. After evicting one key in O(1), the SET thread scans all pages looking for the freed space. With 8192 pages per node, this scan dominates p99_set latency (68K ns observed on c6i.metal).
+
+#### 2.10.2 Staging Page Design
+
+The staging page provides an O(1) overflow target for SET, decoupling the write path from space management:
+
+```
+SET path (HasStoreEviction policies):
+  1. TryBump on CurrentPage        → success: done (O(1))
+  2. Advance CurrentPage (skip Staging pages in rotation)
+  3. If all pages exhausted:
+     a. TryBump on Staging page    → success: done (O(1))
+     b. ForceEvictOne + TryAllocFromFree scan (fallback, rare)
+```
+
+**Staging page properties:**
+
+- Same `PageTier::Staging = 5` enum value, accepted by `TryBump` (Hot or Staging)
+- Allocated from the same physical page pool as regular pages (no separate allocation)
+- Never selected as CurrentPage during normal rotation
+- Bump allocator only --- no `TryAllocFromFree` scanning on staging
+
+**SET correctness:** A key written to the staging page is fully valid. Its `KeyMeta` records the staging page index. GET reads it via the same path as any other page. The staging page's bump allocator advances independently of the regular page rotation.
+
+#### 2.10.3 Background Relocation
+
+The maintenance thread (NodeJob, 2ms interval) relocates keys from the staging page back to regular pages:
+
+```
+BackgroundEvict Phase 1 (staging relocation):
+  for i in 0..64:
+    if stagingPage.ActiveKeys == 0: break
+    hash = stagingPage.KeyH1[0], KeyH2[0]   // first key in staging
+    if relocateKey(hash, skipPage=SIZE_MAX):  // move to any regular page
+      stagingPage.RemoveKeyByHash(hash)
+    else:
+      KeyStore.ForceEvictOne()               // make room
+  
+  if stagingPage.ActiveKeys == 0 && stagingPage.UsedBytes > 0:
+    stagingPage.Recycle()                     // reset bump
+    stagingPage.Tier = Staging                // keep staging designation
+```
+
+`relocateKey` operates under CMap's seqlock: it copies value data to the destination page first, then updates `KeyMeta` atomically. Between copy and update, GET reads the old location (still valid). After update, GET reads the new location (data already written). No torn reads, no locking on the read path.
+
+#### 2.10.4 Page Drain Compaction
+
+Phase 3 of `BackgroundEvict` proactively consolidates sparse pages:
+
+```
+BackgroundEvict Phase 3 (page drain):
+  threshold: ActiveKeys <= 4 && DeadBytes > PageSize/4
+  for each Hot page (excluding staging):
+    if sparse enough: drainTarget = page with most dead bytes
+  
+  while drainTarget.ActiveKeys > 0:
+    hash = drainTarget first key
+    if relocateKey(hash, skipPage=drainTarget):
+      drainTarget.RemoveKeyByHash(hash)
+    else:
+      ForceEvictOne(); break
+  
+  if drainTarget empty:
+    drainTarget.Recycle()
+    drainTarget.Tier = Hot
+    CurrentPage = drainTarget    // fresh bump target for SET
+```
+
+This creates a virtuous cycle: eviction empties sparse pages → drain consolidates remaining keys → recycled page becomes a fresh bump target → SET uses fast bump (O(1)) instead of staging or scanning.
+
+#### 2.10.5 Destructor Synchronization
+
+Each FurrBall maintains `Destroying` (atomic bool) and `ActiveMaintenanceRefs` (atomic int). The destructor sets `Destroying = true` before removing from the global `OpenBalls` list, then spins until `ActiveMaintenanceRefs == 0`. The maintenance lambda uses a double-check pattern: check `Destroying`, increment refs, re-check `Destroying`, process, decrement refs. This replaces the heuristic 20ms sleep and prevents use-after-free when the maintenance thread holds a snapshot of OpenBalls during ball destruction.
 
 ## 3. Design Decisions
 
@@ -2453,7 +2541,7 @@ This means CacheLib has **no working NUMA-aware memory placement** in any releas
 
 1. **Topology-aware placement eliminates cross-socket cache line traffic.** TL at 56ns vs CN at 191ns (3.4x) at 32MB working set. The Remote-Only result (43ns, identical to SN) proves this is cache locality, not NUMA DRAM locality --- the working set fits in L3.
 2. **FurrBall has the fastest Get path of any tested system** (56-79ns vs CacheLib's 126-198ns) at half the memory cost.
-3. **The throughput gap is eviction, not architecture.** FurrBall's p99_set (35-67us) vs CacheLib's (3.7-4.7us) explains the entire ops/s gap. Background eviction via NodeJob workers would close this.
+3. **The throughput gap was eviction, not architecture.** Pre-staging p99_set (35--67us) vs CacheLib's (3.7--4.7us) explained the ops/s gap. Staging pages (§5.25) reduced p99_set by 24--63x, closing this gap.
 4. **FurrBall achieves 100% memory efficiency** (32MB footprint for 32MB usable) vs CacheLib's 50% (64MB footprint for 32MB usable).
 
 **What the data does NOT show:**
@@ -2464,9 +2552,68 @@ This means CacheLib has **no working NUMA-aware memory placement** in any releas
 4. **Single data point per value size.** We only have 64B and 1024B. The crossover point where NUMA DRAM penalty exceeds L3 contention is unknown.
 5. **c6i.metal only.** L3 capacity and NUMA distance matrix are platform-specific. These numbers apply to Ice Lake Xeon with 2 sockets and may differ on AMD EPIC or ARM Neoverse.
 
+### 5.25 Staging Pages: SET Tail-Latency Elimination (c6i.metal)
+
+#### Background
+
+The pre-staging SET bottleneck (§2.10.1) produces catastrophic p99_set latency when the cache is under capacity pressure. After evicting one key in O(1), the SET thread scans all pages with `TryAllocFromFree` looking for the freed slot --- O(P) where P is pages per node. On c6i.metal with 8192 pages per node, this produces p99_set of 68K--280K ns.
+
+#### Methodology
+
+FurrBallSN (single-node, ARC policy, no NUMA routing) on c6i.metal. Two configs tested: 64B and 1024B value sizes, 700K key universe, 2 threads, 8192 pages per node (256MB per node). Three workloads: partitioned (no cross-thread key sharing), shared (uniform key distribution), and trace (Zipfian theta=0.99 replay). 3 repetitions × 10 iterations per config. Baseline: same hardware, same code without staging pages (h2 fix only).
+
+#### Results: Staging vs Baseline
+
+**p99_set improvement (ns):**
+
+| Config | Baseline | Staging | Improvement |
+|---|---:|---:|---:|
+| 2T / Partitioned / 64B | 68,307 | 2,836 | **24.1x** |
+| 2T / Shared / 64B | 68,173 | 2,817 | **24.2x** |
+| 2T / Trace / 64B | — | 2,838 | — |
+| 2T / Partitioned / 1024B | 200,490 | 4,548 | **44.1x** |
+| 2T / Shared / 1024B | 280,204 | 4,429 | **63.3x** |
+
+**p99_get unchanged:**
+
+| Config | Baseline | Staging | Delta |
+|---|---:|---:|---:|
+| 2T / Partitioned / 64B | 559 | 516 | -7.7% |
+| 2T / Shared / 64B | 519 | 523 | +0.8% |
+| 2T / Partitioned / 1024B | 542 | 524 | -3.3% |
+| 2T / Shared / 1024B | 511 | 500 | -2.2% |
+
+GET latency is within measurement noise. Staging does not affect the read path.
+
+#### Single-Node Performance Summary
+
+FurrBallSN with staging vs baselines at 2 threads, 8192 ppn, c6i.metal:
+
+| System | Config | p50_get | p50_set | p99_get | p99_set | Hit Rate | ops/s |
+|---|---|---:|---:|---:|---:|---:|---:|
+| FurrBallSN (ARC, staging) | 64B / Part | 215 | 1,095 | 516 | 2,836 | 93.9% | 5.44M |
+| TBB (unbounded) | 64B / Part | 54 | 149 | 269 | 253 | 93.9% | 12.97M |
+| FurrBallSN (ARC, staging) | 1024B / Part | 197 | 1,462 | 532 | 4,304 | 93.9% | 5.18M |
+| TBB (unbounded) | 1024B / Part | 60 | 225 | 284 | 374 | 93.9% | 12.11M |
+
+TBB is the latency floor (pure hash map, no eviction, no capacity management). FurrBallSN's GET is 4x slower at p50 (215ns vs 54ns) but provides full ARC eviction with bounded memory. SET is 7x slower at p50 (1,095ns vs 149ns) reflecting the eviction + staging overhead.
+
+**FurrBallSN vs CacheLib** (from §5.24 UniformRO, equal usable capacity):
+
+| Usable | FurrBallSN p50 | CacheLib p50 | Ratio |
+|---:|---:|---:|---:|
+| 64 MB | 133 ns | 1,454 ns | **10.9x** |
+| 128 MB | 293 ns | 4,059 ns | **13.9x** |
+
+FurrBall achieves order-of-magnitude lower GET latency at equal usable capacity, with 100% vs 50% memory efficiency.
+
+#### Correctness Validation
+
+ASAN validation on c6i.metal (all 8192 SN configs × 3 reps): zero memory errors. The destructor race condition (maintenance thread accessing freed memory after ball destruction) was fixed with a per-ball `ActiveMaintenanceRefs` counter and `Destroying` flag with double-check pattern, replacing the heuristic 20ms sleep. TSAN was unavailable for NUMA programs (conflicts with large mmap regions from `numa_alloc_onnode`).
+
 ## 6. Current Status
 
-**Phase 1 is complete.** **Phase 2a is complete.** **Phase 2b data collected but evaluation deferred** (§5.20: page-level eviction smothers policy differentiation). **ARC-FLATLL2 optimized** (uint32_t indices + arena + no cached_: +87--172% over ARC, ranked #2 KPI). **ARC-REMARC Hybrid tested** (§5.23: negative finding, REMARC scoring does not subsume p-adaptation, complementary not substitutable). **History Atom experiment** (retracted; REMARC paper old §10-§11 removed, Findings 35--38 withdrawn): thorough negative finding documented. Post-publication audit (v0.13.0) revealed score degeneracy and sentinel bug that invalidated all reported HA hit rates. Genuine HA performance is LRU-equivalent (~25% Zipfian). See REMARC paper §10 for full analysis. PolicyBench includes 48+ variants with all sentinel bugs fixed.
+**Phase 1 is complete.** **Phase 2a is complete.** **Phase 2b data collected but evaluation deferred** (§5.20: page-level eviction smothers policy differentiation). **Phase 2c staging pages complete** (§5.25: p99_set improved 24--63x, zero GET regression). **ARC-FLATLL2 optimized** (uint32_t indices + arena + no cached_: +87--172% over ARC, ranked #2 KPI). **ARC-REMARC Hybrid tested** (§5.23: negative finding). **Destructor race fixed** (per-ball refcount + double-check pattern).
 
 Phase 1 delivered artifacts:
 - Key-based Set/Get API with flat KeyStore (CAS bump allocator, round-robin + thread-local routing, per-node shards; no eviction policy in Phase 1)
@@ -2530,6 +2677,7 @@ The project is on the `numa-focus` branch. Licensed under MIT. Build and test ar
 - How does the bump allocator's fragmentation ratio evolve under real workloads?
 - ~~Will the per-key `unique_ptr<SeqLock>` allocation overhead become a bottleneck at scale?~~ **Answered: eliminated in Phase 2a.** CMap stores values inline in cacheline-aligned slots with no per-key heap allocation.
 - ~~**Hypothesized scaling advantage (untested):** Per-node sharding creates N independent contention domains...~~ **Answered: validated for reads, bottleneck identified for writes.** Get throughput scales +72% from 4→64 threads (lock partitioning prevents cross-node read contention). Set throughput degrades -79% due to SpinLock bottleneck at 32 threads/node (§5.19). The read scaling confirms the hypothesis; the write bottleneck identifies the next optimization target.
+- **Staging pages resolved the SET tail-latency bottleneck.** Pre-staging p99_set was 68--280K ns (O(P) page scan after eviction). Post-staging p99_set is 2.8--4.5K ns (O(1) bump or staging write). Remaining SET overhead vs TBB is architectural (ARC eviction policy, seqlock writes, CompactLock for key tracking). Further reduction would require lock-free ARC list operations or per-page eviction.
 - **Page-level eviction smothers policy differentiation.** Phase 2b benchmark data (§5.20) shows identical hit rates across ARC/REMARC/AUG-ADAPT in all workloads. The 2.6x latency gap is a data structure layout artifact (ArcList vs TempCtrl), not a policy advantage. Per-key EvictScore is inert for eviction. Benchmark redesign required before policy comparison can be meaningful. **Plan documented in §5.21.**
 - **ARC's linked list is a performance bottleneck independent of policy choice.** ~~The 2.6x latency gap...~~ **Validated and resolved in §5.22.** ARC-FLATLL2 (flat-linked-list + uint32_t + arena + no cached_) beats ARC-linked by +87--172% throughput with identical hit rates. The data structure gap is fully closed. ~~Next: REMARC + ARC-FLATLL hybrid (ARC p-adaptation + REMARC per-key scoring).~~ **Hybrid tested in §5.23: negative finding.** REMARC scoring and ARC p-adaptation are complementary, not substitutable. REMARC's value is in the migration axis (multi-action), not in replacing ARC's eviction heuristic.
 - **ARC is a double-edged sword: smarter adaptation at higher per-operation cost.** ARC's p-adaptation between recency and frequency is more sophisticated than REMARC's 2-atom composition, potentially yielding better hit rates. But ArcList pointer-chasing makes each metadata operation 2-3x slower. The total throughput (hit rate x latency) tradeoff is workload-dependent and cannot be evaluated until per-key eviction is implemented.
@@ -2583,18 +2731,20 @@ The project is on the `numa-focus` branch. Licensed under MIT. Build and test ar
 - [x] ARC-FLATLL flat-linked-list implemented and validated: identical hit rates to ARC, +1.5--34% throughput (§5.22)
 - [x] 3-way ARC comparison complete: ARC-linked vs ARC-FLAT vs ARC-FLATLL (§5.22)
 
-#### Phase 2c: Per-Key Eviction + Fair Policy Comparison
+#### Phase 2c: Per-Key Eviction + Staging Pages
 - [x] ARC-REMARC Hybrid tested: negative finding, scoring and p-adaptation are complementary (§5.23)
-- [ ] Per-key eviction: tombstone + dead-bytes, no in-page reuse (simplest viable implementation)
-- [ ] EvictOneKey: scan pages for min EvictScore key, remove from Page + KeyStore
-- [ ] Page.h: dead-bytes tracking per page, page recycling when ActiveKeys == 0
-- [ ] ARC per-key eviction: use ArcList position (tail of T2) for victim selection instead of page recycling
-- [ ] 2x2 factorial benchmark: ARC-1L vs REMARC-1L (scoring quality), REMARC-1L vs REMARC-2L (architecture benefit)
-- [ ] REMARC-BLOOM speed baseline: page-level only, Bloom filter membership, no per-key state
-- [ ] Re-run Phase 2b workloads with per-key eviction, expect hit rate divergence
+- [x] Per-key eviction: EvictOneKey removes key from Page + KeyStore, dead-bytes tracking per page
+- [x] Page recycling when ActiveKeys == 0 (Recycle + ResetBump)
+- [x] Staging pages: O(1) SET overflow target for HasStoreEviction policies (ARC, LRU)
+- [x] Page drain compaction: proactive sparse page consolidation during maintenance
+- [x] Destructor race fix: refcount + double-check replaces heuristic sleep
+- [x] CMap h2 truncation bug fix: Page stores full HashPair, not truncated uint32_t
+- [x] EC2 validation: p99_set improved 24--63x with zero GET regression (§5.25)
 - [x] ARC-FLATLL in production (CMap.h): replace std::list with flat-linked-list
 - [x] ARC-FLATLL2 optimized: uint32_t indices, pre-allocated arena, no cached_ set (+87--172% vs ARC)
-- [ ] REMARC + ARC-FLATLL hybrid: ARC p-adaptation (list level) + REMARC TempCtrl scoring (key level)
+- [ ] 2x2 factorial benchmark: ARC-1L vs REMARC-1L (scoring quality), REMARC-1L vs REMARC-2L (architecture benefit)
+- [ ] Re-run Phase 2b workloads with per-key eviction, expect hit rate divergence
+- [ ] Multi-platform validation (AMD EPYC Genoa c6a.metal)
 
 #### Phase 2d: Two-Level REMARC + Optimization
 - [ ] PagePolicy as explicit REMARC instance (page-level atoms/projections)
@@ -2755,6 +2905,8 @@ QEMU VM:
 
 | Version | Summary |
 |---------|---------|
+| v1.31.0 | Staging pages: O(1) SET overflow for ARC/LRU policies, 24--63x p99_set improvement on c6i.metal. Page drain compaction. Destructor race fix (refcount + double-check). CMap h2 truncation fix (full HashPair storage). §2.10 staging design, §5.25 EC2 results. |
+| v1.30.0 | ReadOnly key prefix bug fixed. CacheLib v2026.02 validated (no perf change vs v2024.07). NUMA DRAM penalty: 171ns (64MB), 211ns (128MB). CacheLib Memory Tiers not implemented. FurrBallSN 10.9x/13.9x faster GET than CacheLib at equal capacity. |
 | v1.29.0 | Corrected-capacity NUMA comparison at 1024B. Remote-Only data: 43ns = SN 43ns, proving 32MB fits in L3. TL-vs-CN gap is cache locality not DRAM locality. Memory efficiency: FurrBall 100% vs CacheLib 50%. CN 191ns = cross-socket L3 metadata traffic. |
 | v1.28.0 | Preliminary multi-baseline NUMA comparison (superseded by v1.29.0 capacity fix). |
 | v1.25.0 | Strategic closure. REMARC retired. Production path: ARC eviction + SimpleMigratePolicy. REMARC paper v1.0.0: comprehensive tiered placement evaluation (§11), feedback SNR analysis, REM-T algebra retired. |
