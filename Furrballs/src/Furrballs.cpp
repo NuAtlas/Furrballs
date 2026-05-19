@@ -1756,7 +1756,12 @@ FurrBall<Policy> *FurrBall<Policy>::CreateBall(const std::string &DBpath, const 
         for (int i = 0; i < Detail::globalNumaState.NumaNodeCount; i++) {
             Detail::globalNumaState.Workers[i].StartMaintenance(
                 [](int nodeId) {
-                    for (auto* ball : OpenBalls) ball->BackgroundEvict(nodeId);
+                    std::vector<FurrBall*> snapshot;
+                    {
+                        std::lock_guard<std::mutex> lock(OpenBallsMutex);
+                        snapshot.assign(OpenBalls.begin(), OpenBalls.end());
+                    }
+                    for (auto* ball : snapshot) ball->BackgroundEvict(nodeId);
                 },
                 std::chrono::milliseconds(10));
         }
@@ -1790,6 +1795,12 @@ Exit:
 
 template<typename Policy>
 NuAtlas::FurrBall<Policy>::~FurrBall() noexcept {
+    {
+        std::lock_guard<std::mutex> lock(OpenBallsMutex);
+        OpenBalls.remove(this);
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
     if (DataMembers && DataMembers->db) {
         cache.ForEachValue([this](const size_t&, Page* page) {
             if (page && page->Dirty) {
@@ -1833,8 +1844,6 @@ NuAtlas::FurrBall<Policy>::~FurrBall() noexcept {
             MemoryManager::FreeMemory(mem);
         }
     }
-
-    OpenBalls.remove(this);
 }
 
 // =====================================================================

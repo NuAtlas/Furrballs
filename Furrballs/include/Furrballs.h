@@ -322,6 +322,7 @@ namespace NuAtlas {
         std::vector<void*> AllocatedPages;
 
         inline static std::list<FurrBall*> OpenBalls = std::list<FurrBall*>();
+        inline static std::mutex OpenBallsMutex;
 
         FurrBall(const FurrConfig& config, size_t numPages) noexcept;
 
