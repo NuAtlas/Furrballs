@@ -143,8 +143,9 @@ struct PerNodeDetails{
     uint8_t MaxDeadAge = 8;
 
     // --- Reserve pages for background eviction ---
-    static constexpr size_t kReserveCapacity = 2;
-    size_t ReservePages[kReserveCapacity] = {};
+    static constexpr size_t kDefaultReserveCapacity = 2;
+    size_t kReserveCapacity = kDefaultReserveCapacity;
+    std::vector<size_t> ReservePages;
     std::atomic<size_t> ReserveCount{0};
     SpinLock ReserveLock;
 
@@ -165,6 +166,12 @@ struct PerNodeDetails{
         ReservePages[cnt] = pageIdx;
         ReserveCount.store(cnt + 1, std::memory_order_release);
         return true;
+    }
+
+    void InitReserve(size_t capacity) {
+        kReserveCapacity = capacity > 0 ? capacity : kDefaultReserveCapacity;
+        ReservePages.resize(kReserveCapacity, 0);
+        ReserveCount.store(0, std::memory_order_relaxed);
     }
 
     bool ReserveLow() const {
@@ -312,14 +319,14 @@ void NuAtlas::FurrBall<Policy>::OnKeyEvict(int nodeID, const KeyMeta& meta) noex
     Page& page = details->NodePages[meta.PageIndex];
     if (meta.TempCtrlIdx >= page.KeyH2.size()) return;
 
-    uint32_t swappedH2 = page.RemoveKeyEntry(meta.TempCtrlIdx);
+    HashPair swapped = page.RemoveKeyEntry(meta.TempCtrlIdx);
 
     size_t offset = reinterpret_cast<size_t>(meta.DataOffset) -
                     reinterpret_cast<size_t>(page.Data);
     page.AddFreeSlot(static_cast<uint32_t>(offset), static_cast<uint32_t>(meta.DataSize));
 
-    if (swappedH2 != 0) {
-        details->KeyStore.UpdateInPlaceByHash(HashPair{0, swappedH2},
+    if (swapped.h2 != 0) {
+        details->KeyStore.UpdateInPlaceByHash(swapped,
             [idx = meta.TempCtrlIdx](KeyMeta& m) {
                 m.TempCtrlIdx = static_cast<uint8_t>(idx);
             });
@@ -483,9 +490,9 @@ bool NuAtlas::FurrBall<Policy>::MigrateKey(const std::string& key, const HashPai
         Page& srcPage = srcDetails->NodePages[srcMeta->PageIndex];
         size_t idx = srcPage.FindKeyIndex(hp);
         if (idx != SIZE_MAX) {
-            uint32_t swappedH2 = srcPage.RemoveKeyEntry(idx);
-            if (idx < srcPage.KeyH2.size() && swappedH2 != hp.h2) {
-                srcDetails->KeyStore.UpdateInPlaceByHash(HashPair{0, swappedH2},
+            HashPair swapped = srcPage.RemoveKeyEntry(idx);
+            if (idx < srcPage.KeyH2.size() && swapped != hp) {
+                srcDetails->KeyStore.UpdateInPlaceByHash(swapped,
                     [idx](KeyMeta& m) {
                     m.TempCtrlIdx = static_cast<uint8_t>(idx);
                 });
@@ -543,22 +550,22 @@ size_t NuAtlas::FurrBall<Policy>::EvictOneKey(int nodeID) noexcept {
     if (bestPageIdx == SIZE_MAX || bestKeyIdx == SIZE_MAX) return 0;
 
     Page& page = details->NodePages[bestPageIdx];
-    uint32_t victimH2 = page.KeyH2[bestKeyIdx];
+    HashPair victimHash{page.KeyH1[bestKeyIdx], page.KeyH2[bestKeyIdx]};
 
-    uint32_t swappedH2 = page.RemoveKeyEntry(bestKeyIdx);
-    if (!Volatile && swappedH2 != victimH2 && swappedH2 != 0) {
+    HashPair swapped = page.RemoveKeyEntry(bestKeyIdx);
+    if (!Volatile && swapped != victimHash && swapped.h2 != 0) {
         details->FrozenLock.lock();
-        auto it = details->KeyNames.find(swappedH2);
+        auto it = details->KeyNames.find(swapped.h2);
         details->FrozenLock.unlock();
         if (it != details->KeyNames.end()) {
-            details->KeyStore.UpdateInPlace(it->second,
+            details->KeyStore.UpdateInPlaceByHash(swapped,
                 [idx = bestKeyIdx](KeyMeta& m) {
                     m.TempCtrlIdx = static_cast<uint8_t>(idx);
                 });
         }
     }
 
-    auto eraseResult = details->KeyStore.EraseByHash(HashPair{0, victimH2});
+    auto eraseResult = details->KeyStore.EraseByHash(victimHash);
     size_t freedSize = 0;
     if (eraseResult.err == NO_ERR && eraseResult.value.has_value()) {
         const KeyMeta& meta = eraseResult.value.value();
@@ -580,8 +587,8 @@ size_t NuAtlas::FurrBall<Policy>::EvictOneKey(int nodeID) noexcept {
 
     if (!Volatile) {
         details->FrozenLock.lock();
-        details->KeyNames.erase(victimH2);
-        details->FrozenIndex.erase(victimH2);
+        details->KeyNames.erase(victimHash.h2);
+        details->FrozenIndex.erase(victimHash.h2);
         details->FrozenLock.unlock();
     }
 
@@ -609,11 +616,12 @@ void NuAtlas::FurrBall<Policy>::ScanAndExecute(int nodeID) noexcept {
         }
 
         page.CompactLock.lock();
+        auto h1s = page.KeyH1;
         auto h2s = page.KeyH2;
         page.CompactLock.unlock();
 
-        for (uint32_t h2 : h2s) {
-            details->KeyStore.EraseByHash(HashPair{0, h2});
+        for (size_t ki = 0; ki < h2s.size(); ki++) {
+            details->KeyStore.EraseByHash(HashPair{h1s[ki], h2s[ki]});
         }
 
         page.Recycle();
@@ -684,7 +692,7 @@ void NuAtlas::FurrBall<Policy>::UpdateMinDesire(int nodeID) noexcept {
         for (auto& page : details->NodePages) {
             PageTier tier = page.Tier.load(std::memory_order_relaxed);
             if (tier == PageTier::Empty || tier == PageTier::Freeze) continue;
-            for (uint32_t h2 : page.KeyH2) {
+            for (uint64_t h2 : page.KeyH2) {
                 uint8_t d = details->KeyStore.GetDesire(h2);
                 if (d > maxD) maxD = d;
             }
@@ -717,10 +725,9 @@ void NuAtlas::FurrBall<Policy>::BackgroundEvict(int nodeID) noexcept {
 
         for (size_t p = 0; p < details->NodePages.size(); p++) {
             Page& page = details->NodePages[p];
-            if (page.Tier.load(std::memory_order_relaxed) == PageTier::Empty
+            if (page.Tier.load(std::memory_order_relaxed) == PageTier::Hot
                 && page.ActiveKeys.load(std::memory_order_relaxed) == 0
                 && page.GetUsedSize() == 0) {
-                page.Tier.store(PageTier::Hot, std::memory_order_release);
                 details->TryPushReserve(p);
                 break;
             }
@@ -807,11 +814,12 @@ FurrBall<Policy>::ManagePages(int nodeID, bool simulateIO) noexcept {
                 if (page.DeadAge < details->MaxDeadAge) continue;
 
                 page.CompactLock.lock();
+                auto h1s = page.KeyH1;
                 auto h2s = page.KeyH2;
                 page.CompactLock.unlock();
 
-                for (uint32_t h2 : h2s) {
-                    details->KeyStore.EraseByHash(HashPair{0, h2});
+                for (size_t ki = 0; ki < h2s.size(); ki++) {
+                    details->KeyStore.EraseByHash(HashPair{h1s[ki], h2s[ki]});
                 }
                 page.Recycle();
                 prevDeadCleaned++;
@@ -898,37 +906,37 @@ FurrBall<Policy>::ManagePages(int nodeID, bool simulateIO) noexcept {
                     Page& srcWarmPage = details->NodePages[warmPI.idx];
                     Page& srcColdPage = details->NodePages[coldPI.idx];
 
-                    uint32_t coldH2 = srcWarmPage.KeyH2[coldBit];
+                    HashPair coldHash{srcWarmPage.KeyH1[coldBit], srcWarmPage.KeyH2[coldBit]};
                     uint8_t coldTc = srcWarmPage.TempCtrl[coldBit];
-                    uint32_t hotH2 = srcColdPage.KeyH2[hotBit];
+                    HashPair hotHash{srcColdPage.KeyH1[hotBit], srcColdPage.KeyH2[hotBit]};
                     uint8_t hotTc = srcColdPage.TempCtrl[hotBit];
 
-                    uint32_t swappedWarmH2 = srcWarmPage.RemoveKeyEntry(coldBit);
-                    if (swappedWarmH2 != coldH2) {
-                        details->KeyStore.UpdateInPlaceByHash(HashPair{0, swappedWarmH2},
+                    HashPair swappedWarm = srcWarmPage.RemoveKeyEntry(coldBit);
+                    if (swappedWarm != coldHash) {
+                        details->KeyStore.UpdateInPlaceByHash(swappedWarm,
                             [idx = coldBit](KeyMeta& m) {
                                 m.TempCtrlIdx = static_cast<uint8_t>(idx);
                             });
                     }
 
-                    uint32_t swappedColdH2 = srcColdPage.RemoveKeyEntry(hotBit);
-                    if (swappedColdH2 != hotH2) {
-                        details->KeyStore.UpdateInPlaceByHash(HashPair{0, swappedColdH2},
+                    HashPair swappedCold = srcColdPage.RemoveKeyEntry(hotBit);
+                    if (swappedCold != hotHash) {
+                        details->KeyStore.UpdateInPlaceByHash(swappedCold,
                             [idx = hotBit](KeyMeta& m) {
                                 m.TempCtrlIdx = static_cast<uint8_t>(idx);
                             });
                     }
 
-                    srcWarmPage.AddKeyEntry(HashPair{0, hotH2}, hotTc);
-                    details->KeyStore.UpdateInPlaceByHash(HashPair{0, hotH2},
+                    srcWarmPage.AddKeyEntry(hotHash, hotTc);
+                    details->KeyStore.UpdateInPlaceByHash(hotHash,
                         [pi = warmPI.idx, d = details](KeyMeta& m) {
                             m.PageIndex = pi;
                             m.TempCtrlIdx = static_cast<uint8_t>(
                                 d->NodePages[pi].KeyH2.size() - 1);
                         });
 
-                    srcColdPage.AddKeyEntry(HashPair{0, coldH2}, coldTc);
-                    details->KeyStore.UpdateInPlaceByHash(HashPair{0, coldH2},
+                    srcColdPage.AddKeyEntry(coldHash, coldTc);
+                    details->KeyStore.UpdateInPlaceByHash(coldHash,
                         [pi = coldPI.idx, d = details](KeyMeta& m) {
                             m.PageIndex = pi;
                             m.TempCtrlIdx = static_cast<uint8_t>(
@@ -1067,7 +1075,7 @@ FurrBall<Policy>::ManagePages(int nodeID, bool simulateIO) noexcept {
     } else if constexpr (Policy::HasDesire && !Policy::HasPerKeyState) {
         uint8_t maxD = 0;
         for (auto& page : details->NodePages) {
-            for (uint32_t h2 : page.KeyH2) {
+            for (uint64_t h2 : page.KeyH2) {
                 uint8_t d = details->KeyStore.GetDesire(h2);
                 if (d > maxD) maxD = d;
             }
@@ -1144,27 +1152,27 @@ Error NuAtlas::FurrBall<Policy>::Get(const std::string &key, void* outBuf, size_
 
                         if (bestPage >= 0) {
                             Page& warmPage = details->NodePages[bestPage];
-                            uint32_t coldH2 = warmPage.KeyH2[bestIdx];
+                            HashPair coldHash{warmPage.KeyH1[bestIdx], warmPage.KeyH2[bestIdx]};
 
-                            uint32_t swappedHotH2 = deadPage.RemoveKeyEntry(hotIdx);
-                            if (swappedHotH2 != hp.h2) {
-                                details->KeyStore.UpdateInPlaceByHash(HashPair{0, swappedHotH2},
+                            HashPair swappedHot = deadPage.RemoveKeyEntry(hotIdx);
+                            if (swappedHot != hp) {
+                                details->KeyStore.UpdateInPlaceByHash(swappedHot,
                                     [hIdx = hotIdx](KeyMeta& m) {
                                         m.TempCtrlIdx = static_cast<uint8_t>(hIdx);
                                     });
                             }
 
-                            uint32_t swappedColdH2 = warmPage.RemoveKeyEntry(bestIdx);
-                            if (swappedColdH2 != coldH2) {
-                                details->KeyStore.UpdateInPlaceByHash(HashPair{0, swappedColdH2},
+                            HashPair swappedCold = warmPage.RemoveKeyEntry(bestIdx);
+                            if (swappedCold != coldHash) {
+                                details->KeyStore.UpdateInPlaceByHash(swappedCold,
                                     [bIdx = bestIdx](KeyMeta& m) {
                                         m.TempCtrlIdx = static_cast<uint8_t>(bIdx);
                                     });
                             }
 
-                            details->KeyStore.EraseByHash(HashPair{0, coldH2});
+                            details->KeyStore.EraseByHash(coldHash);
                             if (DataMembers && DataMembers->db) {
-                                std::string rkey(reinterpret_cast<const char*>(&coldH2), sizeof(uint32_t));
+                                std::string rkey(reinterpret_cast<const char*>(&coldHash.h2), sizeof(uint64_t));
                             }
 
                             warmPage.AddKeyEntry(hp, hotTc);
@@ -1401,6 +1409,7 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
                                 if (!Volatile && coldPage.Dirty) FlushPage(&coldPage);
 
                                 coldPage.CompactLock.lock();
+                                auto h1s = coldPage.KeyH1;
                                 auto h2s = coldPage.KeyH2;
                                 coldPage.CompactLock.unlock();
 
@@ -1413,8 +1422,8 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
                                     Stats.BytesWritten.fetch_add(coldPage.GetUsedSize(), std::memory_order_relaxed);
 
                                     details->FrozenLock.lock();
-                                    for (uint32_t h2 : h2s) {
-                                        auto it = details->KeyNames.find(h2);
+                                    for (size_t ki = 0; ki < h2s.size(); ki++) {
+                                        auto it = details->KeyNames.find(h2s[ki]);
                                         if (it == details->KeyNames.end()) continue;
                                         auto meta = details->KeyStore.Find(it->second);
                                         if (!meta.has_value()) continue;
@@ -1427,15 +1436,15 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
                                         fe.offset = reinterpret_cast<size_t>(meta->DataOffset) -
                                                     reinterpret_cast<size_t>(coldPage.Data);
                                         fe.size = meta->DataSize;
-                                        details->FrozenIndex[h2] = std::move(fe);
+                                        details->FrozenIndex[h2s[ki]] = std::move(fe);
                                     }
                                     details->FrozenLock.unlock();
 
                                     Stats.FrozenPagesPersisted.fetch_add(1, std::memory_order_relaxed);
                                 }
 
-                                for (uint32_t h2 : h2s) {
-                                    details->KeyStore.EraseByHash(HashPair{0, h2});
+                                for (size_t ki = 0; ki < h2s.size(); ki++) {
+                                    details->KeyStore.EraseByHash(HashPair{h1s[ki], h2s[ki]});
                                 }
 
                                 coldPage.Recycle();
@@ -1647,13 +1656,13 @@ FurrBall<Policy> *FurrBall<Policy>::CreateBall(const std::string &DBpath, const 
     options.create_if_missing = true;
     options.optimize_filters_for_hits = true;
 
-    std::unique_ptr<rocksdb::DB> dbPtr;
-    auto status = rocksdb::DB::Open(options, DBpath, &dbPtr);
+    rocksdb::DB* rawDb = nullptr;
+    auto status = rocksdb::DB::Open(options, DBpath, &rawDb);
     if (!status.ok()) {
         Logger::getInstance().error("Failed to open RocksDB at " + DBpath + ": " + status.ToString());
         return nullptr;
     }
-    db = dbPtr.release();
+    db = rawDb;
 
     numPages = config.InitialPageCount;
     totalPhysicalPageSize = numPages * config.PageSize;
@@ -1694,6 +1703,7 @@ FurrBall<Policy> *FurrBall<Policy>::CreateBall(const std::string &DBpath, const 
                 }
                 details->PhysicalPageInNode = ptr;
                 details->NodePages.reserve(numPages);
+                details->InitReserve(config.ReserveCapacity);
                 
                 for(int pageC = 0; pageC < numPages; pageC++){
                     details->NodePages.emplace_back(static_cast<char*>(ptr) + (config.PageSize * pageC), config.PageSize, pageC);
@@ -1763,7 +1773,7 @@ FurrBall<Policy> *FurrBall<Policy>::CreateBall(const std::string &DBpath, const 
                     }
                     for (auto* ball : snapshot) ball->BackgroundEvict(nodeId);
                 },
-                std::chrono::milliseconds(10));
+                std::chrono::milliseconds(2));
         }
     }
     

@@ -283,6 +283,7 @@ namespace NuAtlas {
         size_t CapacityLimit = 1024 * 1024;
         size_t InitialPageCount = 2;
         size_t PageSize = 4096;
+        size_t ReserveCapacity = 2;
         Cache<size_t, void*>::EvictionCallback evictionCallback = [](const size_t&, void*&) {};
         RemarcConfig remarcConfig;
 
