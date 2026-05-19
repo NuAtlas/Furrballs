@@ -1752,7 +1752,7 @@ FurrBall<Policy> *FurrBall<Policy>::CreateBall(const std::string &DBpath, const 
 
     OpenBalls.push_back(fb);
 
-    if (UseNUMA && Detail::globalNumaState.Workers) {
+    if (config.EnableNUMA && Detail::globalNumaState.Workers) {
         for (int i = 0; i < Detail::globalNumaState.NumaNodeCount; i++) {
             Detail::globalNumaState.Workers[i].StartMaintenance(
                 [](int nodeId) {
