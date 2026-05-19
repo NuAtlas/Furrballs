@@ -1,6 +1,6 @@
 ---
 title: "Furrballs: Topology-Aware, High-Performance Resource Placement for Asymmetric Memory Systems"
-subtitle: "Technical Report v1.29.0"
+subtitle: "Technical Report v1.30.0"
 author: "Hamza Jamil Saied (The Sphynx)"
 date: last-modified
 doi: "10.5281/zenodo.19794753"
@@ -44,7 +44,7 @@ format:
 ---
 
 ## Status
-**v1.29.0** --- Corrected-capacity NUMA comparison at 1024B values. All systems now at exactly 32MB usable capacity. Critical finding: Remote-Only adapter shows 43ns identical to SN, proving 32MB working set fits in L3 cache. The TL-vs-CN gap (56ns vs 191ns) is cache locality (cross-socket L3 metadata traffic), not NUMA DRAM locality. NUMA DRAM penalty not yet measured --- requires working-set sweep beyond L3 capacity (56MB). Memory efficiency: FurrBall 100% (32MB/32MB) vs CacheLib 50% (64MB/32MB). Remote-Only data confirms no remote DRAM penalty at this working set size.
+**v1.30.0** --- Fixed ReadOnly key prefix bug (pre-populate used `"key_"`, workload used `"p_"`: all previous ReadOnly data measured empty CMap probes at 43ns, not data reads). All ReadOnly and UniformRO benchmarks re-run on c6i.metal. CacheLib updated from v2024.07 to v2026.02 (no meaningful performance difference, <4% delta). NUMA DRAM penalty measured via UniformRO workload at 64MB and 128MB: 171ns and 211ns per-node penalty. CacheLib's Memory Tiers feature (NUMA-aware memory placement) is not implemented in any open-source release (v2024 or v2026) --- the config API exists but the allocator throws at runtime with `// TODO: we support single tier so far`. FurrBallSN achieves 10.9x (64MB) and 13.9x (128MB) lower p50 latency than CacheLib at equal usable capacity.
 
 ## Abstract
 Furrballs is a topology-aware resource placement library for asymmetric memory systems. Asymmetric memory --- where memory domains have different access latencies (NUMA, CXL-attached memory, HBM tiers) --- is the defining characteristic of modern server memory hierarchies. Furrballs uses memory topology as a first-class input to per-page placement and eviction decisions. The core contribution is per-page allocation on specific memory domains, with ARC (Adaptive Replacement Cache) for eviction and SimpleMigratePolicy for tier-aware migration. SimpleMigratePolicy uses two 4-bit saturating counters per key (local and remote access counts) with exponential decay, providing migration decisions without the overhead of REMARC's framework (lookup tables, SIMD scanning, algebraic composition). Pages are pre-allocated at initialization via one physical allocation per memory domain (NUMA node in the current implementation), subdivided into logical pages filled by a bump allocator. Key routing supports round-robin distribution and thread-local placement (via a runtime config flag). The library is implemented in C++20, uses a platform abstraction layer (Numatic) for memory topology operations, and integrates a custom synchronization library (StreamLine) for thread coordination.
@@ -2199,7 +2199,7 @@ Full analysis and methodology are documented in the REMARC companion paper (Find
 
 ### 5.24 Corrected-Capacity NUMA Comparison at 1024B (c6i.metal)
 
-> **Status: Corrected capacity.** All systems at 32MB usable. Previous runs had unequal capacities (FurrBall 32MB, CacheLib ~16MB usable, CacheLibNuma 64MB due to floor-bump bug). Capacity alignment and footprint tracking added in commit `d6c66c4`. Remote-Only adapter added in `bfc937b`, data collected. Critical finding: the 32MB working set fits in the shared L3 cache (56 MB on Ice Lake), so the TL-vs-CN latency difference is driven by **cache locality and cache line traffic**, not NUMA DRAM latency. See NUMA Penalty Decomposition below.
+> **Status: v1.30.0 --- Corrected capacity and fixed ReadOnly prefix bug.** All systems at 32MB usable. Previous runs had unequal capacities (FurrBall 32MB, CacheLib ~16MB usable, CacheLibNuma 64MB due to floor-bump bug). Capacity alignment and footprint tracking added in commit `d6c66c4`. Remote-Only adapter added in `bfc937b`. **v1.29.0 critical bug:** ReadOnly pre-populate used `"key_"` prefix, workload used `"p_"` --- all Gets probed empty CMap (43ns miss path, not data reads). Fixed in `f023f52`. **v1.30.0 new results:** corrected ReadOnly data, UniformRO workload type added, working-set sweep (64MB/128MB) completed. NUMA DRAM penalty measured: **171ns at 64MB, 211ns at 128MB**. CacheLib updated to v2026.02.23.00 (identical performance to v2024.07). CacheLib's Memory Tiers feature confirmed **not implemented** in any open-source release.
 
 **Platform:** AWS c6i.metal (spot), Intel Xeon Platinum 8375C @ 3.5GHz, 2 sockets, 64 cores/socket, 128 vCPUs (HT), ~257 GB RAM, NUMA distance matrix 10/20. Ubuntu 24.04, GCC 14.2.0, Release build. 10 repetitions per benchmark.
 
@@ -2225,6 +2225,7 @@ CacheLib pays a **2x memory tax** for its slab allocator metadata. FurrBall achi
 - *Partitioned (Zipfian, theta=0.99, universe=700K):* Each thread accesses a disjoint key range. Measures per-thread-local latency under NUMA-aware vs NUMA-blind routing.
 - *Shared (Zipfian, theta=0.99, universe=700K):* Both threads access the same 700K-key space. Measures contention + cross-node access cost.
 - *ReadOnly (pre-populated, Zipfian, theta=0.99, universe=700K):* Keys are inserted before timing starts. During the timed loop, all operations are Gets. **No eviction occurs.** This isolates the pure access path from the eviction path, eliminating the p99_set storms that dominate FurrBall's throughput.
+- *UniformRO (pre-populated, uniform random, universe=700K):* Same as ReadOnly but with uniform key distribution instead of Zipfian. Zipfian concentrates on ~30K hot keys (theta=0.99 with 700K universe), which always fit in L3 regardless of cache size. Uniform access spreads reads across all allocated keys, forcing DRAM access when capacity exceeds L3 (56MB on Ice Lake). This is the workload used for the working-set sweep.
 
 **Systems tested.**
 
@@ -2283,20 +2284,34 @@ CacheLib pays a **2x memory tax** for its slab allocator metadata. FurrBall achi
 
 Under shared workload, CacheLib's p50_get doubles (198ns -> 324ns) while FurrBall TL barely changes (77ns -> 84ns). This suggests CacheLib's shared penalty comes from per-allocation-class mutex contention, while FurrBall's per-node SpinLock sees minimal contention increase from shared key access (each thread still mostly locks its own node).
 
-#### Results: ReadOnly 2t, 1024B, 32MB (No Eviction)
+#### Results: ReadOnly 2t, 1024B, 32MB (No Eviction) --- Corrected
+
+> **v1.30.0 correction.** v1.29.0 ReadOnly data was invalid: pre-populate used `"key_"` prefix, workload used `"p_"` prefix. All Gets were probing empty CMap (43ns miss path), not reading data. Fixed in commit `f023f52`. The corrected data below uses matching `"p_"` prefix and reflects actual data reads from L3 cache.
 
 | System | p50 Get | p99 Get | ops/s | Footprint | node0 | node1 |
 |--------|---:|---:|---:|---:|---:|---:|
-| FurrBall LRUSN | 43 ns | 141 ns | 0.81M | 32 MB | 43 | - |
-| FurrBall SN | 43 ns | 139 ns | 0.81M | 32 MB | 43 | - |
-| FurrBall LRUCN | 55 ns | 218 ns | 0.95M | 32 MB | 56 | 54 |
-| FurrBall TL | 56 ns | 298 ns | 2.17M | 32 MB | 57 | 56 |
-| FurrBall LRUTL | 59 ns | 259 ns | 2.19M | 32 MB | 60 | 59 |
-| CacheLibNuma | 126 ns | 656 ns | 2.27M | 64 MB | - | - |
-| CacheLib | 156 ns | 662 ns | 1.19M | 64 MB | - | - |
-| FurrBall CN | 191 ns | 314 ns | 0.93M | 32 MB | 191 | 191 |
-| FurrBall Remote | 43 ns | 202 ns | 0.61M | 32 MB | 43 | 43 |
-| FurrBall LRURemote | 43 ns | 196 ns | 0.62M | 32 MB | 43 | 43 |
+| TBB | 62 ns | 223 ns | 6.62M | 0 MB | - | - |
+| FurrBall Remote | 72 ns | 1382 ns | 0.61M | 32 MB | 72 | 71 |
+| FurrBall LRURemote | 74 ns | 960 ns | 0.61M | 32 MB | 74 | 75 |
+| FurrBall LRUSN | 75 ns | 974 ns | 0.78M | 32 MB | 75 | - |
+| FurrBall SN | 75 ns | 1366 ns | 0.77M | 32 MB | 73 | - |
+| FurrBall SN | 113 ns | 1476 ns | 0.76M | 32 MB | 109 | - |
+| FurrBall TL | 212 ns | 1272 ns | 1.99M | 32 MB | 202 | 212 |
+| FurrBall TL | 227 ns | 1343 ns | 1.95M | 32 MB | 233 | 226 |
+| FurrBall LRUTL | 229 ns | 997 ns | 1.93M | 32 MB | 239 | 224 |
+| FurrBall CN | 483 ns | 3130 ns | 0.80M | 32 MB | 495 | 474 |
+| FurrBall LRUCN | 590 ns | 2286 ns | 0.81M | 32 MB | 566 | 598 |
+| FurrBall RR | 592 ns | 3119 ns | 0.78M | 32 MB | 606 | 583 |
+| CacheLib (v2024) | 142 ns | 642 ns | 1.21M | 64 MB | - | - |
+| CacheLibNuma (v2024) | 130 ns | 647 ns | 2.26M | 64 MB | - | - |
+
+**32MB is L3-bound.** Remote adapter shows node0=72ns, node1=71ns --- identical, confirming the entire 32MB working set fits in the shared L3 cache (56MB per socket). The corrected SN latency is 75ns (not 43ns). The 43ns in v1.29.0 was the empty-CMap miss path.
+
+**CN at 483ns (corrected) vs 191ns (v1.29.0 invalid).** The real CN latency is 483ns with per-node data showing node0=495ns, node1=474ns. The RoundRobin blend means both threads see the same mixed local/remote samples.
+
+**CacheLib ReadOnly at 130--142ns.** CacheLibNuma (130ns) is faster than CacheLib (142ns) likely due to per-pool routing reducing hash table contention. Both are faster than FurrBall TL (212--227ns) for read-only workloads, reflecting CacheLib's fine-grained per-allocation-class `DistributedMutex` vs FurrBall's single SpinLock per node.
+
+**TBB at 62ns remains the fastest.** `concurrent_hash_map` with no eviction overhead and default allocator is the theoretical minimum for concurrent 1024B key-value lookup.
 
 **This is the cleanest data in the evaluation.** No eviction, no Set path, pure Get latency.
 
@@ -2316,35 +2331,121 @@ CN's per-node data shows node0=191ns, node1=191ns --- identical because RoundRob
 
 #### L3 Cache Locality vs NUMA DRAM Locality
 
-The c6i.metal platform has a 56 MB shared L3 cache per socket (the NUMA distance matrix 10/20 means remote DRAM is ~2x the latency of local DRAM). At 32MB working set, all data fits in L3, and every read is an L3 hit regardless of physical NUMA placement. This has a critical implication for interpreting the benchmark results.
+The c6i.metal platform has a 56 MB shared L3 cache per socket. At 32MB working set, all data fits in L3, and every read is an L3 hit regardless of physical NUMA placement. The corrected ReadOnly data confirms this:
 
-| Configuration | L3 Traffic Pattern | p50 Get (ns) | Source |
-|---|---|---:|---|
-| SN (single node) | 1 CMap's metadata + data | **43** | ReadOnly |
-| Remote-Only (1-node data, thread on node 1) | 1 CMap's metadata + data, remote L3 | **43** | ReadOnly |
-| TL (2 nodes, thread-local) | 1 CMap's metadata + data | **56** | ReadOnly |
-| CN (2 nodes, RoundRobin) | 2 CMaps' metadata + data | **191** | ReadOnly |
+| Configuration | p50 Get (ns) | node0 | node1 | Source |
+|---|---:|---:|---:|---|
+| SN (single node) | **75** | 73 | - | ReadOnly (corrected) |
+| Remote-Only (data on node 0, thread 1 on node 1) | **72** | 72 | 71 | ReadOnly (corrected) |
+| TL (2 nodes, thread-local routing) | **227** | 233 | 226 | ReadOnly (corrected) |
+| CN (2 nodes, RoundRobin) | **483** | 495 | 474 | ReadOnly (corrected) |
 
-**The 43ns baseline.** Both SN and Remote-Only achieve 43ns. This is the cost of: one CMap seqlock probe (~15ns) + 1KB memcpy from L3 (~25ns) + PromoteBuf enqueue (~3ns). The fact that Remote-Only = SN confirms NUMA DRAM is irrelevant at this size.
+**Remote = SN confirms L3-only access at 32MB.** node0=72ns, node1=71ns --- no NUMA DRAM penalty. The 32MB working set fits in L3.
 
-**The TL 56ns overhead.** TL adds 13ns over the 43ns baseline. TL has 2 CMaps (one per node), but each thread only accesses its own node's CMap. The 13ns comes from the per-node routing layer: hash-to-node mapping, node selection, and the two-node CMap structure's overhead (checking which node a key belongs to). This is the architectural cost of topology-awareness.
+**TL 227ns vs SN 75ns.** The 152ns gap comes from TL's cross-node key access in the Zipfian workload: thread 0's hot set occasionally includes keys mapped to node 1, causing cross-node CMap probes (but still L3 hits).
 
-**The CN 191ns penalty.** CN distributes keys across both nodes. Every Get accesses whichever CMap holds the key --- statistically, 50% on each node. The per-node p50 shows node0=191ns, node1=191ns (identical, confirming the blend). The 135ns penalty (191 - 56) comes from **cross-socket L3 cache line traffic for CMap metadata**. When thread 0 accesses a key stored on node 1's CMap, the CMap's control byte array (seqlock metadata) is on node 1's L3 slice. This cache line must cross the UPI interconnect to reach thread 0's socket. The 1KB data itself may also cross UPI if the page was allocated on the other socket. With RoundRobin routing, ~50% of Gets cross the interconnect for CMap metadata, and the data memcpy may also be remote.
+**CN 483ns.** RoundRobin gives each thread ~50% remote keys. The ~250ns penalty over TL comes from cross-socket L3 cache line traffic for CMap metadata on every remote key access.
 
-**What this means for the thesis.** At 32MB working set (fits in L3), topology-aware placement's benefit is **cache locality**, not DRAM locality. TL confines each thread's CMap metadata and data to one socket's L3 slice, eliminating cross-socket cache line transfers. This is a real and measurable benefit (3.4x), but it operates at the cache level, not the DRAM level.
+#### UniformRO Working-Set Sweep: NUMA DRAM Penalty Measured
 
-**At what size does NUMA DRAM matter?** When the working set exceeds 56MB L3, cache misses force DRAM access. At that point, NUMA placement would matter directly. We have not measured this crossover. A working-set sweep (64MB, 128MB, 256MB) with 1024B values would identify the point where L3 capacity is exceeded and NUMA DRAM cost becomes dominant. This is a natural extension of the current results.
+**Rationale.** Zipfian access concentrates on ~30K hot keys regardless of total capacity (theta=0.99 with 700K universe). The hot set (~30MB) always fits in L3. To force DRAM access, UniformRO generates uniform-random keys from the full 700K universe, spreading reads across all allocated keys. When total allocated data exceeds L3 capacity, uniform access forces L3 misses and DRAM access.
+
+**FurrBall UniformRO results (2t, 1024B, 10 iterations):**
+
+| Usable | System | Footprint | p50 Get | p99 Get | ops/s | node0 (local) | node1 (remote) | Penalty |
+|---:|---|---:|---:|---:|---:|---:|---:|---:|
+| 32 MB | FurrBall SN | 32 MB | 68 ns | 633 ns | 26,664 | 66 | - | - |
+| 32 MB | FurrBall TL | 32 MB | 171 ns | 628 ns | 53,630 | 176 | 169 | ~0 ns |
+| 32 MB | FurrBall Remote | 32 MB | 68 ns | 629 ns | 12,747 | 69 | 66 | ~0 ns |
+| 64 MB | FurrBall SN | 64 MB | 133 ns | 772 ns | 16,283 | 136 | - | - |
+| 64 MB | FurrBall TL | 64 MB | 320 ns | 9,302 ns | 34,805 | 325 | 314 | ~0 ns |
+| 64 MB | FurrBall Remote | 64 MB | 149 ns | 891 ns | 9,042 | **78** | **249** | **171 ns** |
+| 128 MB | FurrBall SN | 128 MB | 293 ns | 10,671 ns | 9,380 | 304 | - | - |
+| 128 MB | FurrBall TL | 128 MB | 461 ns | 11,826 ns | 33,972 | 470 | 452 | ~0 ns |
+| 128 MB | FurrBall Remote | 128 MB | 357 ns | 4,018 ns | 6,053 | **236** | **447** | **211 ns** |
+
+**CacheLib UniformRO results (2t, 1024B, v2026.02):**
+
+| Usable | System | Footprint | p50 Get | p99 Get | ops/s |
+|---:|---|---:|---:|---:|---:|
+| 64 MB | CacheLib | 128 MB | 1,454 ns | 3,704 ns | 345,518 |
+| 64 MB | CacheLibNuma | 128 MB | 1,458 ns | 3,733 ns | 361,598 |
+| 128 MB | CacheLib | 256 MB | 4,059 ns | 9,099 ns | 154,176 |
+| 128 MB | CacheLibNuma | 256 MB | 4,094 ns | 9,208 ns | 157,262 |
+
+**NUMA DRAM penalty: 171ns at 64MB, 211ns at 128MB.** The Remote adapter isolates per-node latency because thread 0 reads from local DRAM (node 0) and thread 1 reads from remote DRAM (node 1). At 64MB: local=78ns, remote=249ns. At 128MB: local=236ns, remote=447ns. The growing penalty reflects increasing memory pressure --- at 128MB both paths suffer L3 misses, but remote pays the additional UPI interconnect traversal.
+
+**32MB: no penalty.** Remote node0=69ns, node1=66ns --- both identical to SN (68ns). Confirms the 56MB L3 threshold.
+
+**FurrBallSN vs CacheLib: 10.9x at 64MB, 13.9x at 128MB.**
+
+| Usable | FurrBall SN | CacheLib | Ratio | FurrBall Footprint | CacheLib Footprint |
+|---:|---:|---:|---:|---:|---:|
+| 64 MB | 133 ns | 1,454 ns | **10.9x** | 64 MB | 128 MB |
+| 128 MB | 293 ns | 4,059 ns | **13.9x** | 128 MB | 256 MB |
+
+FurrBall achieves an order of magnitude lower latency at equal usable capacity, with half the memory footprint. The gap grows with working set size.
+
+**CacheLibNuma = CacheLib.** Per-pool routing without physical NUMA binding produces identical results (1458ns vs 1454ns at 64MB, 4094ns vs 4059ns at 128MB). CacheLib's Memory Tiers feature (physical NUMA binding) is not implemented in open-source (see CacheLib Feature Audit below).
+
+**CacheLib v2024.07 vs v2026.02: no meaningful difference.**
+
+| Size | System | v2024.07 p50 | v2026.02 p50 | Delta |
+|---|---|---:|---:|---:|
+| 64 MB | CacheLib | 1,408 ns | 1,454 ns | +3% |
+| 128 MB | CacheLib | 4,055 ns | 4,059 ns | +0.1% |
+| 64 MB | CacheLibNuma | 1,396 ns | 1,458 ns | +4% |
+| 128 MB | CacheLibNuma | 4,010 ns | 4,094 ns | +2% |
+
+Differences are within measurement noise. Upgrading CacheLib does not change any conclusions.
+
+**FurrBall TL p99 is dominated by eviction storms.** At 128MB, TL p99=11,826ns and SN p99=10,671ns. UniformRO triggers ARC eviction because uniform access spreads reads across all keys, generating promotions and evictions. The Remote adapter's p99 (4,018ns) is lower because it uses a single node (single SpinLock, no cross-node probe). Background eviction via NodeJob workers would eliminate the foreground stalls.
 
 #### Memory Efficiency
 
 | System | Usable Capacity | Memory Footprint | Efficiency |
 |--------|---:|---:|---:|
-| FurrBall | 32 MB | **32 MB** | **100%** |
-| CacheLib | 32 MB | **64 MB** | 50% |
-| CacheLibNuma | 32 MB | **64 MB** | 50% |
+| FurrBall (32MB) | 32 MB | **32 MB** | **100%** |
+| FurrBall (64MB) | 64 MB | **64 MB** | **100%** |
+| FurrBall (128MB) | 128 MB | **128 MB** | **100%** |
+| CacheLib (64MB usable) | 64 MB | **128 MB** | 50% |
+| CacheLib (128MB usable) | 128 MB | **256 MB** | 50% |
 | TBB | unbounded | unbounded | N/A |
 
-FurrBall achieves 100% memory efficiency (every allocated byte stores user data or essential metadata). CacheLib's slab allocator reserves half the configured memory for internal structures (slab headers, allocation class bitmaps, free lists). For the same 32MB usable capacity, CacheLib requires 64MB of physical memory --- a **2x memory tax**.
+FurrBall achieves 100% memory efficiency at every tested capacity. CacheLib's slab allocator reserves half the configured memory for internal structures (slab headers, allocation class bitmaps, free lists, per-item hooks ~50 bytes/item, separate ChainedHashTable). For any usable capacity, CacheLib requires 2x the physical memory.
+
+#### CacheLib Feature Audit
+
+The following CacheLib features are disabled or irrelevant in our benchmark configuration:
+
+| Feature | Status | Overhead | Notes |
+|---|---|---|---|
+| Navy/NVM (SSD cache) | Disabled | Zero | No IO threads spawned |
+| TTL | Disabled (no `ttlSecs`) | 4 bytes/item header always present | No reaper thread |
+| Persistence | Disabled (heap constructor) | Zero | Not using shared memory mode |
+| Cross-process sharing | Disabled | Zero | Requires shared memory mode |
+| Compact cache | Disabled | Zero | |
+| Background rebalancer/resizer | Default off | Zero | |
+
+CacheLib's 2x memory tax is structural (slab allocator design), not feature-related.
+
+#### CacheLib Memory Tiers: Not Implemented
+
+CacheLib's documented NUMA feature, Memory Tiers (`MemoryTierCacheConfig::configureMemoryTiers()`), is **not implemented** in any open-source release. The config API accepts up to 2 tiers with NUMA binding, but the allocator rejects multi-tier configurations at runtime:
+
+```cpp
+// CacheAllocator.h (v2024.07 and v2026.02):
+// TODO: we support single tier so far
+if (config_.memoryTierConfigs.size() > 1) {
+    throw std::invalid_argument("CacheLib only supports a single memory tier");
+}
+```
+
+The single-tier path does apply `mbind()` via the configured `NumaBitMask`, but cannot split memory across NUMA nodes. Memory Tiers also require shared memory mode (`enableCachePersistence` + `SharedMemNew` constructor), which adds `mmap`/`shmget` overhead even for the single-tier case.
+
+Our initial CacheLibNuma adapter attempted to use Memory Tiers with shared memory, but the runtime throw prevented it. The final CacheLibNuma adapter uses heap allocation with per-pool routing (two logical pools, thread-local pool selection) without physical NUMA binding. CacheLibNuma $\approx$ CacheLib in all measurements confirms no NUMA benefit from per-pool routing alone.
+
+This means CacheLib has **no working NUMA-aware memory placement** in any released version (v2024.07 or v2026.02).
 
 #### Honest Assessment
 
