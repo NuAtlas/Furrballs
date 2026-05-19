@@ -28,16 +28,11 @@ static void percentiles(std::vector<int64_t>& lat, const char* label) {
            label, n, p(0.50), p(0.90), p(0.99), p(0.999), lat.back());
 }
 
-int main(int argc, char** argv) {
-    int pagesPerNode = argc > 1 ? atoi(argv[1]) : 64;
-    int valueSize = argc > 2 ? atoi(argv[2]) : 64;
-    int universe = argc > 3 ? atoi(argv[3]) : 50000;
-    int opsPerThread = argc > 4 ? atoi(argv[4]) : 200000;
-    int threads = argc > 5 ? atoi(argv[5]) : 1;
-    float writeRatio = argc > 6 ? atof(argv[6]) : 0.30f;
-    int reserveCap = argc > 7 ? atoi(argv[7]) : 2;
-
-    printf("=== EvictBench ===\n");
+template<typename Policy>
+static int runBench(int pagesPerNode, int valueSize, int universe,
+                    int opsPerThread, int threads, float writeRatio,
+                    int reserveCap) {
+    printf("=== EvictBench <%s> ===\n", typeid(Policy).name());
     printf("  pagesPerNode=%d  valueSize=%d  universe=%d  ops=%d  threads=%d  writeRatio=%.0f%%  reserve=%d\n",
            pagesPerNode, valueSize, universe, opsPerThread, threads, writeRatio * 100, reserveCap);
     fflush(stdout);
@@ -73,7 +68,7 @@ int main(int argc, char** argv) {
     char dbPath[256];
     snprintf(dbPath, sizeof(dbPath), "/tmp/evictbench_%d", (int)getpid());
 
-    auto* fb = FurrBall<StandardRemarc>::CreateBall(dbPath, cfg, true);
+    auto* fb = FurrBall<Policy>::CreateBall(dbPath, cfg, true);
     if (!fb) {
         fprintf(stderr, "CreateBall failed\n");
         return 1;
@@ -150,4 +145,23 @@ int main(int argc, char** argv) {
 
     printf("\n");
     return 0;
+}
+
+int main(int argc, char** argv) {
+    int pagesPerNode = argc > 1 ? atoi(argv[1]) : 64;
+    int valueSize = argc > 2 ? atoi(argv[2]) : 64;
+    int universe = argc > 3 ? atoi(argv[3]) : 50000;
+    int opsPerThread = argc > 4 ? atoi(argv[4]) : 200000;
+    int threads = argc > 5 ? atoi(argv[5]) : 1;
+    float writeRatio = argc > 6 ? atof(argv[6]) : 0.30f;
+    int reserveCap = argc > 7 ? atoi(argv[7]) : 2;
+    const char* policy = argc > 8 ? argv[8] : "arc";
+
+    if (strcmp(policy, "lru") == 0) {
+        return runBench<LruPolicy>(pagesPerNode, valueSize, universe,
+                                   opsPerThread, threads, writeRatio, reserveCap);
+    } else {
+        return runBench<ArcPolicy>(pagesPerNode, valueSize, universe,
+                                   opsPerThread, threads, writeRatio, reserveCap);
+    }
 }

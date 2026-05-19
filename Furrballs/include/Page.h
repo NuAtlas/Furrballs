@@ -75,7 +75,8 @@ namespace NuAtlas
 
         void* TryBump(size_t Size, size_t align = 8) noexcept
         {
-            if (Tier.load(std::memory_order_relaxed) != PageTier::Hot) return nullptr;            size_t oldUsed = UsedBytes.load(std::memory_order_relaxed);
+            auto tier = Tier.load(std::memory_order_relaxed);
+            if (tier != PageTier::Hot && tier != PageTier::Staging) return nullptr;            size_t oldUsed = UsedBytes.load(std::memory_order_relaxed);
             size_t head;
             do {
                 head = padded_size_to(oldUsed, align);

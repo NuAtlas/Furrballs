@@ -47,6 +47,11 @@ target_link_libraries(NUMABench PRIVATE RocksDB::rocksdb)
 find_package(TBB CONFIG REQUIRED)
 target_link_libraries(NUMABench PRIVATE TBB::tbb)
 
+add_executable(EvictBench "EvictBench.cpp")
+target_include_directories(EvictBench PRIVATE "${CMAKE_SOURCE_DIR}/Furrballs/include" "${CMAKE_SOURCE_DIR}/numatic/include")
+target_link_libraries(EvictBench PRIVATE Furrballs Numatic Threads::Threads)
+target_link_libraries(EvictBench PRIVATE RocksDB::rocksdb)
+
 option(USE_CACHELIB "Build NUMABench with CacheLib adapter" OFF)
 if(USE_CACHELIB)
     find_package(magic_enum QUIET)

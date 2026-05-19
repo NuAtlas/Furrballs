@@ -228,7 +228,8 @@ namespace NuAtlas
         Cold = 1,
         Empty = 2,
         Freeze = 3,
-        Dead = 4
+        Dead = 4,
+        Staging = 5
     };
 
     // --- REMARC Atom Framework ---
