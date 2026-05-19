@@ -324,6 +324,8 @@ namespace NuAtlas {
 
         inline static std::list<FurrBall*> OpenBalls = std::list<FurrBall*>();
         inline static std::mutex OpenBallsMutex;
+        std::atomic<bool> Destroying{false};
+        std::atomic<int> ActiveMaintenanceRefs{0};
 
         FurrBall(const FurrConfig& config, size_t numPages) noexcept;
 

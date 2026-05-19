@@ -1930,7 +1930,16 @@ FurrBall<Policy> *FurrBall<Policy>::CreateBall(const std::string &DBpath, const 
                         std::lock_guard<std::mutex> lock(OpenBallsMutex);
                         snapshot.assign(OpenBalls.begin(), OpenBalls.end());
                     }
-                    for (auto* ball : snapshot) ball->BackgroundEvict(nodeId);
+                    for (auto* ball : snapshot) {
+                        if (ball->Destroying.load(std::memory_order_acquire)) continue;
+                        ball->ActiveMaintenanceRefs.fetch_add(1, std::memory_order_acq_rel);
+                        if (ball->Destroying.load(std::memory_order_acquire)) {
+                            ball->ActiveMaintenanceRefs.fetch_sub(1, std::memory_order_acq_rel);
+                            continue;
+                        }
+                        ball->BackgroundEvict(nodeId);
+                        ball->ActiveMaintenanceRefs.fetch_sub(1, std::memory_order_acq_rel);
+                    }
                 },
                 std::chrono::milliseconds(2));
         }
@@ -1964,11 +1973,14 @@ Exit:
 
 template<typename Policy>
 NuAtlas::FurrBall<Policy>::~FurrBall() noexcept {
+    Destroying.store(true, std::memory_order_release);
     {
         std::lock_guard<std::mutex> lock(OpenBallsMutex);
         OpenBalls.remove(this);
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    while (ActiveMaintenanceRefs.load(std::memory_order_acquire) > 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
 
     if (DataMembers && DataMembers->db) {
         cache.ForEachValue([this](const size_t&, Page* page) {
