@@ -142,6 +142,35 @@ struct PerNodeDetails{
     float AdaptiveStep = 0.05f;
     uint8_t MaxDeadAge = 8;
 
+    // --- Reserve pages for background eviction ---
+    static constexpr size_t kReserveCapacity = 2;
+    size_t ReservePages[kReserveCapacity] = {};
+    std::atomic<size_t> ReserveCount{0};
+    SpinLock ReserveLock;
+
+    bool TryPopReserve(size_t& outPageIdx) {
+        std::lock_guard<SpinLock> guard(ReserveLock);
+        size_t cnt = ReserveCount.load(std::memory_order_relaxed);
+        if (cnt == 0) return false;
+        cnt--;
+        outPageIdx = ReservePages[cnt];
+        ReserveCount.store(cnt, std::memory_order_release);
+        return true;
+    }
+
+    bool TryPushReserve(size_t pageIdx) {
+        std::lock_guard<SpinLock> guard(ReserveLock);
+        size_t cnt = ReserveCount.load(std::memory_order_relaxed);
+        if (cnt >= kReserveCapacity) return false;
+        ReservePages[cnt] = pageIdx;
+        ReserveCount.store(cnt + 1, std::memory_order_release);
+        return true;
+    }
+
+    bool ReserveLow() const {
+        return ReserveCount.load(std::memory_order_acquire) < kReserveCapacity;
+    }
+
     // --- Persistence bookkeeping (cold-path only in volatile mode) ---
     //
     // DESIGN DEBT: FrozenLock guards KeyNames and FrozenIndex, which are
@@ -665,6 +694,48 @@ void NuAtlas::FurrBall<Policy>::UpdateMinDesire(int nodeID) noexcept {
         for (auto& page : details->NodePages) {
             (void)page.Tier.load(std::memory_order_relaxed);
             if (!page.TempCtrl.empty()) (void)page.TempCtrl[0];
+        }
+    }
+}
+
+// =====================================================================
+//  BackgroundEvict: per-key eviction on NodeJob maintenance thread
+//  Replenishes reserve pages by evicting cold keys one at a time.
+//  When a page empties naturally, it's recycled and pushed to reserve.
+// =====================================================================
+
+template<typename Policy>
+void NuAtlas::FurrBall<Policy>::BackgroundEvict(int nodeID) noexcept {
+    if (!DataMembers || !DataMembers->privateNumaState) return;
+    if (nodeID < 0 || nodeID >= Detail::globalNumaState.NumaNodeCount) return;
+    auto* details = DataMembers->privateNumaState->NodeDetails[nodeID];
+    if (!details) return;
+
+    while (details->ReserveLow()) {
+        size_t freedSz = EvictOneKey(nodeID);
+        if (freedSz == 0) break;
+
+        for (size_t p = 0; p < details->NodePages.size(); p++) {
+            Page& page = details->NodePages[p];
+            if (page.Tier.load(std::memory_order_relaxed) == PageTier::Empty
+                && page.ActiveKeys.load(std::memory_order_relaxed) == 0
+                && page.GetUsedSize() == 0) {
+                page.Tier.store(PageTier::Hot, std::memory_order_release);
+                details->TryPushReserve(p);
+                break;
+            }
+        }
+    }
+
+    if constexpr (Policy::HasPerKeyState) {
+        for (auto& page : details->NodePages) {
+            PageTier tier = page.Tier.load(std::memory_order_relaxed);
+            if (tier != PageTier::Hot) continue;
+            for (size_t i = 0; i < page.TempCtrl.size(); i++) {
+                uint8_t tc = page.TempCtrl[i];
+                Policy::TimeDecayKey(tc, policyConfig);
+                page.TempCtrl[i] = tc;
+            }
         }
     }
 }
@@ -1449,6 +1520,16 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
                 }
                 return err;
             }
+            size_t reserveIdx;
+            if (details->TryPopReserve(reserveIdx)) {
+                pageIdx = reserveIdx;
+                Loc = details->NodePages[pageIdx].TryBump(size);
+                if (Loc) {
+                    if (Detail::globalNumaState.Workers)
+                        Detail::globalNumaState.Workers[targetNode].WakeMaintenance();
+                    break;
+                }
+            }
             size_t evictedSz = EvictOneKey(targetNode);
             if (evictedSz > 0) {
                 for (size_t r = 0; r < details->NodePages.size(); r++) {
@@ -1670,6 +1751,16 @@ FurrBall<Policy> *FurrBall<Policy>::CreateBall(const std::string &DBpath, const 
     }
 
     OpenBalls.push_back(fb);
+
+    if (UseNUMA && Detail::globalNumaState.Workers) {
+        for (int i = 0; i < Detail::globalNumaState.NumaNodeCount; i++) {
+            Detail::globalNumaState.Workers[i].StartMaintenance(
+                [](int nodeId) {
+                    for (auto* ball : OpenBalls) ball->BackgroundEvict(nodeId);
+                },
+                std::chrono::milliseconds(10));
+        }
+    }
     
     return fb;
 

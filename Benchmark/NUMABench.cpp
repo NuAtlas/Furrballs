@@ -107,13 +107,16 @@ struct AggregateResult {
     size_t totalSets = 0;
     double hitRatePct = 0;
     double p50GetNs = 0;
+    double p90GetNs = 0;
     double p99GetNs = 0;
     double p50SetNs = 0;
+    double p90SetNs = 0;
     double p99SetNs = 0;
     double opsPerSec = 0;
 
-    // Per-node p50 (for local vs remote analysis)
+    // Per-node p50/p90/p99 (for local vs remote analysis)
     std::vector<double> perNodeP50Get;
+    std::vector<double> perNodeP90Get;
     std::vector<double> perNodeP99Get;
 };
 
@@ -143,21 +146,25 @@ static AggregateResult aggregate(const std::vector<ThreadResult>& results,
     if (!allGet.empty()) {
         std::sort(allGet.begin(), allGet.end());
         ar.p50GetNs = (double)allGet[allGet.size() / 2];
+        ar.p90GetNs = (double)allGet[allGet.size() * 90 / 100];
         ar.p99GetNs = (double)allGet[allGet.size() * 99 / 100];
     }
     if (!allSet.empty()) {
         std::sort(allSet.begin(), allSet.end());
         ar.p50SetNs = (double)allSet[allSet.size() / 2];
+        ar.p90SetNs = (double)allSet[allSet.size() * 90 / 100];
         ar.p99SetNs = (double)allSet[allSet.size() * 99 / 100];
     }
 
     ar.perNodeP50Get.resize(maxNode + 1, 0);
+    ar.perNodeP90Get.resize(maxNode + 1, 0);
     ar.perNodeP99Get.resize(maxNode + 1, 0);
     for (const auto& r : results) {
         if (r.numaNode >= 0 && !r.getLatencies.empty()) {
             auto lats = r.getLatencies;
             std::sort(lats.begin(), lats.end());
             ar.perNodeP50Get[r.numaNode] = (double)lats[lats.size() / 2];
+            ar.perNodeP90Get[r.numaNode] = (double)lats[lats.size() * 90 / 100];
             ar.perNodeP99Get[r.numaNode] = (double)lats[lats.size() * 99 / 100];
         }
     }
@@ -168,14 +175,18 @@ static AggregateResult aggregate(const std::vector<ThreadResult>& results,
 static void reportAgg(benchmark::State& state, const AggregateResult& ar) {
     state.counters["hit_rate_pct"] = ar.hitRatePct;
     state.counters["p50_get_ns"] = ar.p50GetNs;
+    state.counters["p90_get_ns"] = ar.p90GetNs;
     state.counters["p99_get_ns"] = ar.p99GetNs;
     state.counters["p50_set_ns"] = ar.p50SetNs;
+    state.counters["p90_set_ns"] = ar.p90SetNs;
     state.counters["p99_set_ns"] = ar.p99SetNs;
     state.counters["ops_per_sec"] = ar.opsPerSec;
     for (size_t n = 0; n < ar.perNodeP50Get.size(); n++) {
         std::string p50name = "node" + std::to_string(n) + "_p50_get_ns";
+        std::string p90name = "node" + std::to_string(n) + "_p90_get_ns";
         std::string p99name = "node" + std::to_string(n) + "_p99_get_ns";
         state.counters[p50name] = ar.perNodeP50Get[n];
+        state.counters[p90name] = ar.perNodeP90Get[n];
         state.counters[p99name] = ar.perNodeP99Get[n];
     }
 }

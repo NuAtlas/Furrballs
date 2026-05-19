@@ -8,32 +8,42 @@
 #include <functional>
 #include <future>
 #include <condition_variable>
+#include <chrono>
 
 namespace NuAtlas
 {
-    //TODO: plan a thread-pool per node expansion
     class NodeJob
     {
     private:
         static void NO_OP() { return; }
 
-        std::thread Worker;
-        std::deque<std::function<void()>> funcQueue;
-        std::atomic<bool> IsRunning{false};
-        std::mutex NodeMutex;
+        // --- Queue worker (existing) ---
+        std::thread queueWorker_;
+        std::deque<std::function<void()>> funcQueue_;
+        std::mutex queueMutex_;
+        std::condition_variable queueCv_;
 
+        // --- Maintenance worker (new) ---
+        std::thread maintWorker_;
+        std::function<void(int)> maintenanceFn_;
+        std::chrono::milliseconds maintInterval_{10};
+        std::mutex maintMutex_;
+        std::condition_variable_any maintCv_;
+        std::atomic<bool> MaintRunning{false};
+        bool maintWakeRequested_{false};
+
+        // --- Shared ---
+        std::atomic<bool> IsRunning{false};
         const int NodeId;
 
         inline static std::atomic<bool> GlobalHasStarted{false};
-        inline static std::function<void()> globalStartFunction = &NodeJob::NO_OP; // Either Protect it, or make a global flag.
-        std::condition_variable condition;                                         // since Each Node will operate its queue, This shouldn't be static. Until i add multiple worker per node, Keep this simple
+        inline static std::function<void()> globalStartFunction = &NodeJob::NO_OP;
+
+        void QueueLoop();
+        void MaintenanceLoop();
 
     public:
-        // Does not start any thread. Start() is the "entrypoint".
-        NodeJob(int nodeId) : NodeId(nodeId)
-        {
-            // Kept incase i need per-numa worker information at construction.
-        }
+        NodeJob(int nodeId) : NodeId(nodeId) {}
         ~NodeJob() { if (IsRunning) Stop(); }
         NodeJob(const NodeJob &) = delete;
         NodeJob &operator=(const NodeJob &) = delete;
@@ -41,10 +51,11 @@ namespace NuAtlas
         NodeJob &operator=(NodeJob &&) = delete;
 
         void Start(std::function<void()> nodeStartup = &NodeJob::NO_OP);
+        void StartMaintenance(std::function<void(int)> fn,
+                              std::chrono::milliseconds interval = std::chrono::milliseconds(10));
         void Stop();
+        void WakeMaintenance();
 
-        void Loop();
-        // This is only usuable to Set a function to be called on any NodeJob Start. This can only be set before any NodeJob starts.
         static void SetGlobalStartupFunction(std::function<void()> func)
         {
             if (GlobalHasStarted.load(std::memory_order_acquire))
