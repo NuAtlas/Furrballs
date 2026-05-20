@@ -423,3 +423,4 @@ EvictBench/
 # Stale EC2 result directories
 data/ec2-results*/
 
+.quarto-cli/
