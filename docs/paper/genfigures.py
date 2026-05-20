@@ -73,6 +73,8 @@ SHORT = {
 
 SYSTEM_ORDER = ['FurrBallTL', 'FurrBallSN', 'TBB', 'RocksDB', 'CacheLib']
 
+COL = False  # set by --col flag; True = single-column ATC, False = wide whitepaper
+
 # --- Data loading ---
 
 def load_json(path):
@@ -149,7 +151,10 @@ def aggregate(records, group_keys, value_key):
 def fig_ycsb_latency(ycsb_data, outdir):
     """Bar chart: p50 GET latency across systems for YCSB A/B/C at 64B, 2T."""
     records = load_ycsb(ycsb_data)
-    fig, axes = plt.subplots(1, 3, figsize=(6.5, 2.0), sharey=True)
+    if COL:
+        fig, axes = plt.subplots(3, 1, figsize=(3.33, 3.8), sharex=True)
+    else:
+        fig, axes = plt.subplots(1, 3, figsize=(6.5, 1.6), sharey=True)
 
     for idx, wl in enumerate(['A', 'B', 'C']):
         ax = axes[idx]
@@ -158,17 +163,29 @@ def fig_ycsb_latency(ycsb_data, outdir):
             ['system'],
             'p50_get')
 
-        systems = [s for s in SYSTEM_ORDER if s in data]
-        vals = [data.get((s,), 0) for s in systems]
+        systems = [s for s in SYSTEM_ORDER if (s,) in data]
+        vals = [data[(s,)] for s in systems]
         colors = [COLORS[s] for s in systems]
         labels = [SHORT[s] for s in systems]
 
         bars = ax.bar(range(len(systems)), vals, color=colors, width=0.7, edgecolor='white', linewidth=0.5)
         ax.set_title(f'YCSB-{wl} (64B)')
-        ax.set_xticks(range(len(systems)))
-        ax.set_xticklabels(labels, rotation=30, ha='right')
-        if idx == 0:
+        if COL:
             ax.set_ylabel('p50 GET (ns)')
+            if idx == 0:
+                ax.set_ylim(0, 2000)
+            elif idx == 1:
+                ax.set_ylim(0, 1000)
+            if idx == 2:
+                ax.set_xticks(range(len(systems)))
+                ax.set_xticklabels(labels, rotation=30, ha='right')
+            else:
+                ax.set_xticks([])
+        else:
+            ax.set_xticks(range(len(systems)))
+            ax.set_xticklabels(labels, rotation=30, ha='right')
+            if idx == 0:
+                ax.set_ylabel('p50 GET (ns)')
 
         for bar, v in zip(bars, vals):
             if v > 0:
@@ -182,7 +199,7 @@ def fig_ycsb_latency(ycsb_data, outdir):
 def fig_ycsb_latency_sweep(ycsb_data, outdir):
     """Grouped bar: p50 GET across value sizes for YCSB B, 2T."""
     records = load_ycsb(ycsb_data)
-    fig, ax = plt.subplots(figsize=(3.33, 2.2))
+    fig, ax = plt.subplots(figsize=(3.33, 1.8))
 
     vsizes = [64, 256, 1024]
     x = np.arange(len(vsizes))
@@ -213,7 +230,7 @@ def fig_ycsb_latency_sweep(ycsb_data, outdir):
 def fig_ycsb_hitrate(ycsb_data, outdir):
     """Grouped bar: hit rate across value sizes for YCSB B, 2T."""
     records = load_ycsb(ycsb_data)
-    fig, ax = plt.subplots(figsize=(3.33, 2.2))
+    fig, ax = plt.subplots(figsize=(3.33, 1.8))
 
     vsizes = [64, 256, 1024]
     x = np.arange(len(vsizes))
@@ -246,7 +263,10 @@ def fig_thread_scaling(numabench_old, numabench_new, outdir):
     """Line plot: p50 GET vs thread count, before/after fix."""
     old_recs = load_numabench(numabench_old)
     new_recs = load_numabench(numabench_new)
-    fig, axes = plt.subplots(1, 2, figsize=(6.5, 2.2))
+    if COL:
+        fig, axes = plt.subplots(2, 1, figsize=(3.33, 3.0))
+    else:
+        fig, axes = plt.subplots(1, 2, figsize=(6.5, 1.8))
 
     for ax_idx, (title, recs) in enumerate([
         ('Before fix', old_recs), ('After fix', new_recs)
@@ -282,14 +302,14 @@ def fig_thread_scaling(numabench_old, numabench_new, outdir):
 def fig_ycsb_ops(ycsb_data, outdir):
     """Bar chart: throughput (ops/sec) across systems for YCSB A, 2T, 64B."""
     records = load_ycsb(ycsb_data)
-    fig, ax = plt.subplots(figsize=(3.33, 2.2))
+    fig, ax = plt.subplots(figsize=(3.33, 1.8))
 
     data = aggregate(
         [r for r in records if r['workload'] == 'A' and r['threads'] == 2 and r['valuesize'] == 64],
         ['system'],
         'ops_per_sec')
 
-    systems = [s for s in SYSTEM_ORDER if s in data]
+    systems = [s for s in SYSTEM_ORDER if (s,) in data]
     vals = [data[(s,)] / 1e6 for s in systems]
     colors = [COLORS[s] for s in systems]
     labels = [SHORT[s] for s in systems]
@@ -313,7 +333,10 @@ def fig_ycsb_ops(ycsb_data, outdir):
 def fig_ycsb_tl_vs_cachelib(ycsb_data, outdir):
     """Paired bar: FurrBallTL vs CacheLib across YCSB A/B/C, 64B, 2T."""
     records = load_ycsb(ycsb_data)
-    fig, axes = plt.subplots(1, 2, figsize=(6.0, 2.0))
+    if COL:
+        fig, axes = plt.subplots(2, 1, figsize=(3.33, 3.0))
+    else:
+        fig, axes = plt.subplots(1, 2, figsize=(6.0, 1.6))
 
     for ax_idx, metric, ylabel, title in [
         (0, 'p50_get', 'p50 GET (ns)', 'Latency'),
@@ -351,18 +374,23 @@ def fig_ycsb_tl_vs_cachelib(ycsb_data, outdir):
 def save(fig, outdir, name):
     pgf_path = os.path.join(outdir, f'{name}.pgf')
     pdf_path = os.path.join(outdir, f'{name}.pdf')
+    png_path = os.path.join(outdir, f'{name}.png')
     fig.savefig(pgf_path, bbox_inches='tight')
     fig.savefig(pdf_path, bbox_inches='tight')
-    print(f'  {name}.pgf + {name}.pdf')
+    fig.savefig(png_path, bbox_inches='tight', dpi=200)
+    print(f'  {name}.pgf + {name}.pdf + {name}.png')
 
 # --- Main ---
 
 def main():
+    global COL
     parser = argparse.ArgumentParser(description='Generate ATC paper figures')
+    parser.add_argument('--col', action='store_true', help='Single-column layout for ACM two-column papers')
     parser.add_argument('--preview', action='store_true', help='Also render PNG previews')
     parser.add_argument('--outdir', default='docs/paper/figures', help='Output directory')
     args = parser.parse_args()
 
+    COL = args.col
     plt.rcParams.update(PGF_RC)
     outdir = args.outdir
     os.makedirs(outdir, exist_ok=True)

@@ -2780,7 +2780,7 @@ YCSB (Yahoo! Cloud Serving Benchmark) provides standardized cache workloads with
 
 **Setup:** 5 systems (FurrBallTL, FurrBallSN, TBB, RocksDB LRU, CacheLib) on c6a.metal (AMD EPYC Milan, 4 NUMA nodes). YCSB workloads A (50R/50W), B (95R/5W), C (100R). Value sizes: 64B, 256B, 1024B. 100K records, 200K ops per thread, 32MB cache. Zipfian theta=0.99 (heavy skew).
 
-![YCSB p50 GET latency across systems for workloads A, B, and C (64B values, 2T, c6a.metal). FurrBallTL achieves 80ns across all workloads --- 22x faster than CacheLib's 1800ns on YCSB-A.](paper/figures/ycsb_latency_64b.pdf)
+![YCSB p50 GET latency across systems for workloads A, B, and C (64B values, 2T, c6a.metal). FurrBallTL achieves 80ns across all workloads --- 22x faster than CacheLib's 1800ns on YCSB-A.](paper/figures/ycsb_latency_64b.png)
 
 **YCSB-A (50R/50W), 64B, 2T:**
 
@@ -2794,11 +2794,11 @@ YCSB (Yahoo! Cloud Serving Benchmark) provides standardized cache workloads with
 
 FurrBallTL matches RocksDB's p50 GET (80ns) while avoiding RocksDB's extreme p99 tail (10.6us from LRU shard mutex contention). **22x faster than CacheLib** at p50, **10x higher throughput.**
 
-![FurrBallTL vs CacheLib head-to-head across YCSB workloads A/B/C (64B, 2T). Left: p50 GET latency. Right: throughput.](paper/figures/ycsb_tl_vs_cachelib.pdf)
+![FurrBallTL vs CacheLib head-to-head across YCSB workloads A/B/C (64B, 2T). Left: p50 GET latency. Right: throughput.](paper/figures/ycsb_tl_vs_cachelib.png)
 
 **Value-size sweep (YCSB-B, 95R/5W, 2T):**
 
-![p50 GET latency (left axis) and hit rate (log scale) across value sizes for YCSB-B, 2T. At 256B, FurrBallTL maintains 100% hit rate while CacheLib drops to 95%. At 1024B (100MB working set vs 32MB cache), all bounded caches show ~94% hit rate but FurrBallTL achieves it at 80ns vs CacheLib's 370ns.](paper/figures/ycsb_latency_sweep.pdf)
+![p50 GET latency (left axis) and hit rate (log scale) across value sizes for YCSB-B, 2T. At 256B, FurrBallTL maintains 100% hit rate while CacheLib drops to 95%. At 1024B (100MB working set vs 32MB cache), all bounded caches show ~94% hit rate but FurrBallTL achieves it at 80ns vs CacheLib's 370ns.](paper/figures/ycsb_latency_sweep.png)
 
 | Value size | Working set | FurrBallTL p50g | CacheLib p50g | TL hit% | CL hit% |
 |---|---|---|---|---|---|
@@ -2817,7 +2817,7 @@ At 256B, the working set (25MB) approaches the cache size (32MB). FurrBallTL hol
 
 The per-node statistics fix (§3.7) eliminated the 4T anomaly discovered in v1.32.0. Thread-scaling now shows the expected pattern:
 
-![Thread scaling before (left) and after (right) per-node stat sharding fix. Before: FurrBallTL degrades 6.6x from 2T to 4T. After: FurrBallTL scales flat at ~70ns across all thread counts, matching TBB's scaling behavior.](paper/figures/thread_scaling_fix.pdf)
+![Thread scaling before (left) and after (right) per-node stat sharding fix. Before: FurrBallTL degrades 6.6x from 2T to 4T. After: FurrBallTL scales flat at ~70ns across all thread counts, matching TBB's scaling behavior.](paper/figures/thread_scaling_fix.png)
 
 | Threads | TL (before) | TL (after) | SN (after) | CacheLib (after) | TBB |
 |---|---|---|---|---|---|

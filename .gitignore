@@ -402,3 +402,24 @@ BenchDB_TL/
 
 /.quarto/
 **/*.quarto_ipynb
+/_site/
+
+# Build directories
+buildasan/
+buildevict/
+buildfast/
+EvictBench/
+
+# LaTeX intermediates
+*.aux
+*.bbl
+*.blg
+*.log
+*.out
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+
+# Stale EC2 result directories
+data/ec2-results*/
+

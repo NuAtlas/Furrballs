@@ -7,6 +7,9 @@ project:
     - remarc-paper.qmd
   resources:
     - CNAME
+    - paper/figures/*.png
+  pre-render:
+    - scripts/ensure-figure-pngs.sh
 
 website:
   title: "Furrballs"
