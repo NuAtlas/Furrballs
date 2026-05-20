@@ -1,7 +1,6 @@
-> **Status: v1.34.0 --- ATC 2026 paper revisions based on simulated reviewer feedback.** Fixed citations (Berg et al. OSDI 2020 for CacheLib, TPP, Nimble, AutoTiering). Corrected working-set math logic for oversubscription. Clarified YCSB-C latency anomaly as a load-order artifact. Expanded paper with Staging Pages and CacheLibNuma comparison sections, and provided a concrete CXL example. Paper length expanded to 5 pages. Ready for next EC2 session for adversarial workload.
 ---
 title: "Furrballs: Topology-Aware, High-Performance Resource Placement for Asymmetric Memory Systems"
-subtitle: "Technical Report v1.32.0"
+subtitle: "Technical Report v1.34.0"
 author: "Hamza Jamil Saied (The Sphynx)"
 date: last-modified
 doi: "10.5281/zenodo.19794753"
@@ -45,6 +44,8 @@ format:
 ---
 
 ## Status
+**v1.34.0** --- ATC 2026 paper revisions based on simulated reviewer feedback. Fixed citations (Berg et al. OSDI 2020 for CacheLib, TPP, Nimble, AutoTiering). Corrected working-set math logic for oversubscription. Clarified YCSB-C latency anomaly as a load-order artifact. Expanded paper with Staging Pages and CacheLibNuma comparison sections, and provided a concrete CXL example. Paper length expanded to 5 pages. Ready for next EC2 session for adversarial workload.
+
 **v1.33.0** --- 4T anomaly root cause identified and fixed. `alignas(64)` statistics atomics on the FurrBall heap object caused cross-socket cache-line bouncing on 4+ NUMA nodes: every GET touched 3 cache lines on node 0 from remote sockets, adding ~360ns at Infinity Fabric distance 32. Fix: per-node stat sharding (hot-path counters moved into NUMA-allocated `PerNodeDetails`). Result: 4T p50 GET 587ns -> 71ns (-88%), 2T p50 GET 120ns -> 74ns (-39%). Full NUMABench + YCSB suite re-run on c6a.metal with fix applied. YCSB workloads A/B/C validated across 5 systems at 64B/256B/1024B. **v1.32.0** --- Cross-platform validation on AMD EPYC Milan (c6a.metal, 4 NUMA nodes, Infinity Fabric). Topology-aware placement confirmed on a second vendor and topology: FurrBallTL 1.5x faster GET than CacheLib at 64B, 9.5x faster at 128MB working-set (UniformRO 1024B). CacheLibNuma = CacheLib on AMD (per-pool routing without mbind is ineffective). Lock-distribution signal amplified on AMD (TL vs SN: 3.4x on Milan vs 2.0x on Ice Lake). 4T TL anomaly (6.6x GET degradation from 2T) identified but unexplained --- root cause deferred. 212 benchmarks across 12 adapters on c6a.metal, zero crashes. v1.31.0: Staging pages eliminate the SET tail-latency bottleneck for ARC/LRU eviction policies. The SET path now has a guaranteed O(1) fast path (bump or staging), decoupling SET from space management. EC2 validation on c6i.metal (Intel Xeon Platinum 8375C): p99_set improved 24--63x (68K to 2.8K ns at 64B, 200K to 4.5K ns at 1024B) with zero GET regression. Page drain compaction (proactive maintenance) creates a virtuous cycle: eviction empties sparse pages, drain consolidates remaining keys, recycled pages become fresh bump targets. Destructor race condition fixed (refcount + double-check replaces heuristic 20ms sleep). CMap h2 truncation bug fixed (KeyH2 vector now stores full 64-bit hash, not truncated 32-bit). FurrBallSN vs CacheLib at equal usable capacity: 10.9x (64MB) and 13.9x (128MB) lower p50 GET latency, 100% vs 50% memory efficiency.
 
 ## Abstract
