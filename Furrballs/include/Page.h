@@ -139,8 +139,7 @@ namespace NuAtlas
             ActiveKeys.fetch_add(1, std::memory_order_relaxed);
         }
 
-        HashPair RemoveKeyEntry(size_t idx) {
-            CompactLock.lock();
+        HashPair RemoveKeyEntryLocked(size_t idx) noexcept {
             assert(idx < KeyH1.size() && idx < KeyH2.size() && idx < TempCtrl.size());
             size_t last = KeyH2.size() - 1;
             HashPair swapped{KeyH1[last], KeyH2[last]};
@@ -152,14 +151,22 @@ namespace NuAtlas
             KeyH1.pop_back();
             KeyH2.pop_back();
             TempCtrl.pop_back();
-            CompactLock.unlock();
             ActiveKeys.fetch_sub(1, std::memory_order_relaxed);
             return swapped;
         }
 
+        HashPair RemoveKeyEntry(size_t idx) noexcept {
+            CompactLock.lock();
+            auto result = RemoveKeyEntryLocked(idx);
+            CompactLock.unlock();
+            return result;
+        }
+
         void RemoveKeyByHash(const HashPair& hp) noexcept {
+            CompactLock.lock();
             size_t idx = FindKeyIndex(hp);
-            if (idx != SIZE_MAX) RemoveKeyEntry(idx);
+            if (idx != SIZE_MAX) RemoveKeyEntryLocked(idx);
+            CompactLock.unlock();
         }
 
         void UpdateTempCtrl(size_t idx, uint8_t tc) noexcept {

@@ -308,10 +308,9 @@ struct FurrBallAdapter {
     size_t footprintBytes_ = 0;
     static int runId;
 
-    void create(int nodeCount, int pagesPerNode) {
+    void create(int nodeCount, int totalCapacityKB) {
         this->nodeCount = nodeCount;
-        pageCount = pagesPerNode;
-        footprintBytes_ = (size_t)pagesPerNode * PAGE_SIZE * nodeCount;
+        footprintBytes_ = (size_t)totalCapacityKB * 1024;
 
         auto& gs = Detail::globalNumaState;
         bool needsInit = !gs.Initialized || gs.NumaNodeCount != nodeCount;
@@ -343,7 +342,7 @@ struct FurrBallAdapter {
 
         FurrConfig fc;
         fc.PageSize = PAGE_SIZE;
-        fc.InitialPageCount = pagesPerNode;
+        fc.TotalCapacityBytes = (size_t)totalCapacityKB * 1024;
         fc.IsVolatile = true;
         fc.EnableNUMA = true;
         fc.numaConfig = &nc;
@@ -381,9 +380,9 @@ struct FurrBallSNAdapterT {
     size_t footprintBytes_ = 0;
     static int runId;
 
-    void create(int nodeCount, int pagesPerNode) {
+    void create(int nodeCount, int totalCapacityKB) {
         (void)nodeCount;
-        footprintBytes_ = (size_t)pagesPerNode * PAGE_SIZE;
+        footprintBytes_ = (size_t)totalCapacityKB * 1024;
 
         auto& gs = Detail::globalNumaState;
         if (gs.Initialized) {
@@ -409,7 +408,7 @@ struct FurrBallSNAdapterT {
 
         FurrConfig fc;
         fc.PageSize = PAGE_SIZE;
-        fc.InitialPageCount = pagesPerNode;
+        fc.TotalCapacityBytes = (size_t)totalCapacityKB * 1024;
         fc.IsVolatile = true;
         fc.EnableNUMA = true;
         fc.numaConfig = &nc;
@@ -449,7 +448,7 @@ struct FurrBallCNAdapter {
     size_t footprintBytes_ = 0;
     static int runId;
 
-    void create(int nodeCount, int pagesPerNode) {
+    void create(int nodeCount, int totalCapacityKB) {
         auto& gs = Detail::globalNumaState;
         if (gs.Initialized) {
             for (int i = 0; i < gs.NumaNodeCount; i++) {
@@ -471,7 +470,7 @@ struct FurrBallCNAdapter {
         gs.Initialized = true;
 
         fbPath = "/tmp/numabench_cn_" + std::to_string(runId++);
-        footprintBytes_ = (size_t)pagesPerNode * PAGE_SIZE * 2;
+        footprintBytes_ = (size_t)totalCapacityKB * 1024;
 
         NumaConfig nc;
         nc.AllocateUsingNodePageSize = false;
@@ -479,7 +478,7 @@ struct FurrBallCNAdapter {
 
         FurrConfig fc;
         fc.PageSize = PAGE_SIZE;
-        fc.InitialPageCount = pagesPerNode;
+        fc.TotalCapacityBytes = (size_t)totalCapacityKB * 1024;
         fc.IsVolatile = true;
         fc.EnableNUMA = true;
         fc.numaConfig = &nc;
@@ -518,7 +517,7 @@ struct FurrBallCNAdapterT {
     size_t footprintBytes_ = 0;
     static int runId;
 
-    void create(int nodeCount, int pagesPerNode) {
+    void create(int nodeCount, int totalCapacityKB) {
         auto& gs = Detail::globalNumaState;
         if (gs.Initialized) {
             for (int i = 0; i < gs.NumaNodeCount; i++) {
@@ -540,7 +539,7 @@ struct FurrBallCNAdapterT {
         gs.Initialized = true;
 
         fbPath = "/tmp/numabench_cn_" + std::to_string(runId++);
-        footprintBytes_ = (size_t)pagesPerNode * PAGE_SIZE * actualNodes;
+        footprintBytes_ = (size_t)totalCapacityKB * 1024;
 
         NumaConfig nc;
         nc.AllocateUsingNodePageSize = false;
@@ -548,7 +547,7 @@ struct FurrBallCNAdapterT {
 
         FurrConfig fc;
         fc.PageSize = PAGE_SIZE;
-        fc.InitialPageCount = pagesPerNode;
+        fc.TotalCapacityBytes = (size_t)totalCapacityKB * 1024;
         fc.IsVolatile = true;
         fc.EnableNUMA = true;
         fc.numaConfig = &nc;
@@ -592,7 +591,8 @@ struct FurrBallRemoteAdapter {
     size_t footprintBytes_ = 0;
     static int runId;
 
-    void create(int nodeCount, int pagesPerNode) {
+    void create(int nodeCount, int totalCapacityKB) {
+        (void)nodeCount;
         auto& gs = Detail::globalNumaState;
         if (gs.Initialized) {
             for (int i = 0; i < gs.NumaNodeCount; i++) {
@@ -610,7 +610,7 @@ struct FurrBallRemoteAdapter {
         gs.Initialized = true;
 
         fbPath = "/tmp/numabench_remote_" + std::to_string(runId++);
-        footprintBytes_ = (size_t)pagesPerNode * PAGE_SIZE;
+        footprintBytes_ = (size_t)totalCapacityKB * 1024;
 
         NumaConfig nc;
         nc.AllocateUsingNodePageSize = false;
@@ -618,7 +618,7 @@ struct FurrBallRemoteAdapter {
 
         FurrConfig fc;
         fc.PageSize = PAGE_SIZE;
-        fc.InitialPageCount = pagesPerNode;
+        fc.TotalCapacityBytes = (size_t)totalCapacityKB * 1024;
         fc.IsVolatile = true;
         fc.EnableNUMA = true;
         fc.numaConfig = &nc;
@@ -705,8 +705,8 @@ struct CacheLibAdapter {
     static int runId;
     std::string cacheDir;
 
-    void create(int, int pagesPerNode) {
-        size_t targetBytes = (size_t)pagesPerNode * PAGE_SIZE;
+    void create(int, int totalCapacityKB) {
+        size_t targetBytes = (size_t)totalCapacityKB * 1024;
         if (targetBytes < TARGET_USABLE_BYTES) targetBytes = TARGET_USABLE_BYTES;
 
         size_t configSize = targetBytes * 2;
@@ -782,9 +782,9 @@ struct CacheLibNumaAdapter {
     int nodeCount;
     static inline thread_local int currentPoolIdx = 0;
 
-    void create(int nodeCount, int pagesPerNode) {
+    void create(int nodeCount, int totalCapacityKB) {
         this->nodeCount = nodeCount;
-        size_t totalTarget = (size_t)pagesPerNode * PAGE_SIZE;
+        size_t totalTarget = (size_t)totalCapacityKB * 1024;
         if (totalTarget < TARGET_USABLE_BYTES) totalTarget = TARGET_USABLE_BYTES;
 
         size_t perPoolUsable = totalTarget / std::max(nodeCount, 1);
@@ -924,7 +924,7 @@ static ThreadResult runWorker(
 
 // Args encoding (Google Benchmark only supports int64_t args):
 //   state.range(0) = numThreads (== numNodes for ThreadLocal routing)
-//   state.range(1) = pagesPerNode
+//   state.range(1) = totalCapacityKB (total budget in KB, auto-split across nodes)
 //   state.range(2) = workload type (0=Partitioned, 1=Shared, 2=Trace, 3=ReadOnly)
 //   state.range(3) = value size in bytes (64, 256, 1024)
 
@@ -961,7 +961,7 @@ struct NUMABench : public benchmark::Fixture {
 template <typename System>
 void RunNUMABench(benchmark::State& state, std::vector<TraceEntry>& trace) {
     int numThreads = state.range(0);
-    int pagesPerNode = state.range(1);
+    int totalCapacityKB = state.range(1);
     int workloadType = state.range(2);
     size_t valueSize = state.range(3);
 
@@ -969,7 +969,7 @@ void RunNUMABench(benchmark::State& state, std::vector<TraceEntry>& trace) {
         state.PauseTiming();
 
         System sys;
-        sys.create(numThreads, pagesPerNode);
+        sys.create(numThreads, totalCapacityKB);
 
         std::vector<std::thread> threads;
         std::vector<ThreadResult> results(numThreads);
@@ -1046,20 +1046,20 @@ BENCHMARK_DEFINE_F(NUMABench_FurrBallTL, Run)(benchmark::State& state) {
     RunNUMABench<FurrBallAdapter<Routing::ThreadLocal>>(state, trace);
 }
 BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
-    ->Args({1, 64, 0, 64, 100000})
-    ->Args({1, 64, 1, 64, 100000})
-    ->Args({2, 64, 0, 64, 100000})
-    ->Args({2, 64, 1, 64, 100000})
-    ->Args({2, 64, 2, 64, 100000})
-    ->Args({2, 16, 0, 64, 100000})
-    ->Args({2, 16, 1, 64, 100000})
-    ->Args({2, 16, 2, 64, 100000})
-    ->Args({4, 64, 0, 64, 100000})
-    ->Args({4, 64, 1, 64, 100000})
-    ->Args({4, 64, 2, 64, 100000})
-    ->Args({4, 16, 0, 64, 100000})
-    ->Args({4, 16, 1, 64, 100000})
-    ->Args({4, 16, 2, 64, 100000})
+    ->Args({1, 512, 0, 64, 100000})
+    ->Args({1, 512, 1, 64, 100000})
+    ->Args({2, 512, 0, 64, 100000})
+    ->Args({2, 512, 1, 64, 100000})
+    ->Args({2, 512, 2, 64, 100000})
+    ->Args({2, 128, 0, 64, 100000})
+    ->Args({2, 128, 1, 64, 100000})
+    ->Args({2, 128, 2, 64, 100000})
+    ->Args({4, 512, 0, 64, 100000})
+    ->Args({4, 512, 1, 64, 100000})
+    ->Args({4, 512, 2, 64, 100000})
+    ->Args({4, 128, 0, 64, 100000})
+    ->Args({4, 128, 1, 64, 100000})
+    ->Args({4, 128, 2, 64, 100000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
@@ -1070,20 +1070,20 @@ BENCHMARK_DEFINE_F(NUMABench_FurrBallRR, Run)(benchmark::State& state) {
     RunNUMABench<FurrBallAdapter<Routing::RoundRobin>>(state, trace);
 }
 BENCHMARK_REGISTER_F(NUMABench_FurrBallRR, Run)
-    ->Args({1, 64, 0, 64, 100000})
-    ->Args({1, 64, 1, 64, 100000})
-    ->Args({2, 64, 0, 64, 100000})
-    ->Args({2, 64, 1, 64, 100000})
-    ->Args({2, 64, 2, 64, 100000})
-    ->Args({2, 16, 0, 64, 100000})
-    ->Args({2, 16, 1, 64, 100000})
-    ->Args({2, 16, 2, 64, 100000})
-    ->Args({4, 64, 0, 64, 100000})
-    ->Args({4, 64, 1, 64, 100000})
-    ->Args({4, 64, 2, 64, 100000})
-    ->Args({4, 16, 0, 64, 100000})
-    ->Args({4, 16, 1, 64, 100000})
-    ->Args({4, 16, 2, 64, 100000})
+    ->Args({1, 512, 0, 64, 100000})
+    ->Args({1, 512, 1, 64, 100000})
+    ->Args({2, 512, 0, 64, 100000})
+    ->Args({2, 512, 1, 64, 100000})
+    ->Args({2, 512, 2, 64, 100000})
+    ->Args({2, 128, 0, 64, 100000})
+    ->Args({2, 128, 1, 64, 100000})
+    ->Args({2, 128, 2, 64, 100000})
+    ->Args({4, 512, 0, 64, 100000})
+    ->Args({4, 512, 1, 64, 100000})
+    ->Args({4, 512, 2, 64, 100000})
+    ->Args({4, 128, 0, 64, 100000})
+    ->Args({4, 128, 1, 64, 100000})
+    ->Args({4, 128, 2, 64, 100000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
@@ -1094,20 +1094,20 @@ BENCHMARK_DEFINE_F(NUMABench_FurrBallSN, Run)(benchmark::State& state) {
     RunNUMABench<FurrBallSNAdapter>(state, trace);
 }
 BENCHMARK_REGISTER_F(NUMABench_FurrBallSN, Run)
-    ->Args({1, 64, 0, 64, 100000})
-    ->Args({1, 64, 1, 64, 100000})
+    ->Args({1, 256, 0, 64, 100000})
+    ->Args({1, 256, 1, 64, 100000})
+    ->Args({2, 256, 0, 64, 100000})
+    ->Args({2, 256, 1, 64, 100000})
+    ->Args({2, 256, 2, 64, 100000})
     ->Args({2, 64, 0, 64, 100000})
     ->Args({2, 64, 1, 64, 100000})
     ->Args({2, 64, 2, 64, 100000})
-    ->Args({2, 16, 0, 64, 100000})
-    ->Args({2, 16, 1, 64, 100000})
-    ->Args({2, 16, 2, 64, 100000})
+    ->Args({4, 256, 0, 64, 100000})
+    ->Args({4, 256, 1, 64, 100000})
+    ->Args({4, 256, 2, 64, 100000})
     ->Args({4, 64, 0, 64, 100000})
     ->Args({4, 64, 1, 64, 100000})
     ->Args({4, 64, 2, 64, 100000})
-    ->Args({4, 16, 0, 64, 100000})
-    ->Args({4, 16, 1, 64, 100000})
-    ->Args({4, 16, 2, 64, 100000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
@@ -1118,12 +1118,12 @@ BENCHMARK_DEFINE_F(NUMABench_FurrBallCN, Run)(benchmark::State& state) {
     RunNUMABench<FurrBallCNAdapter>(state, trace);
 }
 BENCHMARK_REGISTER_F(NUMABench_FurrBallCN, Run)
-    ->Args({2, 64, 0, 64, 100000})
-    ->Args({2, 64, 1, 64, 100000})
-    ->Args({2, 64, 2, 64, 100000})
-    ->Args({2, 16, 0, 64, 100000})
-    ->Args({2, 16, 1, 64, 100000})
-    ->Args({2, 16, 2, 64, 100000})
+    ->Args({2, 512, 0, 64, 100000})
+    ->Args({2, 512, 1, 64, 100000})
+    ->Args({2, 512, 2, 64, 100000})
+    ->Args({2, 128, 0, 64, 100000})
+    ->Args({2, 128, 1, 64, 100000})
+    ->Args({2, 128, 2, 64, 100000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
@@ -1134,20 +1134,20 @@ BENCHMARK_DEFINE_F(NUMABench_TBB, Run)(benchmark::State& state) {
     RunNUMABench<TBBAdapter>(state, trace);
 }
 BENCHMARK_REGISTER_F(NUMABench_TBB, Run)
-    ->Args({1, 64, 0, 64, 100000})
-    ->Args({1, 64, 1, 64, 100000})
+    ->Args({1, 256, 0, 64, 100000})
+    ->Args({1, 256, 1, 64, 100000})
+    ->Args({2, 256, 0, 64, 100000})
+    ->Args({2, 256, 1, 64, 100000})
+    ->Args({2, 256, 2, 64, 100000})
     ->Args({2, 64, 0, 64, 100000})
     ->Args({2, 64, 1, 64, 100000})
     ->Args({2, 64, 2, 64, 100000})
-    ->Args({2, 16, 0, 64, 100000})
-    ->Args({2, 16, 1, 64, 100000})
-    ->Args({2, 16, 2, 64, 100000})
+    ->Args({4, 256, 0, 64, 100000})
+    ->Args({4, 256, 1, 64, 100000})
+    ->Args({4, 256, 2, 64, 100000})
     ->Args({4, 64, 0, 64, 100000})
     ->Args({4, 64, 1, 64, 100000})
     ->Args({4, 64, 2, 64, 100000})
-    ->Args({4, 16, 0, 64, 100000})
-    ->Args({4, 16, 1, 64, 100000})
-    ->Args({4, 16, 2, 64, 100000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
@@ -1190,83 +1190,83 @@ BENCHMARK_DEFINE_F(NUMABench_FurrBallLRURemote, Run)(benchmark::State& state) {
 }
 
 // Equal-capacity LRU benchmarks (32MB budget, 700K universe)
-// LRU_TL (2-node): pagesPerNode=4096 for 2t, 2048 for 4t, 8192 for 1t
-// LRU_SN (1-node): pagesPerNode=8192 always
+// LRU_TL: totalCapacityKB=32768 always
+// LRU_SN: totalCapacityKB=32768 always
 
 // --- LRU Equal cap: Partitioned 2t ---
 BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUTL, Run)
-    ->Args({2, 4096, 0, 64, 700000})
+    ->Args({2, 32768, 0, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUSN, Run)
-    ->Args({2, 8192, 0, 64, 700000})
+    ->Args({2, 32768, 0, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 // --- LRU Equal cap: Shared 2t ---
 BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUTL, Run)
-    ->Args({2, 4096, 1, 64, 700000})
+    ->Args({2, 32768, 1, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUSN, Run)
-    ->Args({2, 8192, 1, 64, 700000})
+    ->Args({2, 32768, 1, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 // --- LRU Equal cap: Trace 2t ---
 BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUTL, Run)
-    ->Args({2, 4096, 2, 64, 700000})
+    ->Args({2, 32768, 2, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUSN, Run)
-    ->Args({2, 8192, 2, 64, 700000})
+    ->Args({2, 32768, 2, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 // --- LRU Equal cap: ReadOnly 2t ---
 BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUTL, Run)
-    ->Args({2, 4096, 3, 64, 700000})
+    ->Args({2, 32768, 3, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUSN, Run)
-    ->Args({2, 8192, 3, 64, 700000})
+    ->Args({2, 32768, 3, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 // --- LRU Equal cap: Partitioned 4t ---
 BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUTL, Run)
-    ->Args({4, 2048, 0, 64, 700000})
+    ->Args({4, 32768, 0, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUSN, Run)
-    ->Args({4, 8192, 0, 64, 700000})
+    ->Args({4, 32768, 0, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 // --- LRU Equal cap: Shared 4t ---
 BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUTL, Run)
-    ->Args({4, 2048, 1, 64, 700000})
+    ->Args({4, 32768, 1, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUSN, Run)
-    ->Args({4, 8192, 1, 64, 700000})
+    ->Args({4, 32768, 1, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 // --- LRU Equal cap: Single-thread baseline ---
 BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUTL, Run)
-    ->Args({1, 8192, 0, 64, 700000})
+    ->Args({1, 32768, 0, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUSN, Run)
-    ->Args({1, 8192, 0, 64, 700000})
+    ->Args({1, 32768, 0, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
@@ -1278,110 +1278,110 @@ BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUSN, Run)
 
 // --- ARC 1024B: Partitioned 2t ---
 BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
-    ->Args({2, 4096, 0, 1024, 700000})
+    ->Args({2, 32768, 0, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallSN, Run)
-    ->Args({2, 8192, 0, 1024, 700000})
+    ->Args({2, 32768, 0, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 // --- LRU 1024B: Partitioned 2t ---
 BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUTL, Run)
-    ->Args({2, 4096, 0, 1024, 700000})
+    ->Args({2, 32768, 0, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUSN, Run)
-    ->Args({2, 8192, 0, 1024, 700000})
+    ->Args({2, 32768, 0, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 // --- ARC 1024B: Shared 2t ---
 BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
-    ->Args({2, 4096, 1, 1024, 700000})
+    ->Args({2, 32768, 1, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallSN, Run)
-    ->Args({2, 8192, 1, 1024, 700000})
+    ->Args({2, 32768, 1, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 // --- LRU 1024B: Shared 2t ---
 BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUTL, Run)
-    ->Args({2, 4096, 1, 1024, 700000})
+    ->Args({2, 32768, 1, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUSN, Run)
-    ->Args({2, 8192, 1, 1024, 700000})
+    ->Args({2, 32768, 1, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 // --- ARC 1024B: 1t baseline ---
 BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
-    ->Args({1, 8192, 0, 1024, 700000})
+    ->Args({1, 32768, 0, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUTL, Run)
-    ->Args({1, 8192, 0, 1024, 700000})
+    ->Args({1, 32768, 0, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 // --- LRU 1024B: ReadOnly 2t (pure Get throughput, no eviction) ---
 BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUTL, Run)
-    ->Args({2, 4096, 3, 1024, 700000})
+    ->Args({2, 32768, 3, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUSN, Run)
-    ->Args({2, 8192, 3, 1024, 700000})
+    ->Args({2, 32768, 3, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 // --- ARC 1024B: ReadOnly 2t ---
 BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
-    ->Args({2, 4096, 3, 1024, 700000})
+    ->Args({2, 32768, 3, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallSN, Run)
-    ->Args({2, 8192, 3, 1024, 700000})
+    ->Args({2, 32768, 3, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 // --- LRU CN 1024B: Partitioned + ReadOnly 2t ---
 BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUCN, Run)
-    ->Args({2, 4096, 0, 1024, 700000})
+    ->Args({2, 32768, 0, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUCN, Run)
-    ->Args({2, 4096, 3, 1024, 700000})
+    ->Args({2, 32768, 3, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 // --- Remote-Only 1024B: Partitioned + ReadOnly (thread 1 = 100% remote) ---
 BENCHMARK_REGISTER_F(NUMABench_FurrBallRemote, Run)
-    ->Args({2, 8192, 0, 1024, 700000})
+    ->Args({2, 32768, 0, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallRemote, Run)
-    ->Args({2, 8192, 3, 1024, 700000})
+    ->Args({2, 32768, 3, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallLRURemote, Run)
-    ->Args({2, 8192, 0, 1024, 700000})
+    ->Args({2, 32768, 0, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallLRURemote, Run)
-    ->Args({2, 8192, 3, 1024, 700000})
+    ->Args({2, 32768, 3, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
@@ -1391,20 +1391,20 @@ BENCHMARK_DEFINE_F(NUMABench_CacheLib, Run)(benchmark::State& state) {
     RunNUMABench<CacheLibAdapter>(state, trace);
 }
 BENCHMARK_REGISTER_F(NUMABench_CacheLib, Run)
-    ->Args({1, 64, 0, 64, 100000})
-    ->Args({1, 64, 1, 64, 100000})
+    ->Args({1, 256, 0, 64, 100000})
+    ->Args({1, 256, 1, 64, 100000})
+    ->Args({2, 256, 0, 64, 100000})
+    ->Args({2, 256, 1, 64, 100000})
+    ->Args({2, 256, 2, 64, 100000})
     ->Args({2, 64, 0, 64, 100000})
     ->Args({2, 64, 1, 64, 100000})
     ->Args({2, 64, 2, 64, 100000})
-    ->Args({2, 16, 0, 64, 100000})
-    ->Args({2, 16, 1, 64, 100000})
-    ->Args({2, 16, 2, 64, 100000})
+    ->Args({4, 256, 0, 64, 100000})
+    ->Args({4, 256, 1, 64, 100000})
+    ->Args({4, 256, 2, 64, 100000})
     ->Args({4, 64, 0, 64, 100000})
     ->Args({4, 64, 1, 64, 100000})
     ->Args({4, 64, 2, 64, 100000})
-    ->Args({4, 16, 0, 64, 100000})
-    ->Args({4, 16, 1, 64, 100000})
-    ->Args({4, 16, 2, 64, 100000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
@@ -1415,20 +1415,20 @@ BENCHMARK_DEFINE_F(NUMABench_CacheLibNuma, Run)(benchmark::State& state) {
     RunNUMABench<CacheLibNumaAdapter>(state, trace);
 }
 BENCHMARK_REGISTER_F(NUMABench_CacheLibNuma, Run)
-    ->Args({1, 64, 0, 64, 100000})
-    ->Args({1, 64, 1, 64, 100000})
+    ->Args({1, 256, 0, 64, 100000})
+    ->Args({1, 256, 1, 64, 100000})
+    ->Args({2, 256, 0, 64, 100000})
+    ->Args({2, 256, 1, 64, 100000})
+    ->Args({2, 256, 2, 64, 100000})
     ->Args({2, 64, 0, 64, 100000})
     ->Args({2, 64, 1, 64, 100000})
     ->Args({2, 64, 2, 64, 100000})
-    ->Args({2, 16, 0, 64, 100000})
-    ->Args({2, 16, 1, 64, 100000})
-    ->Args({2, 16, 2, 64, 100000})
+    ->Args({4, 256, 0, 64, 100000})
+    ->Args({4, 256, 1, 64, 100000})
+    ->Args({4, 256, 2, 64, 100000})
     ->Args({4, 64, 0, 64, 100000})
     ->Args({4, 64, 1, 64, 100000})
     ->Args({4, 64, 2, 64, 100000})
-    ->Args({4, 16, 0, 64, 100000})
-    ->Args({4, 16, 1, 64, 100000})
-    ->Args({4, 16, 2, 64, 100000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 #endif
@@ -1441,120 +1441,120 @@ BENCHMARK_REGISTER_F(NUMABench_CacheLibNuma, Run)
 
 // --- Equal cap: Partitioned 2t ---
 BENCHMARK_REGISTER_F(NUMABench_CacheLib, Run)
-    ->Args({2, 8192, 0, 64, 700000})
+    ->Args({2, 32768, 0, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 // --- Equal cap: Shared 2t ---
 BENCHMARK_REGISTER_F(NUMABench_CacheLib, Run)
-    ->Args({2, 8192, 1, 64, 700000})
+    ->Args({2, 32768, 1, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 // --- Equal cap: Trace 2t ---
 BENCHMARK_REGISTER_F(NUMABench_CacheLib, Run)
-    ->Args({2, 8192, 2, 64, 700000})
+    ->Args({2, 32768, 2, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 // --- Equal cap: Partitioned 2t, large values ---
 BENCHMARK_REGISTER_F(NUMABench_CacheLib, Run)
-    ->Args({2, 8192, 0, 1024, 700000})
+    ->Args({2, 32768, 0, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 // --- Equal cap: Partitioned 4t ---
 BENCHMARK_REGISTER_F(NUMABench_CacheLib, Run)
-    ->Args({4, 8192, 0, 64, 700000})
+    ->Args({4, 32768, 0, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 // --- Equal cap: Shared 4t ---
 BENCHMARK_REGISTER_F(NUMABench_CacheLib, Run)
-    ->Args({4, 8192, 1, 64, 700000})
+    ->Args({4, 32768, 1, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 // --- Equal cap: Single-thread ---
 BENCHMARK_REGISTER_F(NUMABench_CacheLib, Run)
-    ->Args({1, 8192, 0, 64, 700000})
+    ->Args({1, 32768, 0, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 // --- Equal cap: CacheLibNuma Partitioned 2t ---
 BENCHMARK_REGISTER_F(NUMABench_CacheLibNuma, Run)
-    ->Args({2, 8192, 0, 64, 700000})
+    ->Args({2, 32768, 0, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 // --- Equal cap: CacheLibNuma Shared 2t ---
 BENCHMARK_REGISTER_F(NUMABench_CacheLibNuma, Run)
-    ->Args({2, 8192, 1, 64, 700000})
+    ->Args({2, 32768, 1, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 // --- Equal cap: CacheLibNuma Single-thread ---
 BENCHMARK_REGISTER_F(NUMABench_CacheLibNuma, Run)
-    ->Args({1, 8192, 0, 64, 700000})
+    ->Args({1, 32768, 0, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 // --- Equal cap 1024B: CacheLib ---
 BENCHMARK_REGISTER_F(NUMABench_CacheLib, Run)
-    ->Args({1, 8192, 0, 1024, 700000})
+    ->Args({1, 32768, 0, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_CacheLib, Run)
-    ->Args({2, 8192, 0, 1024, 700000})
+    ->Args({2, 32768, 0, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_CacheLib, Run)
-    ->Args({2, 8192, 1, 1024, 700000})
+    ->Args({2, 32768, 1, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 // --- Equal cap 1024B: CacheLibNuma ---
 BENCHMARK_REGISTER_F(NUMABench_CacheLibNuma, Run)
-    ->Args({2, 8192, 0, 1024, 700000})
+    ->Args({2, 32768, 0, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_CacheLibNuma, Run)
-    ->Args({2, 8192, 1, 1024, 700000})
+    ->Args({2, 32768, 1, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 // --- Equal cap 1024B: CacheLib ReadOnly ---
 BENCHMARK_REGISTER_F(NUMABench_CacheLib, Run)
-    ->Args({2, 8192, 3, 1024, 700000})
+    ->Args({2, 32768, 3, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_CacheLibNuma, Run)
-    ->Args({2, 8192, 3, 1024, 700000})
+    ->Args({2, 32768, 3, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
-// --- Working-set sweep: CacheLib UniformRO 64MB / 128MB ---
+// --- Working-set sweep: CacheLib UniformRO 64MB/128MB total ---
 BENCHMARK_REGISTER_F(NUMABench_CacheLib, Run)
-    ->Args({2, 16384, 4, 1024, 700000})
+    ->Args({2, 65536, 4, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_CacheLib, Run)
-    ->Args({2, 32768, 4, 1024, 700000})
+    ->Args({2, 131072, 4, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_CacheLibNuma, Run)
-    ->Args({2, 16384, 4, 1024, 700000})
+    ->Args({2, 65536, 4, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_CacheLibNuma, Run)
-    ->Args({2, 32768, 4, 1024, 700000})
+    ->Args({2, 131072, 4, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
@@ -1567,300 +1567,298 @@ BENCHMARK_REGISTER_F(NUMABench_CacheLibNuma, Run)
 
 // --- FurrBall TL, large values ---
 BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
-    ->Args({2, 64, 0, 256, 100000})
-    ->Args({2, 64, 0, 1024, 100000})
-    ->Args({4, 64, 0, 256, 100000})
-    ->Args({4, 64, 0, 1024, 100000})
-    ->Args({2, 1024, 3, 64, 100000})
-    ->Args({2, 1024, 3, 1024, 100000})
+    ->Args({2, 512, 0, 256, 100000})
+    ->Args({2, 512, 0, 1024, 100000})
+    ->Args({4, 512, 0, 256, 100000})
+    ->Args({4, 512, 0, 1024, 100000})
+    ->Args({2, 8192, 3, 64, 100000})
+    ->Args({2, 8192, 3, 1024, 100000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 // --- FurrBall SN, large values ---
 BENCHMARK_REGISTER_F(NUMABench_FurrBallSN, Run)
-    ->Args({2, 64, 0, 256, 100000})
-    ->Args({2, 64, 0, 1024, 100000})
-    ->Args({4, 64, 0, 256, 100000})
-    ->Args({4, 64, 0, 1024, 100000})
-    ->Args({2, 1024, 3, 64, 100000})
-    ->Args({2, 1024, 3, 1024, 100000})
+    ->Args({2, 256, 0, 256, 100000})
+    ->Args({2, 256, 0, 1024, 100000})
+    ->Args({4, 256, 0, 256, 100000})
+    ->Args({4, 256, 0, 1024, 100000})
+    ->Args({2, 4096, 3, 64, 100000})
+    ->Args({2, 4096, 3, 1024, 100000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 // --- FurrBall CN, large values ---
 BENCHMARK_REGISTER_F(NUMABench_FurrBallCN, Run)
-    ->Args({2, 64, 0, 256, 100000})
-    ->Args({2, 64, 0, 1024, 100000})
-    ->Args({2, 1024, 3, 64, 100000})
-    ->Args({2, 1024, 3, 1024, 100000})
+    ->Args({2, 512, 0, 256, 100000})
+    ->Args({2, 512, 0, 1024, 100000})
+    ->Args({2, 8192, 3, 64, 100000})
+    ->Args({2, 8192, 3, 1024, 100000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 // --- TBB, large values ---
 BENCHMARK_REGISTER_F(NUMABench_TBB, Run)
-    ->Args({2, 64, 0, 256, 100000})
-    ->Args({2, 64, 0, 1024, 100000})
-    ->Args({4, 64, 0, 256, 100000})
-    ->Args({4, 64, 0, 1024, 100000})
-    ->Args({2, 1024, 3, 64, 100000})
-    ->Args({2, 1024, 3, 1024, 100000})
+    ->Args({2, 256, 0, 256, 100000})
+    ->Args({2, 256, 0, 1024, 100000})
+    ->Args({4, 256, 0, 256, 100000})
+    ->Args({4, 256, 0, 1024, 100000})
+    ->Args({2, 4096, 3, 64, 100000})
+    ->Args({2, 4096, 3, 1024, 100000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 // ============================================================================
 //  Equal-capacity benchmarks: 32MB budget for all systems
-//  TL/CN/RR (2-node): pagesPerNode=4096 (4096*4KB*2=32MB)
-//  SN (1-node):       pagesPerNode=8192 (8192*4KB*1=32MB)
-//  TBB/CacheLib:      pagesPerNode=8192 (8192*4KB=32MB)
+//  All systems: totalCapacityKB=32768 (32MB total, auto-split across nodes)
 //  Universe=700000 (~2x oversubscription at 64B values, ~320K keys fit)
 // ============================================================================
 
 // --- Equal cap: Partitioned 2t ---
 BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
-    ->Args({2, 4096, 0, 64, 700000})
+    ->Args({2, 32768, 0, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallRR, Run)
-    ->Args({2, 4096, 0, 64, 700000})
+    ->Args({2, 32768, 0, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallSN, Run)
-    ->Args({2, 8192, 0, 64, 700000})
+    ->Args({2, 32768, 0, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallCN, Run)
-    ->Args({2, 4096, 0, 64, 700000})
+    ->Args({2, 32768, 0, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_TBB, Run)
-    ->Args({2, 8192, 0, 64, 700000})
+    ->Args({2, 32768, 0, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 // --- Equal cap: Shared 2t ---
 BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
-    ->Args({2, 4096, 1, 64, 700000})
+    ->Args({2, 32768, 1, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallRR, Run)
-    ->Args({2, 4096, 1, 64, 700000})
+    ->Args({2, 32768, 1, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallSN, Run)
-    ->Args({2, 8192, 1, 64, 700000})
+    ->Args({2, 32768, 1, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallCN, Run)
-    ->Args({2, 4096, 1, 64, 700000})
+    ->Args({2, 32768, 1, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_TBB, Run)
-    ->Args({2, 8192, 1, 64, 700000})
+    ->Args({2, 32768, 1, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 // --- Equal cap: Trace 2t ---
 BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
-    ->Args({2, 4096, 2, 64, 700000})
+    ->Args({2, 32768, 2, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallRR, Run)
-    ->Args({2, 4096, 2, 64, 700000})
+    ->Args({2, 32768, 2, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallSN, Run)
-    ->Args({2, 8192, 2, 64, 700000})
+    ->Args({2, 32768, 2, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallCN, Run)
-    ->Args({2, 4096, 2, 64, 700000})
+    ->Args({2, 32768, 2, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_TBB, Run)
-    ->Args({2, 8192, 2, 64, 700000})
+    ->Args({2, 32768, 2, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 // --- Equal cap: Partitioned 2t, large values (NUMA-dominant) ---
 BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
-    ->Args({2, 4096, 0, 1024, 700000})
+    ->Args({2, 32768, 0, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallRR, Run)
-    ->Args({2, 4096, 0, 1024, 700000})
+    ->Args({2, 32768, 0, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallSN, Run)
-    ->Args({2, 8192, 0, 1024, 700000})
+    ->Args({2, 32768, 0, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallCN, Run)
-    ->Args({2, 4096, 0, 1024, 700000})
+    ->Args({2, 32768, 0, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_TBB, Run)
-    ->Args({2, 8192, 0, 1024, 700000})
+    ->Args({2, 32768, 0, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 // --- Equal cap: ReadOnly 2t, large values ---
 BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
-    ->Args({2, 4096, 3, 1024, 700000})
+    ->Args({2, 32768, 3, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallRR, Run)
-    ->Args({2, 4096, 3, 1024, 700000})
+    ->Args({2, 32768, 3, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallSN, Run)
-    ->Args({2, 8192, 3, 1024, 700000})
+    ->Args({2, 32768, 3, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallCN, Run)
-    ->Args({2, 4096, 3, 1024, 700000})
+    ->Args({2, 32768, 3, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_TBB, Run)
-    ->Args({2, 8192, 3, 1024, 700000})
+    ->Args({2, 32768, 3, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 // --- Equal cap: Partitioned 4t ---
 BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
-    ->Args({4, 2048, 0, 64, 700000})
+    ->Args({4, 32768, 0, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallRR, Run)
-    ->Args({4, 2048, 0, 64, 700000})
+    ->Args({4, 32768, 0, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallSN, Run)
-    ->Args({4, 8192, 0, 64, 700000})
+    ->Args({4, 32768, 0, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_TBB, Run)
-    ->Args({4, 8192, 0, 64, 700000})
+    ->Args({4, 32768, 0, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 // --- Equal cap: Shared 4t ---
 BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
-    ->Args({4, 2048, 1, 64, 700000})
+    ->Args({4, 32768, 1, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallRR, Run)
-    ->Args({4, 2048, 1, 64, 700000})
+    ->Args({4, 32768, 1, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallSN, Run)
-    ->Args({4, 8192, 1, 64, 700000})
+    ->Args({4, 32768, 1, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_TBB, Run)
-    ->Args({4, 8192, 1, 64, 700000})
+    ->Args({4, 32768, 1, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 // --- Equal cap: Single-thread (baseline, 1 node) ---
 BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
-    ->Args({1, 8192, 0, 64, 700000})
+    ->Args({1, 32768, 0, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallSN, Run)
-    ->Args({1, 8192, 0, 64, 700000})
+    ->Args({1, 32768, 0, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_TBB, Run)
-    ->Args({1, 8192, 0, 64, 700000})
+    ->Args({1, 32768, 0, 64, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 // ============================================================================
-//  Working-set sweep: 32MB / 64MB / 128MB at 1024B
+//  Working-set sweep: 32MB/64MB/128MB total at 1024B
 //  Uses UniformRO (workload=4) to spread access across all keys uniformly.
 //  Zipfian concentrates on ~30K hot keys regardless of capacity, so
 //  the hot set fits in L3. Uniform forces all allocated keys to be accessed,
 //  exceeding L3 at 64MB+.
 //
 //  L3 cache on Ice Lake 8375C is 56MB shared per socket.
-//  TL/SN/Remote at each size reveals the L3-to-DRAM crossover.
+//  TL/SN/Remote at each total size reveals the L3-to-DRAM crossover.
 //
 //  Also includes 32MB UniformRO baseline for comparison with Zipfian ReadOnly.
 // ============================================================================
 
 // --- 32MB UniformRO baseline (compare with Zipfian ReadOnly at 32MB) ---
 BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
-    ->Args({2, 4096, 4, 1024, 700000})
+    ->Args({2, 32768, 4, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallSN, Run)
-    ->Args({2, 8192, 4, 1024, 700000})
+    ->Args({2, 32768, 4, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallRemote, Run)
-    ->Args({2, 8192, 4, 1024, 700000})
+    ->Args({2, 32768, 4, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
-// --- 64MB: just above L3 ---
+// --- 64MB total: just above L3 ---
 BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
-    ->Args({2, 16384, 4, 1024, 700000})
+    ->Args({2, 65536, 4, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallSN, Run)
-    ->Args({2, 16384, 4, 1024, 700000})
+    ->Args({2, 65536, 4, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallRemote, Run)
-    ->Args({2, 16384, 4, 1024, 700000})
+    ->Args({2, 65536, 4, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
-// --- 128MB: well above L3 ---
+// --- 128MB total: well above L3 ---
 BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
-    ->Args({2, 32768, 4, 1024, 700000})
+    ->Args({2, 131072, 4, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallSN, Run)
-    ->Args({2, 32768, 4, 1024, 700000})
+    ->Args({2, 131072, 4, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(NUMABench_FurrBallRemote, Run)
-    ->Args({2, 32768, 4, 1024, 700000})
+    ->Args({2, 131072, 4, 1024, 700000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 

@@ -65,6 +65,7 @@ namespace NuAtlas {
         void* DataOffset;
         uint8_t TempCtrlIdx;
         uint32_t PageGeneration = 0;
+        HashPair KeyHash{};
     };
 
     // --- Statistics (policy-independent) ---
@@ -281,6 +282,8 @@ namespace NuAtlas {
 
     struct FurrConfig final {
         size_t CapacityLimit = 1024 * 1024;
+        size_t TotalCapacityBytes = 0;
+        std::vector<size_t> PerNodePages;
         size_t InitialPageCount = 2;
         size_t PageSize = 4096;
         size_t ReserveCapacity = 2;
