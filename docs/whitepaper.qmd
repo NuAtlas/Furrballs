@@ -1,3 +1,4 @@
+> **Status: v1.34.0 --- ATC 2026 paper revisions based on simulated reviewer feedback.** Fixed citations (Berg et al. OSDI 2020 for CacheLib, TPP, Nimble, AutoTiering). Corrected working-set math logic for oversubscription. Clarified YCSB-C latency anomaly as a load-order artifact. Expanded paper with Staging Pages and CacheLibNuma comparison sections, and provided a concrete CXL example. Paper length expanded to 5 pages. Ready for next EC2 session for adversarial workload.
 ---
 title: "Furrballs: Topology-Aware, High-Performance Resource Placement for Asymmetric Memory Systems"
 subtitle: "Technical Report v1.32.0"

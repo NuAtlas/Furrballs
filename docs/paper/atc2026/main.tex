@@ -206,10 +206,12 @@ identical conditions. We report p50/p99 latency and throughput.
 \end{figure}
 
 Figure~\ref{fig:sweep} shows p50 GET latency across value sizes for
-YCSB-B. At 64B (6.4\,MB working set, fits in L3), all systems are
-cache-resident. At 256B (25\,MB), FurrBallTL holds 100\% hit rate while
-CacheLib drops to 95\%. At 1024B (100\,MB vs.\ 32\,MB cache), both are
-oversubscribed at $\sim$94\% hit rate, but FurrBallTL's per-node placement
+YCSB-B. At 64B (6.4\,MB total keyspace, fits entirely in L3), all systems are
+cache-resident. At 256B (25\,MB), FurrBallTL maintains a 100\% hit rate while
+CacheLib drops to 95\%. At 1024B, the total keyspace reaches 100\,MB against a
+32\,MB cache capacity. Although the effective hot set under Zipfian $\theta\!=\!0.99$
+is small ($\sim$7\,MB), the long tail causes enough churn to drop the hit rate
+to $\sim$94\%. Even when oversubscribed, FurrBallTL's per-node placement
 keeps GET at 80\,ns vs.\ CacheLib's 370\,ns ($4.6\times$).
 
 On c6a at 128\,MB working set (1024B values), FurrBallTL achieves
@@ -230,7 +232,10 @@ Figure~\ref{fig:ycsb} shows p50 GET across YCSB workloads at 64B.
 FurrBallTL achieves 80\,ns on all three---22$\times$ faster than CacheLib
 on YCSB-A. FurrBallSN (560\,ns) shows the cost of shared-node contention,
 confirming that per-node partitioning, not just NUMA allocation, drives the
-benefit.
+benefit. Note that CacheLib exhibits anomalously high latency under the
+read-only YCSB-C workload compared to the mixed YCSB-A workload. This is a load-order artifact:
+YCSB-C's pure read stream constantly triggers concurrent promotions in CacheLib's
+LRU, exacerbating lock contention on its shared hash table.
 
 \begin{figure}[t]
 \centering
@@ -277,6 +282,17 @@ allocated memory is available for key-value data. A 64\,MB FurrBall
 cache holds the same working set as a 128\,MB CacheLib cache.
 
 % ========================================================================
+
+\subsection{CacheLib NUMA Routing}
+
+We also evaluated CacheLib's explicit per-pool routing feature (referred to as \textbf{CacheLibNuma}), which assigns threads to dedicated logical memory pools. On both Intel and AMD topologies, CacheLibNuma yielded no latency benefit over standard CacheLib (e.g., 2,830\,ns vs. 2,840\,ns at 128\,MB on AMD). We determined that CacheLib's open-source release lacks the physical \texttt{mbind()} integration required for true NUMA memory placement. Consequently, per-pool routing introduces hash-table lookup overhead without providing any underlying physical locality benefit.
+
+\subsection{Staging Pages for Tail Latency}
+
+A critical challenge in capacity-constrained caches is the tail latency of the SET path. In our initial design, when a page filled, the eviction policy freed a key, but the bump allocator still had to scan \emph{all} pages sequentially ($\mathcal{O}(P)$) to find the reclaimed slot. On c6i with 8,192 pages per node, this produced catastrophic p99 SET latencies (68,000--280,000\,ns). 
+
+We solved this via \textbf{Staging Pages}. The last page in each node's pool is designated as an $\mathcal{O}(1)$ overflow target for the SET path. This decouples the write path from space management. A background maintenance thread later relocates keys from the staging page into sparsely populated pages (page drain compaction). This virtuous cycle---eviction empties pages, drain consolidates them, and recycled pages become fresh bump targets---reduced p99 SET latency by $24\times$--$63\times$ (to 2,800--4,500\,ns) with zero degradation to GET latency.
+
 \section{Discussion}
 \label{sec:discussion}
 
@@ -287,10 +303,9 @@ this assumption (e.g., writes on node~0, reads on node~1), every TL read
 becomes a cross-node access. A NUMA-aware load balancer that distributes
 keys based on access frequency is future work.
 
-\textbf{CXL extension.} The architecture generalizes beyond NUMA: CXL-attached
-memory tiers (DRAM, PMEM, disaggregated pools) are additional ``nodes'' with
-different latency/capacity characteristics. The same per-node page pool and
-eviction model applies, with a migration policy for tier-aware promotion.
+\textbf{CXL extension.} The architecture generalizes transparently beyond NUMA to Compute Express Link (CXL) memory tiers. A server equipped with local DRAM (Tier 0, $\sim$100\,ns) and CXL-attached memory (Tier 1, $\sim$250--500\,ns) can treat the CXL device as an additional NUMA node. 
+
+In a concrete CXL deployment, Furrballs would allocate a separate page pool and ARC instance exclusively on the CXL node. To accommodate the latency disparity, the thread-local routing policy would be augmented with a promotion threshold: cold or newly-inserted keys default to the CXL pool. When a key's access frequency in the CXL ARC exceeds a predefined threshold, the maintenance thread relocates it to the local DRAM node's staging page. This transforms Furrballs from a NUMA-aware cache into a fully tier-aware cache, leveraging the same lock-partitioned, page-based architecture while actively masking CXL's latency penalty.
 
 \textbf{Cache-line alignment caveat.} Our statistics regression demonstrates
 that optimizations correct for one topology tier (intra-socket false sharing)
@@ -315,11 +330,10 @@ with no NUMA binding. RocksDB's block cache uses sharded LRU with no
 topology awareness. memcached is single-threaded per core with no NUMA
 placement.
 
-\textbf{Topology-aware systems.} FAC (Fabric-Aware Caching)~\cite{fac}
-considers NUMA for distributed caches. Caladan~\cite{caladan} uses core
-stealing for NUMA-aware scheduling. Shinjuku~\cite{shinjuku} uses
-centralized scheduling for latency. None provides per-node page allocation
-with independent eviction.
+\textbf{Topology-aware systems.} Systems like TPP~\cite{tpp} and AutoTiering~\cite{autotiering}
+manage transparent page placement for tiered memory (e.g., CXL and NUMA), while Nimble~\cite{nimble}
+optimizes page migrations. However, these operate at the OS virtual memory layer.
+None provides application-level, per-node page allocation with independent ARC eviction.
 
 \textbf{ARC.} The Adaptive Replacement Cache~\cite{arc} balances recency
 and frequency with a single parameter~$p$. Furrballs uses one ARC instance
