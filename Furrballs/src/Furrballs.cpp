@@ -225,6 +225,11 @@ struct PerNodeDetails{
     std::unordered_map<uint64_t, std::string> KeyNames;
     SpinLock FrozenLock;
 
+    alignas(64) std::atomic<unsigned int> NodeHitCount{0};
+    alignas(64) std::atomic<size_t> NodeBytesRead{0};
+    alignas(64) std::atomic<unsigned int> NodeLocalHitCount{0};
+    alignas(64) std::atomic<size_t> NodeBytesWritten{0};
+
     PerNodeDetails(size_t arcCap, CMapAllocFn af = CMapDefaultAlloc, CMapFreeFn ff = CMapDefaultFree)
         : NodePages(&nodeMR), KeyStore(arcCap, af, ff) { ShadowDesire.init(arcCap * 2); }
 };
@@ -614,6 +619,23 @@ size_t NuAtlas::FurrBall<Policy>::EvictOneKey(int nodeID) noexcept {
     }
 
     return freedSize;
+}
+
+// =====================================================================
+//  SyncNodeStats — aggregate per-node hot-path stats into global Stats
+// =====================================================================
+
+template<typename Policy>
+void NuAtlas::FurrBall<Policy>::SyncNodeStats(int nodeID) noexcept {
+    if (!DataMembers || !DataMembers->privateNumaState) return;
+    if (nodeID < 0 || nodeID >= Detail::globalNumaState.NumaNodeCount) return;
+    auto* details = DataMembers->privateNumaState->NodeDetails[nodeID];
+    if (!details) return;
+
+    Stats.HitCount.fetch_add(details->NodeHitCount.exchange(0, std::memory_order_relaxed), std::memory_order_relaxed);
+    Stats.BytesRead.fetch_add(details->NodeBytesRead.exchange(0, std::memory_order_relaxed), std::memory_order_relaxed);
+    Stats.LocalHitCount.fetch_add(details->NodeLocalHitCount.exchange(0, std::memory_order_relaxed), std::memory_order_relaxed);
+    Stats.BytesWritten.fetch_add(details->NodeBytesWritten.exchange(0, std::memory_order_relaxed), std::memory_order_relaxed);
 }
 
 // =====================================================================
@@ -1263,8 +1285,8 @@ Error NuAtlas::FurrBall<Policy>::Get(const std::string &key, void* outBuf, size_
 
                         size_t hotIdx = deadPage.FindKeyIndex(hp);
                         if (hotIdx == SIZE_MAX) {
-                            Stats.HitCount.fetch_add(1, std::memory_order_relaxed);
-                            Stats.BytesRead.fetch_add(meta->DataSize, std::memory_order_relaxed);
+                            details->NodeHitCount.fetch_add(1, std::memory_order_relaxed);
+                            details->NodeBytesRead.fetch_add(meta->DataSize, std::memory_order_relaxed);
                             return NO_ERR;
                         }
 
@@ -1336,8 +1358,8 @@ Error NuAtlas::FurrBall<Policy>::Get(const std::string &key, void* outBuf, size_
                             Stats.MigrationCount.fetch_add(1, std::memory_order_relaxed);
                         }
 
-                        Stats.HitCount.fetch_add(1, std::memory_order_relaxed);
-                        Stats.BytesRead.fetch_add(meta->DataSize, std::memory_order_relaxed);
+                        details->NodeHitCount.fetch_add(1, std::memory_order_relaxed);
+                        details->NodeBytesRead.fetch_add(meta->DataSize, std::memory_order_relaxed);
                         return NO_ERR;
                     }
                     deadPage.RemoveKeyByHash(hp);
@@ -1349,8 +1371,8 @@ Error NuAtlas::FurrBall<Policy>::Get(const std::string &key, void* outBuf, size_
                         outSize = meta->DataSize;
                         if(BufSize < meta->DataSize) return BUF_NOT_LARGE_ENOUGH;
                         memcpy(outBuf, meta->DataOffset, meta->DataSize);
-                        Stats.HitCount.fetch_add(1, std::memory_order_relaxed);
-                        Stats.BytesRead.fetch_add(meta->DataSize, std::memory_order_relaxed);
+                        details->NodeHitCount.fetch_add(1, std::memory_order_relaxed);
+                        details->NodeBytesRead.fetch_add(meta->DataSize, std::memory_order_relaxed);
                         Stats.ColdPageHits.fetch_add(1, std::memory_order_relaxed);
                         return NO_ERR;
                     }
@@ -1384,8 +1406,8 @@ Error NuAtlas::FurrBall<Policy>::Get(const std::string &key, void* outBuf, size_
                                     outSize = meta->DataSize;
                                     if(BufSize < meta->DataSize) return BUF_NOT_LARGE_ENOUGH;
                                     memcpy(outBuf, meta->DataOffset, meta->DataSize);
-                                    Stats.HitCount.fetch_add(1, std::memory_order_relaxed);
-                                    Stats.BytesRead.fetch_add(meta->DataSize, std::memory_order_relaxed);
+                                    details->NodeHitCount.fetch_add(1, std::memory_order_relaxed);
+                                    details->NodeBytesRead.fetch_add(meta->DataSize, std::memory_order_relaxed);
                                     return NO_ERR;
                                 }
                             }
@@ -1407,8 +1429,8 @@ Error NuAtlas::FurrBall<Policy>::Get(const std::string &key, void* outBuf, size_
             outSize = meta->DataSize;
             if(BufSize < meta->DataSize) return BUF_NOT_LARGE_ENOUGH;
             memcpy(outBuf, meta->DataOffset, meta->DataSize);
-            Stats.HitCount.fetch_add(1, std::memory_order_relaxed);
-            Stats.BytesRead.fetch_add(meta->DataSize, std::memory_order_relaxed);
+            details->NodeHitCount.fetch_add(1, std::memory_order_relaxed);
+            details->NodeBytesRead.fetch_add(meta->DataSize, std::memory_order_relaxed);
             return NO_ERR;
         }
         if (!Volatile && DataMembers && DataMembers->db) {
@@ -1427,8 +1449,8 @@ Error NuAtlas::FurrBall<Policy>::Get(const std::string &key, void* outBuf, size_
                     }
                     memcpy(outBuf, slabData.data() + fe.offset, fe.size);
                     details->FrozenLock.unlock();
-                    Stats.HitCount.fetch_add(1, std::memory_order_relaxed);
-                    Stats.BytesRead.fetch_add(fe.size, std::memory_order_relaxed);
+                    details->NodeHitCount.fetch_add(1, std::memory_order_relaxed);
+                    details->NodeBytesRead.fetch_add(fe.size, std::memory_order_relaxed);
                     Stats.FrozenPageHits.fetch_add(1, std::memory_order_relaxed);
                     return NO_ERR;
                 }
@@ -1442,7 +1464,7 @@ Error NuAtlas::FurrBall<Policy>::Get(const std::string &key, void* outBuf, size_
         int local = currentNode;
         Error err = tryNode(local);
         if(err == NO_ERR){
-            Stats.LocalHitCount.fetch_add(1, std::memory_order_relaxed);
+            DataMembers->privateNumaState->NodeDetails[local]->NodeLocalHitCount.fetch_add(1, std::memory_order_relaxed);
             return NO_ERR;
         }
         for(int n = 0; n < nodeCount; n++){
@@ -1496,7 +1518,7 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
             }
         });
         if(err == NO_ERR){
-            Stats.BytesWritten.fetch_add(size, std::memory_order_relaxed);
+            details->NodeBytesWritten.fetch_add(size, std::memory_order_relaxed);
             return NO_ERR;
         }
     }
@@ -1563,7 +1585,7 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
                                         reinterpret_cast<const char*>(coldPage.Data),
                                         coldPage.GetUsedSize());
                                     DataMembers->db->Put(rocksdb::WriteOptions(), slabKey, slabVal);
-                                    Stats.BytesWritten.fetch_add(coldPage.GetUsedSize(), std::memory_order_relaxed);
+                                    details->NodeBytesWritten.fetch_add(coldPage.GetUsedSize(), std::memory_order_relaxed);
 
                                     details->FrozenLock.lock();
                                     for (size_t ki = 0; ki < h2s.size(); ki++) {
@@ -1672,7 +1694,7 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
 
                 Error err = details->KeyStore.Set(key, metadata);
                 if (err == NO_ERR) {
-                    Stats.BytesWritten.fetch_add(size, std::memory_order_relaxed);
+                    details->NodeBytesWritten.fetch_add(size, std::memory_order_relaxed);
                     if (!Volatile) {
                         details->FrozenLock.lock();
                         details->KeyNames[hp.h2] = key;
@@ -1737,7 +1759,7 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
 
     Error err = details->KeyStore.Set(key, metadata);
     if (err == NO_ERR) {
-        Stats.BytesWritten.fetch_add(size, std::memory_order_relaxed);
+        details->NodeBytesWritten.fetch_add(size, std::memory_order_relaxed);
         if (!Volatile) {
             details->FrozenLock.lock();
             details->KeyNames[hp.h2] = key;
@@ -1983,6 +2005,7 @@ FurrBall<Policy> *FurrBall<Policy>::CreateBall(const std::string &DBpath, const 
                             continue;
                         }
                         ball->BackgroundEvict(nodeId);
+                        ball->SyncNodeStats(nodeId);
                         ball->ActiveMaintenanceRefs.fetch_sub(1, std::memory_order_acq_rel);
                     }
                 },

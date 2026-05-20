@@ -366,6 +366,8 @@ namespace NuAtlas {
 
         void BackgroundEvict(int nodeID) noexcept;
 
+        void SyncNodeStats(int nodeID) noexcept;
+
         size_t EvictOneKey(int nodeID) noexcept;
 
         void* Get(void* vAddress) noexcept;
