@@ -2774,6 +2774,59 @@ CacheLib at 4T shows 310ns GET (vs 150ns at 2T = 2x degradation), consistent wit
 2. **No 8+ NUMA node data.** Production servers with 8+ nodes (e.g., AMD Genoa with NPS=4) would stress the architecture further. Expected to show larger TL vs CacheLib advantage.
 3. **NUMA DRAM penalty not isolated per-node on c6a.** The Remote adapter at 64MB shows node0=180ns, node1=170ns --- both elevated, suggesting the 64MB working set partially exceeds L3 on both CCDs. The c6i data (§5.24) provides the cleaner per-node penalty measurement (78ns vs 249ns = 171ns).
 
+### 5.27 YCSB Standard Workload Evaluation
+
+YCSB (Yahoo! Cloud Serving Benchmark) provides standardized cache workloads with Zipfian key distributions. Unlike the synthetic uniform/sequential workloads in §5.24--5.26, YCSB exercises real-world access skew: a small fraction of keys receives most accesses, stressing both hit rate and eviction behavior.
+
+**Setup:** 5 systems (FurrBallTL, FurrBallSN, TBB, RocksDB LRU, CacheLib) on c6a.metal (AMD EPYC Milan, 4 NUMA nodes). YCSB workloads A (50R/50W), B (95R/5W), C (100R). Value sizes: 64B, 256B, 1024B. 100K records, 200K ops per thread, 32MB cache. Zipfian theta=0.99 (heavy skew).
+
+![YCSB p50 GET latency across systems for workloads A, B, and C (64B values, 2T, c6a.metal). FurrBallTL achieves 80ns across all workloads --- 22x faster than CacheLib's 1800ns on YCSB-A.](paper/figures/ycsb_latency_64b.pdf)
+
+**YCSB-A (50R/50W), 64B, 2T:**
+
+| System | p50 GET | p99 GET | Throughput | Hit rate |
+|---|---|---|---|---|
+| **FurrBallTL** | **80 ns** | 1,280 ns | **6.63 M** | 100% |
+| FurrBallSN | 560 ns | 3,241 ns | 1.95 M | 100% |
+| TBB | 260 ns | 2,230 ns | 3.37 M | 100% |
+| RocksDB | 80 ns | 10,621 ns | 1.56 M | 100% |
+| CacheLib | 1,800 ns | 4,180 ns | 0.67 M | 100% |
+
+FurrBallTL matches RocksDB's p50 GET (80ns) while avoiding RocksDB's extreme p99 tail (10.6us from LRU shard mutex contention). **22x faster than CacheLib** at p50, **10x higher throughput.**
+
+![FurrBallTL vs CacheLib head-to-head across YCSB workloads A/B/C (64B, 2T). Left: p50 GET latency. Right: throughput.](paper/figures/ycsb_tl_vs_cachelib.pdf)
+
+**Value-size sweep (YCSB-B, 95R/5W, 2T):**
+
+![p50 GET latency (left axis) and hit rate (log scale) across value sizes for YCSB-B, 2T. At 256B, FurrBallTL maintains 100% hit rate while CacheLib drops to 95%. At 1024B (100MB working set vs 32MB cache), all bounded caches show ~94% hit rate but FurrBallTL achieves it at 80ns vs CacheLib's 370ns.](paper/figures/ycsb_latency_sweep.pdf)
+
+| Value size | Working set | FurrBallTL p50g | CacheLib p50g | TL hit% | CL hit% |
+|---|---|---|---|---|---|
+| 64B | 6.4 MB | 80 ns | 880 ns | 100% | 100% |
+| 256B | 25 MB | 80 ns | 230 ns | 100% | 95% |
+| 1024B | 100 MB | 80 ns | 370 ns | 94% | 94% |
+
+At 256B, the working set (25MB) approaches the cache size (32MB). FurrBallTL holds 100% hit rate because TL routing gives each thread its own 16MB partition --- each thread's 12.5MB partition fits comfortably. CacheLib drops to 95% because its shared hash table serves both threads from a single pool, and eviction kicks in sooner. At 1024B, both systems are heavily oversubscribed (100MB vs 32MB) and converge to ~94% hit rate, but FurrBallTL's per-node placement keeps GET at 80ns vs CacheLib's 370ns (4.6x).
+
+**YCSB hit rate observations:**
+
+- YCSB-C (100% read) at 256B/1024B shows near-0% hit rate for all bounded caches. Root cause: the load phase inserts keys 0→100K sequentially, evicting the earliest (low-numbered) keys. The Zipfian distribution then favors these same low-numbered keys, which are already evicted. With no writes during the run phase, misses cannot re-insert entries. This is a known YCSB artifact, not a cache deficiency.
+- TBB (unbounded) maintains 100% hit rate across all configs, confirming the Zipfian distribution itself is not pathological.
+
+#### Thread Scaling with Per-Node Stats
+
+The per-node statistics fix (§3.7) eliminated the 4T anomaly discovered in v1.32.0. Thread-scaling now shows the expected pattern:
+
+![Thread scaling before (left) and after (right) per-node stat sharding fix. Before: FurrBallTL degrades 6.6x from 2T to 4T. After: FurrBallTL scales flat at ~70ns across all thread counts, matching TBB's scaling behavior.](paper/figures/thread_scaling_fix.pdf)
+
+| Threads | TL (before) | TL (after) | SN (after) | CacheLib (after) | TBB |
+|---|---|---|---|---|---|
+| 1T | 70 ns | 70 ns | 75 ns | 115 ns | 40 ns |
+| 2T | 120 ns | **74 ns** | 283 ns | 200 ns | 40 ns |
+| 4T | 587 ns | **71 ns** | 453 ns | 337 ns | 43 ns |
+
+After the fix, FurrBallTL scales near-perfectly: 71ns at 4T matching 70ns at 1T. The 4T config places one thread per NUMA node on c6a's 4-node topology, each with its own CMap, SpinLock, and maintenance thread. With per-node statistics, no shared cache lines bounce between sockets. FurrBallSN degrades at 4T because all 4 threads share a single node's CMap and SpinLock.
+
 ## 6. Current Status
 
 **Phase 1 is complete.** **Phase 2a is complete.** **Phase 2b data collected but evaluation deferred** (§5.20: page-level eviction smothers policy differentiation). **Phase 2c staging pages complete** (§5.25: p99_set improved 24--63x, zero GET regression). **ARC-FLATLL2 optimized** (uint32_t indices + arena + no cached_: +87--172% over ARC, ranked #2 KPI). **ARC-REMARC Hybrid tested** (§5.23: negative finding). **Destructor race fixed** (per-ball refcount + double-check pattern).
