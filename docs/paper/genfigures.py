@@ -79,7 +79,19 @@ COL = False  # set by --col flag; True = single-column ATC, False = wide whitepa
 
 def load_json(path):
     with open(path) as f:
-        return json.load(f)['benchmarks']
+        content = f.read()
+    decoder = json.JSONDecoder()
+    data = []
+    idx = 0
+    while idx < len(content):
+        try:
+            obj, end = decoder.raw_decode(content, idx)
+            data.extend(obj.get('benchmarks', []))
+            idx = end
+        except json.JSONDecodeError:
+            idx += 1
+            continue
+    return data
 
 def load_ycsb(data):
     """Parse YCSB benchmark data into structured dict."""
@@ -100,12 +112,17 @@ def load_ycsb(data):
             'valuesize': vsz,
             'records': recs,
             'p50_get': b.get('p50_get_ns', 0),
+            'p50_get_std': b.get('p50_get_ns_std', 0),
             'p90_get': b.get('p90_get_ns', 0),
+            'p90_get_std': b.get('p90_get_ns_std', 0),
             'p99_get': b.get('p99_get_ns', 0),
+            'p99_get_std': b.get('p99_get_ns_std', 0),
             'p50_set': b.get('p50_set_ns', 0),
             'p99_set': b.get('p99_set_ns', 0),
             'ops_per_sec': b.get('ops_per_sec', 0),
+            'ops_per_sec_std': b.get('ops_per_sec_std', 0),
             'hit_rate': b.get('hit_rate_pct', 0),
+            'runs': int(b.get('runs', 1)),
         })
     return records
 
@@ -126,24 +143,34 @@ def load_numabench(data):
             'workload': wl,
             'valuesize': vsz,
             'p50_get': b.get('p50_get_ns', 0),
+            'p50_get_std': b.get('p50_get_ns_std', 0),
             'p90_get': b.get('p90_get_ns', 0),
             'p99_get': b.get('p99_get_ns', 0),
             'p50_set': b.get('p50_set_ns', 0),
             'p99_set': b.get('p99_set_ns', 0),
             'ops_per_sec': b.get('ops_per_sec', 0),
+            'ops_per_sec_std': b.get('ops_per_sec_std', 0),
             'hit_rate': b.get('hit_rate_pct', 0),
+            'runs': int(b.get('runs', 1)),
         })
     return records
 
-def aggregate(records, group_keys, value_key):
-    """Group by keys, average the value."""
+def aggregate(records, group_keys, value_key, std_key=None):
+    """Group by keys, return dict of (mean, std) tuples."""
     groups = defaultdict(list)
     for r in records:
         key = tuple(r[k] for k in group_keys)
         groups[key].append(r[value_key])
     result = {}
     for key, vals in groups.items():
-        result[key] = sum(vals) / len(vals) if vals else 0
+        mean = sum(vals) / len(vals) if vals else 0
+        if std_key and any(r.get(std_key, 0) > 0 for r in records):
+            stds = [r[std_key] for r in records
+                     if tuple(r[k] for k in group_keys) == key and r[std_key] > 0]
+            std = (sum((s - mean)**2 for s in stds) / len(stds))**0.5 if stds else 0
+            result[key] = (mean, std)
+        else:
+            result[key] = (mean, 0)
     return result
 
 # --- Figure: YCSB latency comparison ---
@@ -161,14 +188,16 @@ def fig_ycsb_latency(ycsb_data, outdir):
         data = aggregate(
             [r for r in records if r['workload'] == wl and r['threads'] == 2 and r['valuesize'] == 64],
             ['system'],
-            'p50_get')
+            'p50_get', 'p50_get_std')
 
         systems = [s for s in SYSTEM_ORDER if (s,) in data]
-        vals = [data[(s,)] for s in systems]
+        vals = [data[(s,)][0] for s in systems]
+        errs = [data[(s,)][1] for s in systems]
         colors = [COLORS[s] for s in systems]
         labels = [SHORT[s] for s in systems]
 
-        bars = ax.bar(range(len(systems)), vals, color=colors, width=0.7, edgecolor='white', linewidth=0.5)
+        bars = ax.bar(range(len(systems)), vals, yerr=errs, color=colors, width=0.7,
+                       edgecolor='white', linewidth=0.5, capsize=2, error_kw={'linewidth': 0.8})
         ax.set_title(f'YCSB-{wl} (64B)')
         if COL:
             ax.set_ylabel('p50 GET (ns)')
@@ -187,9 +216,9 @@ def fig_ycsb_latency(ycsb_data, outdir):
             if idx == 0:
                 ax.set_ylabel('p50 GET (ns)')
 
-        for bar, v in zip(bars, vals):
+        for bar, v, e in zip(bars, vals, errs):
             if v > 0:
-                ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 20,
+                ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + e + 15,
                         f'{v:.0f}', ha='center', va='bottom', fontsize=5)
 
     plt.tight_layout()
@@ -209,10 +238,12 @@ def fig_ycsb_latency_sweep(ycsb_data, outdir):
         data = aggregate(
             [r for r in records if r['system'] == sysname and r['workload'] == 'B' and r['threads'] == 2],
             ['valuesize'],
-            'p50_get')
-        vals = [data.get((v,), 0) for v in vsizes]
-        ax.bar(x + i * width, vals, width, label=SHORT[sysname],
-               color=COLORS[sysname], edgecolor='white', linewidth=0.3)
+            'p50_get', 'p50_get_std')
+        vals = [data[(v,)][0] for v in vsizes]
+        errs = [data[(v,)][1] for v in vsizes]
+        ax.bar(x + i * width, vals, width, yerr=errs, label=SHORT[sysname],
+               color=COLORS[sysname], edgecolor='white', linewidth=0.3, capsize=2,
+               error_kw={'linewidth': 0.6})
 
     ax.set_xlabel('Value size (bytes)')
     ax.set_ylabel('p50 GET (ns)')
@@ -241,7 +272,7 @@ def fig_ycsb_hitrate(ycsb_data, outdir):
             [r for r in records if r['system'] == sysname and r['workload'] == 'B' and r['threads'] == 2],
             ['valuesize'],
             'hit_rate')
-        vals = [data.get((v,), 0) for v in vsizes]
+        vals = [data[(v,)][0] for v in vsizes]
         ax.bar(x + i * width, vals, width, label=SHORT[sysname],
                color=COLORS[sysname], edgecolor='white', linewidth=0.3)
 
@@ -276,9 +307,13 @@ def fig_thread_scaling(numabench_old, numabench_new, outdir):
             data = aggregate(
                 [r for r in recs if r['system'] == sysname and r['workload'] == 'part' and r['valuesize'] == 64],
                 ['threads'],
-                'p50_get')
+                'p50_get', 'p50_get_std')
             threads = sorted(data.keys())
-            vals = [data[t] for t in threads]
+            vals = [data[t][0] for t in threads]
+            errs = [data[t][1] for t in threads]
+            ax.errorbar([t[0] for t in threads], vals, yerr=errs,
+                         fmt='none', linewidth=0.8, alpha=0.3,
+                         color=COLORS.get(sysname, 'gray'))
             ax.plot([t[0] for t in threads], vals,
                     marker=MARKERS.get(sysname, 'o'),
                     color=COLORS.get(sysname, 'gray'),
@@ -307,21 +342,23 @@ def fig_ycsb_ops(ycsb_data, outdir):
     data = aggregate(
         [r for r in records if r['workload'] == 'A' and r['threads'] == 2 and r['valuesize'] == 64],
         ['system'],
-        'ops_per_sec')
+        'ops_per_sec', 'ops_per_sec_std')
 
     systems = [s for s in SYSTEM_ORDER if (s,) in data]
-    vals = [data[(s,)] / 1e6 for s in systems]
+    vals = [data[(s,)][0] / 1e6 for s in systems]
+    errs = [data[(s,)][1] / 1e6 for s in systems]
     colors = [COLORS[s] for s in systems]
     labels = [SHORT[s] for s in systems]
 
-    bars = ax.bar(range(len(systems)), vals, color=colors, width=0.7, edgecolor='white', linewidth=0.5)
+    bars = ax.bar(range(len(systems)), vals, yerr=errs, color=colors, width=0.7,
+                   edgecolor='white', linewidth=0.5, capsize=2, error_kw={'linewidth': 0.8})
     ax.set_xticks(range(len(systems)))
     ax.set_xticklabels(labels, rotation=30, ha='right')
     ax.set_ylabel('Throughput (M ops/s)')
     ax.set_title('YCSB-A, 2T, 64B')
 
-    for bar, v in zip(bars, vals):
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.1,
+    for bar, v, e in zip(bars, vals, errs):
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + e + 0.05,
                 f'{v:.1f}', ha='center', va='bottom', fontsize=5)
 
     plt.tight_layout()
@@ -347,16 +384,20 @@ def fig_ycsb_tl_vs_cachelib(ycsb_data, outdir):
         x = np.arange(len(workloads))
         width = 0.35
 
+        std_metric = metric + '_std'
         for i, sysname in enumerate(['FurrBallTL', 'CacheLib']):
             data = aggregate(
                 [r for r in records if r['system'] == sysname and r['threads'] == 2 and r['valuesize'] == 64],
                 ['workload'],
-                metric)
-            vals = [data.get((w,), 0) for w in workloads]
+                metric, std_metric)
+            vals = [data[(w,)][0] for w in workloads]
+            errs = [data[(w,)][1] for w in workloads]
             if metric == 'ops_per_sec':
                 vals = [v / 1e6 for v in vals]
-            ax.bar(x + i * width, vals, width, label=SHORT[sysname],
-                   color=COLORS[sysname], edgecolor='white', linewidth=0.3)
+                errs = [e / 1e6 for e in errs]
+            ax.bar(x + i * width, vals, width, yerr=errs, label=SHORT[sysname],
+                   color=COLORS[sysname], edgecolor='white', linewidth=0.3, capsize=2,
+                   error_kw={'linewidth': 0.8})
 
         ax.set_xticks(x + width / 2)
         ax.set_xticklabels([f'YCSB-{w}' for w in workloads])
@@ -391,15 +432,16 @@ def main():
     args = parser.parse_args()
 
     COL = args.col
+    matplotlib.use('pgf')
     plt.rcParams.update(PGF_RC)
     outdir = args.outdir
     os.makedirs(outdir, exist_ok=True)
 
     repo = Path(__file__).resolve().parent.parent.parent
 
-    ycsb_fix = load_json(repo / 'data/ec2-c6a/ycsb-c6a-fix.json')
-    numabench_old = load_json(repo / 'data/ec2-c6a/numabench-full-cachelib-v2.json')
-    numabench_new = load_json(repo / 'data/ec2-c6a/numabench-full-v3-fix.json')
+    ycsb_fix = load_json(repo / 'data/ec2-c6a/ycsb-c6a-v2.json')
+    numabench_old = load_json(repo / 'data/ec2-c6a/numabench-full-v3-fix.json')
+    numabench_new = load_json(repo / 'data/ec2-c6a/numabench-full-v4-stats.json')
 
     print('Generating figures...')
     fig_ycsb_latency(ycsb_fix, outdir)
