@@ -21,6 +21,7 @@
 #include <cstdio>
 #include <cstring>
 #include <mutex>
+#include <cmath>
 #include <numeric>
 #include <string>
 #include <thread>
@@ -131,6 +132,49 @@ static void reportAgg(benchmark::State& state, const AggregateResult& ar) {
         std::string p50name = "node" + std::to_string(n) + "_p50_get_ns";
         state.counters[p50name] = ar.perNodeP50Get[n];
     }
+}
+
+struct IterStats {
+    double p50Get = 0, p90Get = 0, p99Get = 0;
+    double p50Set = 0, p90Set = 0, p99Set = 0;
+    double opsPerSec = 0;
+    double hitRate = 0;
+};
+
+static double meanStd(const std::vector<double>& vals, double& out_std) {
+    if (vals.empty()) { out_std = 0; return 0; }
+    double sum = 0;
+    for (double v : vals) sum += v;
+    double m = sum / vals.size();
+    double sq = 0;
+    for (double v : vals) sq += (v - m) * (v - m);
+    out_std = std::sqrt(sq / vals.size());
+    return m;
+}
+
+static void reportAggStats(benchmark::State& state,
+                            const std::vector<IterStats>& runs,
+                            size_t numRuns) {
+    std::vector<double> p50g, p90g, p99g, p50s, p90s, p99s, ops, hr;
+    p50g.reserve(numRuns); p90g.reserve(numRuns); p99g.reserve(numRuns);
+    p50s.reserve(numRuns); p90s.reserve(numRuns); p99s.reserve(numRuns);
+    ops.reserve(numRuns); hr.reserve(numRuns);
+    for (const auto& r : runs) {
+        p50g.push_back(r.p50Get); p90g.push_back(r.p90Get); p99g.push_back(r.p99Get);
+        p50s.push_back(r.p50Set); p90s.push_back(r.p90Set); p99s.push_back(r.p99Set);
+        ops.push_back(r.opsPerSec); hr.push_back(r.hitRate);
+    }
+    double d; // discard std for individual reporting
+    auto em = [&](const std::vector<double>& v, const char* name) {
+        double m = meanStd(v, d);
+        state.counters[name] = m;
+        state.counters[std::string(name) + "_std"] = d;
+    };
+    em(p50g, "p50_get_ns"); em(p90g, "p90_get_ns"); em(p99g, "p99_get_ns");
+    em(p50s, "p50_set_ns"); em(p90s, "p90_set_ns"); em(p99s, "p99_set_ns");
+    em(ops, "ops_per_sec");
+    double m = meanStd(hr, d);
+    state.counters["hit_rate_pct"] = m;
 }
 
 static uint64_t zipfian(uint64_t n, double theta, uint64_t& state) {
@@ -585,6 +629,8 @@ void RunYCSBBench(benchmark::State& state) {
     size_t valueSize = state.range(3);
     uint64_t recordCount = state.range(4);
 
+    std::vector<IterStats> iterStats;
+
     for (auto _ : state) {
         state.PauseTiming();
 
@@ -617,8 +663,26 @@ void RunYCSBBench(benchmark::State& state) {
         state.PauseTiming();
 
         AggregateResult ar = aggregate(results, elapsedSec);
-        reportAgg(state, ar);
+
+        IterStats is;
+        is.p50Get = ar.p50GetNs; is.p90Get = ar.p90GetNs; is.p99Get = ar.p99GetNs;
+        is.p50Set = ar.p50SetNs; is.p90Set = ar.p90SetNs; is.p99Set = ar.p99SetNs;
+        is.opsPerSec = ar.opsPerSec; is.hitRate = ar.hitRatePct;
+        iterStats.push_back(is);
+
+        size_t runIdx = iterStats.size();
+        if (runIdx == state.max_iterations) {
+            reportAggStats(state, iterStats, runIdx);
+            for (size_t n = 0; n < ar.perNodeP50Get.size(); n++) {
+                std::string p50name = "node" + std::to_string(n) + "_p50_get_ns";
+                state.counters[p50name] = ar.perNodeP50Get[n];
+            }
+        } else {
+            reportAgg(state, ar);
+        }
+
         state.counters["footprint_mb"] = (double)sys.footprintBytes_ / (1024.0 * 1024.0);
+        state.counters["runs"] = (double)runIdx;
 
         sys.destroy();
 

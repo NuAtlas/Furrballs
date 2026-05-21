@@ -37,6 +37,17 @@ namespace NuAtlas::Numatic {
 
     void PinCurrentThreadToNode(int nodeId) noexcept {
         numa_run_on_node(nodeId);
+        cpu_set_t cpuset;
+        CPU_ZERO(&cpuset);
+        struct bitmask* mask = numa_allocate_cpumask();
+        numa_node_to_cpus(nodeId, mask);
+        int maxCpu = numa_num_possible_cpus();
+        for (int i = 0; i < maxCpu; i++) {
+            if (numa_bitmask_isbitset(mask, i))
+                CPU_SET(i, &cpuset);
+        }
+        numa_free_cpumask(mask);
+        sched_setaffinity(0, sizeof(cpuset), &cpuset);
     }
 
     void SetPreferredNode(int nodeId) noexcept {
