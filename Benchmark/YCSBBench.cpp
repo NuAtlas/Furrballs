@@ -967,6 +967,194 @@ BENCHMARK_REGISTER_F(YCSB_CacheLib, Run)
     ->Unit(benchmark::kMicrosecond);
 #endif
 
+// --- Capacity sweep: 64MB, 128MB, 512MB (64B, 2T+4T) ---
+BENCHMARK_REGISTER_F(YCSB_FurrBallTL, Run)
+    ->Args({2, 65536, 10, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallTL, Run)
+    ->Args({2, 65536, 11, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallTL, Run)
+    ->Args({2, 65536, 12, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallTL, Run)
+    ->Args({2, 131072, 10, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallTL, Run)
+    ->Args({2, 131072, 11, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallTL, Run)
+    ->Args({2, 131072, 12, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallTL, Run)
+    ->Args({2, 524288, 10, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallTL, Run)
+    ->Args({2, 524288, 11, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallTL, Run)
+    ->Args({2, 524288, 12, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallTL, Run)
+    ->Args({4, 65536, 10, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallTL, Run)
+    ->Args({4, 65536, 11, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallTL, Run)
+    ->Args({4, 65536, 12, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallTL, Run)
+    ->Args({4, 131072, 10, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallTL, Run)
+    ->Args({4, 131072, 11, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallTL, Run)
+    ->Args({4, 131072, 12, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallTL, Run)
+    ->Args({4, 524288, 10, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallTL, Run)
+    ->Args({4, 524288, 11, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallTL, Run)
+    ->Args({4, 524288, 12, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(YCSB_FurrBallSN, Run)
+    ->Args({2, 65536, 10, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallSN, Run)
+    ->Args({2, 65536, 11, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallSN, Run)
+    ->Args({2, 65536, 12, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallSN, Run)
+    ->Args({2, 131072, 10, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallSN, Run)
+    ->Args({2, 131072, 11, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallSN, Run)
+    ->Args({2, 131072, 12, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallSN, Run)
+    ->Args({2, 524288, 10, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallSN, Run)
+    ->Args({2, 524288, 11, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallSN, Run)
+    ->Args({2, 524288, 12, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallSN, Run)
+    ->Args({4, 65536, 10, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallSN, Run)
+    ->Args({4, 65536, 11, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallSN, Run)
+    ->Args({4, 65536, 12, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallSN, Run)
+    ->Args({4, 131072, 10, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallSN, Run)
+    ->Args({4, 131072, 11, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallSN, Run)
+    ->Args({4, 131072, 12, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallSN, Run)
+    ->Args({4, 524288, 10, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallSN, Run)
+    ->Args({4, 524288, 11, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallSN, Run)
+    ->Args({4, 524288, 12, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(YCSB_TBB, Run)
+    ->Args({2, 65536, 10, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_TBB, Run)
+    ->Args({2, 65536, 11, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_TBB, Run)
+    ->Args({2, 65536, 12, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_TBB, Run)
+    ->Args({2, 131072, 10, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_TBB, Run)
+    ->Args({2, 131072, 11, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_TBB, Run)
+    ->Args({2, 131072, 12, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_TBB, Run)
+    ->Args({2, 524288, 10, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_TBB, Run)
+    ->Args({2, 524288, 11, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_TBB, Run)
+    ->Args({2, 524288, 12, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_TBB, Run)
+    ->Args({4, 65536, 10, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_TBB, Run)
+    ->Args({4, 65536, 11, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_TBB, Run)
+    ->Args({4, 65536, 12, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_TBB, Run)
+    ->Args({4, 131072, 10, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_TBB, Run)
+    ->Args({4, 131072, 11, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_TBB, Run)
+    ->Args({4, 131072, 12, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_TBB, Run)
+    ->Args({4, 524288, 10, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_TBB, Run)
+    ->Args({4, 524288, 11, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_TBB, Run)
+    ->Args({4, 524288, 12, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(YCSB_RocksDB, Run)
+    ->Args({2, 65536, 10, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_RocksDB, Run)
+    ->Args({2, 65536, 11, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_RocksDB, Run)
+    ->Args({2, 65536, 12, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_RocksDB, Run)
+    ->Args({2, 131072, 10, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_RocksDB, Run)
+    ->Args({2, 131072, 11, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_RocksDB, Run)
+    ->Args({2, 131072, 12, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_RocksDB, Run)
+    ->Args({2, 524288, 10, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_RocksDB, Run)
+    ->Args({2, 524288, 11, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_RocksDB, Run)
+    ->Args({2, 524288, 12, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_RocksDB, Run)
+    ->Args({4, 65536, 10, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_RocksDB, Run)
+    ->Args({4, 65536, 11, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_RocksDB, Run)
+    ->Args({4, 65536, 12, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_RocksDB, Run)
+    ->Args({4, 131072, 10, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_RocksDB, Run)
+    ->Args({4, 131072, 11, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_RocksDB, Run)
+    ->Args({4, 131072, 12, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_RocksDB, Run)
+    ->Args({4, 524288, 10, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_RocksDB, Run)
+    ->Args({4, 524288, 11, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_RocksDB, Run)
+    ->Args({4, 524288, 12, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+
+#ifdef USE_CACHELIB
+BENCHMARK_REGISTER_F(YCSB_CacheLib, Run)
+    ->Args({2, 65536, 10, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_CacheLib, Run)
+    ->Args({2, 65536, 11, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_CacheLib, Run)
+    ->Args({2, 65536, 12, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_CacheLib, Run)
+    ->Args({2, 131072, 10, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_CacheLib, Run)
+    ->Args({2, 131072, 11, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_CacheLib, Run)
+    ->Args({2, 131072, 12, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_CacheLib, Run)
+    ->Args({2, 524288, 10, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_CacheLib, Run)
+    ->Args({2, 524288, 11, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_CacheLib, Run)
+    ->Args({2, 524288, 12, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_CacheLib, Run)
+    ->Args({4, 65536, 10, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_CacheLib, Run)
+    ->Args({4, 65536, 11, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_CacheLib, Run)
+    ->Args({4, 65536, 12, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_CacheLib, Run)
+    ->Args({4, 131072, 10, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_CacheLib, Run)
+    ->Args({4, 131072, 11, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_CacheLib, Run)
+    ->Args({4, 131072, 12, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_CacheLib, Run)
+    ->Args({4, 524288, 10, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_CacheLib, Run)
+    ->Args({4, 524288, 11, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_CacheLib, Run)
+    ->Args({4, 524288, 12, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+#endif
+
 // --- 1T baselines ---
 BENCHMARK_REGISTER_F(YCSB_FurrBallTL, Run)
     ->Args({1, 32768, 11, 64, 100000})
