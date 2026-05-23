@@ -497,7 +497,11 @@ struct RocksDBCacheAdapter {
 
     void create(int, int totalCapacityKB) {
         size_t capacity = (size_t)totalCapacityKB * 1024;
-        cache = ROCKSDB_NAMESPACE::NewLRUCache(capacity);
+        cache = ROCKSDB_NAMESPACE::NewLRUCache(
+            capacity,
+            -1,
+            false,
+            0.0);
         footprintBytes_ = capacity;
     }
 
