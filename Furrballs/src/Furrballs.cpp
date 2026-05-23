@@ -1937,7 +1937,7 @@ FurrBall<Policy> *FurrBall<Policy>::CreateBall(const std::string &DBpath, const 
                 Logger::getInstance().info("NUMA Node page allocator called WaitGroup::Done().");
             });
         }
-        if(!wg.WaitFor(std::chrono::seconds(60))){
+        if(!wg.WaitFor(std::chrono::seconds(8))){
             Logger::getInstance().critical("WaitGroup timed out during NUMA page allocation.");
             goto Exit;
         }
