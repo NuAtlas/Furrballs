@@ -1660,6 +1660,9 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
             remoteDetails->MigrationQueue.push_back({key, hp, n, remoteMeta->Version});
             remoteDetails->MigrationQueueLock.unlock();
 
+            if (Detail::globalNumaState.Workers)
+                Detail::globalNumaState.Workers[n].WakeMaintenance();
+
             DataMembers->privateNumaState->routeTable.publish(hp.h2, static_cast<uint8_t>(targetNode));
             break;
         }
