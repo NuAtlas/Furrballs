@@ -1565,17 +1565,21 @@ Error NuAtlas::FurrBall<Policy>::Get(const std::string &key, void* outBuf, size_
             DataMembers->privateNumaState->NodeDetails[local]->NodeLocalHitCount.fetch_add(1, std::memory_order_relaxed);
             return NO_ERR;
         }
+        int hashHint = static_cast<int>(hp.h2 % nodeCount);
         auto cached = tlRoutingCache.lookup(hp.h2);
-        if(cached.node >= 0 && cached.node != local && cached.node < nodeCount){
-            err = tryNode(cached.node);
+        int firstRemote = (cached.node >= 0 && cached.node != local && cached.node < nodeCount)
+                          ? cached.node : hashHint;
+        if(firstRemote != local && firstRemote < nodeCount){
+            err = tryNode(firstRemote);
             if(err == NO_ERR){
-                tlRoutingCache.record_hit(hp.h2);
+                if(cached.node >= 0 && firstRemote == cached.node) tlRoutingCache.record_hit(hp.h2);
+                else tlRoutingCache.insert(hp.h2, static_cast<int8_t>(firstRemote));
                 return NO_ERR;
             }
         }
         auto& order = DataMembers->privateNumaState->probeOrder[local];
         for(int n : order){
-            if(n == cached.node) continue;
+            if(n == firstRemote) continue;
             err = tryNode(n);
             if(err == NO_ERR){
                 if(n != local) tlRoutingCache.insert(hp.h2, static_cast<int8_t>(n));
