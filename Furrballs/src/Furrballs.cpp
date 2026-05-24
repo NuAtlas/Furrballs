@@ -2115,7 +2115,7 @@ FurrBall<Policy> *FurrBall<Policy>::CreateBall(const std::string &DBpath, const 
                             continue;
                         }
                         ball->BackgroundEvict(nodeId);
-                        //ball->DrainMigrations(nodeId);
+                        ball->DrainMigrations(nodeId);
                         ball->SyncNodeStats(nodeId);
                         ball->ActiveMaintenanceRefs.fetch_sub(1, std::memory_order_acq_rel);
                     }
