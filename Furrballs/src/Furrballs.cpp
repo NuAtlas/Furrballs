@@ -8,8 +8,6 @@
 #include "Furrballs.h"
 #include "CMap.h"
 #include "NativeStore.h"
-#include <numa.h>
-#include <numaif.h>
 #undef max
 #undef min
 #include <cstring>
@@ -236,6 +234,7 @@ struct PerNodeDetails{
         std::string key;
         HashPair hp;
         int fromNode;
+        int toNode;
         uint64_t version;
     };
     SpinLock MigrationQueueLock;
@@ -252,61 +251,12 @@ struct PerNodeDetails{
         : NodePages(&nodeMR), KeyStore(arcCap, af, ff) { ShadowDesire.init(arcCap * 2); }
 };
 
-struct GlobalRouteTable {
-    static constexpr size_t BUCKETS = 1048576;
-    static constexpr size_t MASK = BUCKETS - 1;
-    static constexpr uint8_t NO_NODE = 0xFF;
-
-    std::atomic<uint8_t>* entries = nullptr;
-    bool interleaved = false;
-
-    void init() {
-        size_t bytes = BUCKETS * sizeof(std::atomic<uint8_t>);
-        void* raw = numa_alloc_interleaved(bytes);
-        if (raw) {
-            entries = new(raw) std::atomic<uint8_t>[BUCKETS];
-            interleaved = true;
-        } else {
-            entries = new std::atomic<uint8_t>[BUCKETS];
-        }
-        for (size_t i = 0; i < BUCKETS; i++)
-            entries[i].store(NO_NODE, std::memory_order_relaxed);
-    }
-
-    ~GlobalRouteTable() {
-        if (!entries) return;
-        if (interleaved) {
-            entries->~atomic();
-            numa_free(entries, BUCKETS * sizeof(std::atomic<uint8_t>));
-        } else {
-            delete[] entries;
-        }
-    }
-
-    void publish(uint64_t h2, uint8_t node) noexcept {
-        size_t bucket = (h2 >> 12) & MASK;
-        entries[bucket].store(node, std::memory_order_relaxed);
-    }
-
-    int8_t query(uint64_t h2) const noexcept {
-        size_t bucket = (h2 >> 12) & MASK;
-        uint8_t node = entries[bucket].load(std::memory_order_relaxed);
-        return node == NO_NODE ? -1 : static_cast<int8_t>(node);
-    }
-
-    void clear(uint64_t h2) noexcept {
-        size_t bucket = (h2 >> 12) & MASK;
-        entries[bucket].store(NO_NODE, std::memory_order_release);
-    }
-};
-
 template<typename Policy>
 struct PrivateNumaState{
     PerNodeDetails<Policy>** NodeDetails;
     AtomicRoundRobin rr;
     bool AllowNodeFallback = false;
     std::vector<std::vector<int>> probeOrder;
-    GlobalRouteTable routeTable;
 };
 
 template<typename Policy>
@@ -1582,14 +1532,8 @@ Error NuAtlas::FurrBall<Policy>::Get(const std::string &key, void* outBuf, size_
             DataMembers->privateNumaState->NodeDetails[local]->NodeLocalHitCount.fetch_add(1, std::memory_order_relaxed);
             return NO_ERR;
         }
-        int routeHint = DataMembers->privateNumaState->routeTable.query(hp.h2);
-        if(routeHint >= 0 && routeHint != local && routeHint < nodeCount){
-            err = tryNode(routeHint);
-            if(err == NO_ERR) return NO_ERR;
-        }
         auto& order = DataMembers->privateNumaState->probeOrder[local];
         for(int n : order){
-            if(n == routeHint) continue;
             err = tryNode(n);
             if(err == NO_ERR) return NO_ERR;
         }
@@ -1657,13 +1601,12 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
             Stats.MigrationCount.fetch_add(1, std::memory_order_relaxed);
 
             remoteDetails->MigrationQueueLock.lock();
-            remoteDetails->MigrationQueue.push_back({key, hp, n, remoteMeta->Version});
+            remoteDetails->MigrationQueue.push_back({key, hp, n, targetNode, remoteMeta->Version});
             remoteDetails->MigrationQueueLock.unlock();
 
             if (Detail::globalNumaState.Workers)
                 Detail::globalNumaState.Workers[n].WakeMaintenance();
 
-            DataMembers->privateNumaState->routeTable.publish(hp.h2, static_cast<uint8_t>(targetNode));
             break;
         }
     }
@@ -1840,8 +1783,6 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
                 Error err = details->KeyStore.Set(key, metadata);
                 if (err == NO_ERR) {
                     details->NodeBytesWritten.fetch_add(size, std::memory_order_relaxed);
-                    if (DataMembers->privateNumaState)
-                        DataMembers->privateNumaState->routeTable.publish(hp.h2, static_cast<uint8_t>(targetNode));
                     if (!Volatile) {
                         details->FrozenLock.lock();
                         details->KeyNames[hp.h2] = key;
@@ -2017,7 +1958,6 @@ FurrBall<Policy> *FurrBall<Policy>::CreateBall(const std::string &DBpath, const 
         pNumaState->NodeDetails = (PerNodeDetails<Policy>**)malloc(sizeof(PerNodeDetails<Policy>*) * nodeCount);
         pNumaState->rr.SetN(nodeCount);
         pNumaState->AllowNodeFallback = config.numaConfig->AllowNodeFallback;
-        pNumaState->routeTable.init();
 
         std::vector<size_t> nodePageCounts;
         if (!config.PerNodePages.empty()) {
