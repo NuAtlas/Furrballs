@@ -8,6 +8,8 @@
 #include "Furrballs.h"
 #include "CMap.h"
 #include "NativeStore.h"
+#include <numa.h>
+#include <numaif.h>
 #undef max
 #undef min
 #include <cstring>
@@ -240,14 +242,30 @@ struct GlobalRouteTable {
     static constexpr uint8_t NO_NODE = 0xFF;
 
     std::atomic<uint8_t>* entries = nullptr;
+    bool interleaved = false;
 
     void init() {
-        entries = new std::atomic<uint8_t>[BUCKETS];
+        size_t bytes = BUCKETS * sizeof(std::atomic<uint8_t>);
+        void* raw = numa_alloc_interleaved(bytes);
+        if (raw) {
+            entries = new(raw) std::atomic<uint8_t>[BUCKETS];
+            interleaved = true;
+        } else {
+            entries = new std::atomic<uint8_t>[BUCKETS];
+        }
         for (size_t i = 0; i < BUCKETS; i++)
             entries[i].store(NO_NODE, std::memory_order_relaxed);
     }
 
-    ~GlobalRouteTable() { delete[] entries; }
+    ~GlobalRouteTable() {
+        if (!entries) return;
+        if (interleaved) {
+            entries->~atomic();
+            numa_free(entries, BUCKETS * sizeof(std::atomic<uint8_t>));
+        } else {
+            delete[] entries;
+        }
+    }
 
     void publish(uint64_t h2, uint8_t node) noexcept {
         size_t bucket = (h2 >> 12) & MASK;
@@ -261,7 +279,7 @@ struct GlobalRouteTable {
     }
 
     void clear(uint64_t h2) noexcept {
-        size_t bucket = (h2 >> 16) & MASK;
+        size_t bucket = (h2 >> 12) & MASK;
         entries[bucket].store(NO_NODE, std::memory_order_release);
     }
 };
