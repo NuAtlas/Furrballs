@@ -234,8 +234,39 @@ struct PerNodeDetails{
         HashPair hp;
         int ownerNode;
     };
-    SpinLock DedupQueueLock;
-    std::vector<DedupCheck> DedupQueue;
+    static constexpr size_t DEDUP_RING_CAP = 8192;
+    static constexpr size_t DEDUP_RING_MASK = DEDUP_RING_CAP - 1;
+    alignas(64) std::atomic<uint64_t> DedupWritePos{0};
+    alignas(64) std::atomic<uint64_t> DedupReadPos{0};
+    DedupCheck* DedupRing = nullptr;
+
+    void InitDedupRing() {
+        DedupRing = new DedupCheck[DEDUP_RING_CAP];
+    }
+
+    bool EnqueueDedup(const HashPair& hp, int ownerNode) noexcept {
+        uint64_t wp = DedupWritePos.load(std::memory_order_relaxed);
+        uint64_t rp = DedupReadPos.load(std::memory_order_acquire);
+        if (wp - rp >= DEDUP_RING_CAP) return false;
+        DedupRing[wp & DEDUP_RING_MASK] = {hp, ownerNode};
+        DedupWritePos.store(wp + 1, std::memory_order_release);
+        return true;
+    }
+
+    std::vector<DedupCheck> DrainDedup() noexcept {
+        std::vector<DedupCheck> result;
+        uint64_t rp = DedupReadPos.load(std::memory_order_relaxed);
+        uint64_t wp = DedupWritePos.load(std::memory_order_acquire);
+        size_t count = static_cast<size_t>(wp - rp);
+        if (count == 0) return result;
+        if (count > DEDUP_RING_CAP) count = DEDUP_RING_CAP;
+        result.reserve(count);
+        for (size_t i = 0; i < count; i++) {
+            result.push_back(DedupRing[(rp + i) & DEDUP_RING_MASK]);
+        }
+        DedupReadPos.store(rp + count, std::memory_order_release);
+        return result;
+    }
 
     alignas(64) std::atomic<uint64_t> VersionCounter{0};
 
@@ -666,12 +697,7 @@ void NuAtlas::FurrBall<Policy>::DrainMigrations(int nodeID) noexcept {
     auto* details = DataMembers->privateNumaState->NodeDetails[nodeID];
     if (!details) return;
 
-    std::vector<typename PerNodeDetails<Policy>::DedupCheck> pending;
-    {
-        details->DedupQueueLock.lock();
-        pending.swap(details->DedupQueue);
-        details->DedupQueueLock.unlock();
-    }
+    auto pending = details->DrainDedup();
 
     for (auto& dedup : pending) {
         for (int n = 0; n < nodeCount; n++) {
@@ -1763,9 +1789,7 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
                 if (err == NO_ERR) {
                     details->NodeBytesWritten.fetch_add(size, std::memory_order_relaxed);
                     if (nodeCount > 1) {
-                        details->DedupQueueLock.lock();
-                        details->DedupQueue.push_back({hp, targetNode});
-                        details->DedupQueueLock.unlock();
+                        details->EnqueueDedup(hp, targetNode);
                     }
                     if (!Volatile) {
                         details->FrozenLock.lock();
@@ -1977,6 +2001,7 @@ FurrBall<Policy> *FurrBall<Policy>::CreateBall(const std::string &DBpath, const 
                 void* auxD = (void*)Numatic::AllocateLocal(sizeof(PerNodeDetails<Policy>));
                 Logger::getInstance().info(std::string("Per-node cache will have an inital capacity of ") + std::to_string(nodeArcCap) + " Keys." );
                 auto* details = new(auxD) PerNodeDetails<Policy>(nodeArcCap, Numatic::AllocateLocal, Numatic::FreeNUMA);
+                details->InitDedupRing();
                 if constexpr (Policy::HasRemarcConfig) {
                     details->MaxDeadAge = config.remarcConfig.MaxDeadAge;
                 }
