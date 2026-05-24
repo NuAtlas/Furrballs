@@ -239,6 +239,7 @@ struct PrivateNumaState{
     PerNodeDetails<Policy>** NodeDetails;
     AtomicRoundRobin rr;
     bool AllowNodeFallback = false;
+    std::vector<std::vector<int>> probeOrder;
 };
 
 template<typename Policy>
@@ -1467,8 +1468,8 @@ Error NuAtlas::FurrBall<Policy>::Get(const std::string &key, void* outBuf, size_
             DataMembers->privateNumaState->NodeDetails[local]->NodeLocalHitCount.fetch_add(1, std::memory_order_relaxed);
             return NO_ERR;
         }
-        for(int n = 0; n < nodeCount; n++){
-            if(n == local) continue;
+        auto& order = DataMembers->privateNumaState->probeOrder[local];
+        for(int n : order){
             err = tryNode(n);
             if(err == NO_ERR) return NO_ERR;
         }
@@ -1529,8 +1530,8 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
     // This ensures each key exists on exactly one node.
     int nodeCount = Detail::globalNumaState.NumaNodeCount;
     if (!existing.has_value() && nodeCount > 1) {
-        for (int n = 0; n < nodeCount; n++) {
-            if (n == targetNode) continue;
+        auto& setOrder = DataMembers->privateNumaState->probeOrder[targetNode];
+        for (int n : setOrder) {
             auto* remoteDetails = DataMembers->privateNumaState->NodeDetails[n];
             auto remoteMeta = remoteDetails->KeyStore.Find(key);
             if (!remoteMeta.has_value()) continue;
@@ -1977,6 +1978,20 @@ FurrBall<Policy> *FurrBall<Policy>::CreateBall(const std::string &DBpath, const 
         if(!wg.WaitFor(std::chrono::seconds(8))){
             Logger::getInstance().critical("WaitGroup timed out during NUMA page allocation.");
             goto Exit;
+        }
+
+        pNumaState->probeOrder.resize(nodeCount);
+        for (int src = 0; src < nodeCount; src++) {
+            std::vector<std::pair<int, int>> dists;
+            for (int dst = 0; dst < nodeCount; dst++) {
+                if (dst == src) continue;
+                dists.emplace_back(Numatic::GetDistance(src, dst), dst);
+            }
+            std::sort(dists.begin(), dists.end());
+            pNumaState->probeOrder[src].clear();
+            for (auto& [d, n] : dists) {
+                pNumaState->probeOrder[src].push_back(n);
+            }
         }
 
         numPages = 0;
