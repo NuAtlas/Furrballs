@@ -230,15 +230,12 @@ struct PerNodeDetails{
     alignas(64) std::atomic<unsigned int> NodeLocalHitCount{0};
     alignas(64) std::atomic<size_t> NodeBytesWritten{0};
 
-    struct PendingMigration {
-        std::string key;
+    struct DedupCheck {
         HashPair hp;
-        int fromNode;
-        int toNode;
-        uint64_t version;
+        int ownerNode;
     };
-    SpinLock MigrationQueueLock;
-    std::vector<PendingMigration> MigrationQueue;
+    SpinLock DedupQueueLock;
+    std::vector<DedupCheck> DedupQueue;
 
     alignas(64) std::atomic<uint64_t> VersionCounter{0};
 
@@ -657,7 +654,7 @@ void NuAtlas::FurrBall<Policy>::SyncNodeStats(int nodeID) noexcept {
 }
 
 // =====================================================================
-//  DrainMigrations: process pending async erases from eventual coherence
+//  DrainDedup: async duplicate cleanup for eventual coherence
 // =====================================================================
 
 template<typename Policy>
@@ -665,40 +662,42 @@ void NuAtlas::FurrBall<Policy>::DrainMigrations(int nodeID) noexcept {
     if (!DataMembers || !DataMembers->privateNumaState) return;
     if (nodeID < 0 || nodeID >= Detail::globalNumaState.NumaNodeCount) return;
 
+    int nodeCount = Detail::globalNumaState.NumaNodeCount;
     auto* details = DataMembers->privateNumaState->NodeDetails[nodeID];
     if (!details) return;
 
-    std::vector<typename PerNodeDetails<Policy>::PendingMigration> pending;
+    std::vector<typename PerNodeDetails<Policy>::DedupCheck> pending;
     {
-        details->MigrationQueueLock.lock();
-        pending.swap(details->MigrationQueue);
-        details->MigrationQueueLock.unlock();
+        details->DedupQueueLock.lock();
+        pending.swap(details->DedupQueue);
+        details->DedupQueueLock.unlock();
     }
 
-    for (auto& mig : pending) {
-        auto meta = details->KeyStore.Find(mig.key);
-        if (!meta.has_value()) continue;
+    for (auto& dedup : pending) {
+        for (int n = 0; n < nodeCount; n++) {
+            if (n == dedup.ownerNode) continue;
+            auto* remoteDetails = DataMembers->privateNumaState->NodeDetails[n];
 
-        auto erased = details->KeyStore.Erase(mig.key);
-        if (erased.err != NO_ERR) continue;
+            auto erased = remoteDetails->KeyStore.EraseByHash(dedup.hp);
+            if (erased.err != NO_ERR || !erased.value.has_value()) continue;
 
-        if (meta->PageIndex < details->NodePages.size()) {
-            Page& srcPage = details->NodePages[meta->PageIndex];
-            srcPage.CompactLock.lock();
-            size_t idx = srcPage.FindKeyIndex(mig.hp);
-            HashPair swapped{};
-            bool needSwapUpdate = false;
-            if (idx != SIZE_MAX) {
-                swapped = srcPage.RemoveKeyEntryLocked(idx);
-                needSwapUpdate = (idx < srcPage.KeyH2.size() && swapped != mig.hp);
+            if (erased.value->PageIndex < remoteDetails->NodePages.size()) {
+                Page& srcPage = remoteDetails->NodePages[erased.value->PageIndex];
+                srcPage.CompactLock.lock();
+                size_t idx = srcPage.FindKeyIndex(dedup.hp);
+                if (idx != SIZE_MAX) {
+                    HashPair swapped = srcPage.RemoveKeyEntryLocked(idx);
+                    if (idx < srcPage.KeyH2.size() && swapped != dedup.hp) {
+                        remoteDetails->KeyStore.UpdateInPlaceByHash(swapped,
+                            [](KeyMeta& m) {
+                            m.TempCtrlIdx = static_cast<uint8_t>(SIZE_MAX);
+                        });
+                    }
+                }
+                srcPage.CompactLock.unlock();
             }
-            srcPage.CompactLock.unlock();
-            if (needSwapUpdate) {
-                details->KeyStore.UpdateInPlaceByHash(swapped,
-                    [](KeyMeta& m) {
-                    m.TempCtrlIdx = static_cast<uint8_t>(SIZE_MAX);
-                });
-            }
+
+            Stats.MigrationCount.fetch_add(1, std::memory_order_relaxed);
         }
     }
 }
@@ -1589,6 +1588,8 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
         }
     }
 
+    int nodeCount = DataMembers->privateNumaState ? Detail::globalNumaState.NumaNodeCount : 0;
+
     size_t pageIdx = details->CurrentPage.load(std::memory_order_relaxed);
     void* Loc = nullptr;
     [[maybe_unused]] bool didRotate = false;
@@ -1761,6 +1762,11 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
                 Error err = details->KeyStore.Set(key, metadata);
                 if (err == NO_ERR) {
                     details->NodeBytesWritten.fetch_add(size, std::memory_order_relaxed);
+                    if (nodeCount > 1) {
+                        details->DedupQueueLock.lock();
+                        details->DedupQueue.push_back({hp, targetNode});
+                        details->DedupQueueLock.unlock();
+                    }
                     if (!Volatile) {
                         details->FrozenLock.lock();
                         details->KeyNames[hp.h2] = key;
