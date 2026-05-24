@@ -86,6 +86,8 @@ struct RoutingCache {
     struct Slot {
         uint64_t h2;
         int8_t node;
+        uint8_t hits;
+        int8_t prev_node;
     };
     static constexpr uint64_t CAP = 1024;
     static constexpr uint64_t MASK = CAP - 1;
@@ -98,27 +100,55 @@ struct RoutingCache {
         for (uint64_t i = 0; i < CAP; i++) {
             slots[i].h2 = EMPTY_H2;
             slots[i].node = EMPTY_NODE;
+            slots[i].hits = 0;
+            slots[i].prev_node = EMPTY_NODE;
         }
     }
 
-    int8_t lookup(uint64_t h2) const noexcept {
+    struct LookupResult {
+        int8_t node;
+        uint8_t hits;
+        int8_t prev_node;
+    };
+
+    LookupResult lookup(uint64_t h2) const noexcept {
         uint64_t idx = h2 & MASK;
         for (uint64_t i = 0; i < CAP; i++) {
             const Slot& s = slots[idx];
-            if (s.h2 == h2) return s.node;
-            if (s.h2 == EMPTY_H2) return EMPTY_NODE;
+            if (s.h2 == h2) return {s.node, s.hits, s.prev_node};
+            if (s.h2 == EMPTY_H2) return {EMPTY_NODE, 0, EMPTY_NODE};
             idx = (idx + 1) & MASK;
         }
-        return EMPTY_NODE;
+        return {EMPTY_NODE, 0, EMPTY_NODE};
+    }
+
+    void record_hit(uint64_t h2) noexcept {
+        uint64_t idx = h2 & MASK;
+        for (uint64_t i = 0; i < CAP; i++) {
+            Slot& s = slots[idx];
+            if (s.h2 == h2) { s.hits++; return; }
+            if (s.h2 == EMPTY_H2) return;
+            idx = (idx + 1) & MASK;
+        }
     }
 
     void insert(uint64_t h2, int8_t node) noexcept {
         uint64_t idx = h2 & MASK;
         for (uint64_t i = 0; i < CAP; i++) {
             Slot& s = slots[idx];
-            if (s.h2 == h2 || s.h2 == EMPTY_H2) {
+            if (s.h2 == h2) {
+                if (s.node != node) {
+                    s.prev_node = s.node;
+                    s.node = node;
+                }
+                s.hits = 0;
+                return;
+            }
+            if (s.h2 == EMPTY_H2) {
                 s.h2 = h2;
                 s.node = node;
+                s.prev_node = EMPTY_NODE;
+                s.hits = 0;
                 return;
             }
             idx = (idx + 1) & MASK;
@@ -126,6 +156,8 @@ struct RoutingCache {
         idx = h2 & MASK;
         slots[idx].h2 = h2;
         slots[idx].node = node;
+        slots[idx].prev_node = EMPTY_NODE;
+        slots[idx].hits = 0;
     }
 
     void invalidate(uint64_t h2) noexcept {
@@ -135,6 +167,8 @@ struct RoutingCache {
             if (s.h2 == h2) {
                 s.h2 = EMPTY_H2;
                 s.node = EMPTY_NODE;
+                s.hits = 0;
+                s.prev_node = EMPTY_NODE;
                 return;
             }
             if (s.h2 == EMPTY_H2) return;
@@ -1532,17 +1566,17 @@ Error NuAtlas::FurrBall<Policy>::Get(const std::string &key, void* outBuf, size_
             tlRoutingCache.insert(hp.h2, static_cast<int8_t>(local));
             return NO_ERR;
         }
-        int8_t hint = tlRoutingCache.lookup(hp.h2);
-        if(hint >= 0 && hint != local && hint < nodeCount){
-            err = tryNode(hint);
+        auto cached = tlRoutingCache.lookup(hp.h2);
+        if(cached.node >= 0 && cached.node != local && cached.node < nodeCount){
+            err = tryNode(cached.node);
             if(err == NO_ERR){
-                tlRoutingCache.insert(hp.h2, hint);
+                tlRoutingCache.record_hit(hp.h2);
                 return NO_ERR;
             }
         }
         auto& order = DataMembers->privateNumaState->probeOrder[local];
         for(int n : order){
-            if(n == hint) continue;
+            if(n == cached.node) continue;
             err = tryNode(n);
             if(err == NO_ERR){
                 tlRoutingCache.insert(hp.h2, static_cast<int8_t>(n));
