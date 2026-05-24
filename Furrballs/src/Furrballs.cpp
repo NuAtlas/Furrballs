@@ -1563,7 +1563,6 @@ Error NuAtlas::FurrBall<Policy>::Get(const std::string &key, void* outBuf, size_
         Error err = tryNode(local);
         if(err == NO_ERR){
             DataMembers->privateNumaState->NodeDetails[local]->NodeLocalHitCount.fetch_add(1, std::memory_order_relaxed);
-            tlRoutingCache.insert(hp.h2, static_cast<int8_t>(local));
             return NO_ERR;
         }
         auto cached = tlRoutingCache.lookup(hp.h2);
@@ -1579,7 +1578,7 @@ Error NuAtlas::FurrBall<Policy>::Get(const std::string &key, void* outBuf, size_
             if(n == cached.node) continue;
             err = tryNode(n);
             if(err == NO_ERR){
-                tlRoutingCache.insert(hp.h2, static_cast<int8_t>(n));
+                if(n != local) tlRoutingCache.insert(hp.h2, static_cast<int8_t>(n));
                 return NO_ERR;
             }
         }
