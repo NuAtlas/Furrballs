@@ -235,7 +235,7 @@ struct PerNodeDetails{
 };
 
 struct GlobalRouteTable {
-    static constexpr size_t BUCKETS = 65536;
+    static constexpr size_t BUCKETS = 1048576;
     static constexpr size_t MASK = BUCKETS - 1;
     static constexpr uint8_t NO_NODE = 0xFF;
 
@@ -250,12 +250,12 @@ struct GlobalRouteTable {
     ~GlobalRouteTable() { delete[] entries; }
 
     void publish(uint64_t h2, uint8_t node) noexcept {
-        size_t bucket = (h2 >> 16) & MASK;
+        size_t bucket = (h2 >> 12) & MASK;
         entries[bucket].store(node, std::memory_order_release);
     }
 
     int8_t query(uint64_t h2) const noexcept {
-        size_t bucket = (h2 >> 16) & MASK;
+        size_t bucket = (h2 >> 12) & MASK;
         uint8_t node = entries[bucket].load(std::memory_order_acquire);
         return node == NO_NODE ? -1 : static_cast<int8_t>(node);
     }
