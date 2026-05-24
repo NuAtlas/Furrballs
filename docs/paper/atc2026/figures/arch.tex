@@ -1,0 +1,84 @@
+\begin{figure}[t]
+\centering
+% Requires: \usetikzlibrary{backgrounds, fit, positioning}
+\resizebox{\columnwidth}{!}{%
+\begin{tikzpicture}[
+    box/.style={draw, rounded corners=2pt, minimum width=1.8cm, minimum height=0.6cm,
+                font=\scriptsize, align=center, thick},
+    poolbox/.style={box, fill=blue!10},
+    cmapbox/.style={box, fill=green!10},
+    arcbox/.style={box, fill=orange!10},
+    threadbox/.style={draw, rounded corners=2pt, fill=yellow!20, minimum width=1.2cm,
+                     minimum height=0.5cm, font=\scriptsize, align=center, thick},
+    numabox/.style={draw, dashed, rounded corners=4pt, fill=blue!5,
+                   thick, inner sep=10pt},
+    lbl/.style={font=\scriptsize\bfseries},
+    arr/.style={->, thick, >=stealth},
+    xarr/.style={<->, dashed, thick, >=stealth, draw=gray!60},
+]
+
+%% ── Threads ──────────────────────────────────────────────────────────────
+%  Spread vertically: Node 0 row at y=1.5, Node 1 row at y=-1.5
+%  Threads span from y=2.0 down to y=-2.0
+\node[threadbox] (t1) at (0,  1.4) {Thread 1};
+\node[threadbox] (t2) at (0,  0.3) {Thread 2};
+\node[font=\small] at   (0, -0.5) {$\vdots$};
+\node[threadbox] (tn) at (0, -1.3) {Thread $N$};
+\node[lbl, above=0.15cm of t1] {Threads};
+
+%% ── Thread-Local Routing ─────────────────────────────────────────────────
+\node[draw, rounded corners=3pt, fill=gray!12,
+      minimum width=1.5cm, minimum height=4.2cm,
+      font=\scriptsize, align=center, thick]
+      (route) at (2.2, 0.1) {Thread-\\[2pt]Local\\[2pt]Routing};
+
+\draw[arr] (t1.east) -- (route.west |- t1.east);
+\draw[arr] (t2.east) -- (route.west |- t2.east);
+\draw[arr] (tn.east) -- (route.west |- tn.east);
+
+%% ── NUMA Node 0  (y = +1.5) ──────────────────────────────────────────────
+\node[poolbox] (pool0) at (4.4,  1.5) {Page Pool};
+\node[cmapbox] (cmap0) at (7.2,  1.5) {CMap};
+\node[arcbox]  (arc0)  at (9.8,  1.5) {ARC};
+
+\draw[arr] (route.east |- pool0.west) -- (pool0.west);
+\draw[arr] (pool0) -- (cmap0);
+\draw[arr] (cmap0) -- (arc0);
+
+%% ── NUMA Node 1  (y = -1.5) ─────────────────────────────────────────────
+\node[poolbox] (poolN) at (4.4, -1.2) {Page Pool};
+\node[cmapbox] (cmapN) at (7.2, -1.2) {CMap};
+\node[arcbox]  (arcN)  at (9.8, -1.2) {ARC};
+
+\draw[arr] (route.east |- poolN.west) -- (poolN.west);
+\draw[arr] (poolN) -- (cmapN);
+\draw[arr] (cmapN) -- (arcN);
+
+%% ── Vertical dots between NUMA rows ──────────────────────────────────────
+\node[font=\small] at (4.4,  0.0) {$\vdots$};
+\node[font=\small] at (7.2,  0.0) {$\vdots$};
+\node[font=\small] at (9.8,  0.0) {$\vdots$};
+
+%% ── DRAM background boxes ────────────────────────────────────────────────
+\begin{scope}[on background layer]
+  \node[numabox, fit=(pool0)(cmap0)(arc0),
+        label={[lbl]above left:DRAM (Node 0)}] (dram0) {};
+  \node[numabox, fit=(poolN)(cmapN)(arcN),
+        label={[lbl]below left:DRAM (Node N)}] (dramN) {};
+\end{scope}
+
+%% ── Cross-node remote-read arrow ─────────────────────────────────────────
+\draw[xarr] (arc0.south)
+    -- node[right, font=\tiny, text=gray, align=left] {remote\\read}
+    (arcN.north);
+
+
+
+\end{tikzpicture}%
+}
+\caption{Topaz architecture. Each thread is routed to its local NUMA node via
+thread-local routing. Each node owns an independent page pool, hash map
+(CMap), and ARC eviction policy. Cross-node reads are
+best-effort and performed directly at the ARC layer; writes are always local.}
+\label{fig:arch}
+\end{figure}

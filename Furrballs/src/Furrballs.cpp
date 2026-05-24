@@ -1497,6 +1497,7 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
 
     int targetNode = ThreadLocalRoute ? Numatic::GetCurrentNode() : this->DataMembers->privateNumaState->rr.Get();
     auto* details = DataMembers->privateNumaState->NodeDetails[targetNode];
+    HashPair hp = HashKey(key);
 
     auto existing = details->KeyStore.Find(key);
     if(existing.has_value() && size <= existing->DataSize){
@@ -1520,6 +1521,44 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
         if(err == NO_ERR){
             details->NodeBytesWritten.fetch_add(size, std::memory_order_relaxed);
             return NO_ERR;
+        }
+    }
+
+    // --- Coherence: probe remote nodes for existing key ---
+    // If key exists on another node, transfer ownership here (erase remote, insert local).
+    // This ensures each key exists on exactly one node.
+    int nodeCount = Detail::globalNumaState.NumaNodeCount;
+    if (!existing.has_value() && nodeCount > 1) {
+        for (int n = 0; n < nodeCount; n++) {
+            if (n == targetNode) continue;
+            auto* remoteDetails = DataMembers->privateNumaState->NodeDetails[n];
+            auto remoteMeta = remoteDetails->KeyStore.Find(key);
+            if (!remoteMeta.has_value()) continue;
+
+            auto erased = remoteDetails->KeyStore.Erase(key);
+            if (erased.err != NO_ERR) continue;
+
+            if (remoteMeta->PageIndex < remoteDetails->NodePages.size()) {
+                Page& srcPage = remoteDetails->NodePages[remoteMeta->PageIndex];
+                srcPage.CompactLock.lock();
+                size_t idx = srcPage.FindKeyIndex(hp);
+                HashPair swapped{};
+                bool needSwapUpdate = false;
+                if (idx != SIZE_MAX) {
+                    swapped = srcPage.RemoveKeyEntryLocked(idx);
+                    needSwapUpdate = (idx < srcPage.KeyH2.size() && swapped != hp);
+                }
+                srcPage.CompactLock.unlock();
+                if (needSwapUpdate) {
+                    remoteDetails->KeyStore.UpdateInPlaceByHash(swapped,
+                        [idx](KeyMeta& m) {
+                        m.TempCtrlIdx = static_cast<uint8_t>(idx);
+                    });
+                }
+            }
+
+            Stats.MigrationCount.fetch_add(1, std::memory_order_relaxed);
+            break;
         }
     }
 
@@ -1680,7 +1719,6 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
                 memcpy(Loc, data, size);
 
                 Page& page = details->NodePages[pageIdx];
-                HashPair hp = HashKey(key);
                 uint8_t initTC = Policy::InitialState();
                 page.AddKeyEntry(hp, initTC);
 
@@ -1745,7 +1783,6 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
     memcpy(Loc, data, size);
 
     Page& page = details->NodePages[pageIdx];
-    HashPair hp = HashKey(key);
     uint8_t initTC = Policy::InitialState();
     page.AddKeyEntry(hp, initTC);
 

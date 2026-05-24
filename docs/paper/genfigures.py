@@ -1,20 +1,7 @@
 #!/usr/bin/env python3
-"""Generate ATC 2026 paper figures from Furrballs benchmark data.
+"""Generate ATC 2026 paper figures from Furrballs benchmark data."""
 
-Outputs .pgf files (LaTeX-native vector graphics) and .pdf previews.
-All text is rendered by LaTeX at paper compile time — same font, selectable.
-
-Usage:
-    python3 genfigures.py [--preview] [--outdir DIR]
-
-    --preview   Also render PNG previews for quick inspection
-    --outdir    Output directory (default: docs/paper/figures)
-"""
-
-import json
-import sys
-import os
-import argparse
+import json, sys, os, argparse
 from pathlib import Path
 from collections import defaultdict
 
@@ -24,7 +11,6 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import numpy as np
 
-# --- LaTeX/ACM sigplan style ---
 PGF_RC = {
     'pgf.texsystem': 'pdflatex',
     'text.usetex': True,
@@ -36,7 +22,7 @@ PGF_RC = {
     'legend.fontsize': 7,
     'xtick.labelsize': 7,
     'ytick.labelsize': 7,
-    'figure.figsize': (3.33, 2.2),  # ACM sigplan single column ~3.33in
+    'figure.figsize': (3.33, 2.2),
     'figure.dpi': 300,
     'savefig.dpi': 300,
     'savefig.pad_inches': 0.02,
@@ -46,43 +32,27 @@ PGF_RC = {
     'hatch.linewidth': 0.5,
 }
 
-# --- Color palette (colorblind-safe) ---
 COLORS = {
-    'FurrBallTL': '#1b9e77',
-    'FurrBallSN': '#d95f02',
-    'CacheLib': '#e7298a',
-    'RocksDB': '#7570b3',
-    'TBB': '#66a61e',
+    'TopazTL': '#1b9e77', 'TopazSN': '#d95f02', 'CacheLib': '#e7298a',
+    'RocksDB': '#7570b3', 'TBB': '#66a61e',
 }
-
 MARKERS = {
-    'FurrBallTL': 'o',
-    'FurrBallSN': 's',
-    'CacheLib': 'D',
-    'RocksDB': '^',
-    'TBB': 'v',
+    'TopazTL': 'o', 'TopazSN': 's', 'CacheLib': 'D',
+    'RocksDB': '^', 'TBB': 'v',
 }
-
 SHORT = {
-    'FurrBallTL': 'FurrBall-TL',
-    'FurrBallSN': 'FurrBall-SN',
-    'CacheLib': 'CacheLib',
-    'RocksDB': 'RocksDB',
-    'TBB': 'TBB',
+    'TopazTL': 'Topaz-TL', 'TopazSN': 'Topaz-SN', 'CacheLib': 'CacheLib',
+    'RocksDB': 'RocksDB', 'TBB': 'TBB',
 }
-
-SYSTEM_ORDER = ['FurrBallTL', 'FurrBallSN', 'TBB', 'RocksDB', 'CacheLib']
-
-COL = False  # set by --col flag; True = single-column ATC, False = wide whitepaper
-
-# --- Data loading ---
+SYSTEM_ORDER = ['TopazTL', 'TopazSN', 'TBB', 'RocksDB', 'CacheLib']
+DATA_RENAME = {'FurrBallTL': 'TopazTL', 'FurrBallSN': 'TopazSN'}
+COL = False
 
 def load_json(path):
     with open(path) as f:
         content = f.read()
     decoder = json.JSONDecoder()
-    data = []
-    idx = 0
+    data, idx = [], 0
     while idx < len(content):
         try:
             obj, end = decoder.raw_decode(content, idx)
@@ -90,145 +60,178 @@ def load_json(path):
             idx = end
         except json.JSONDecodeError:
             idx += 1
-            continue
     return data
 
 def load_ycsb(data):
-    """Parse YCSB benchmark data into structured dict."""
     wl_map = {'10': 'A', '11': 'B', '12': 'C'}
     records = []
     for b in data:
         parts = b['name'].split('/')
-        sysname = parts[0].replace('YCSB_', '')
-        threads = parts[2]
-        cap = int(parts[3])
-        wl = wl_map.get(parts[4], parts[4])
-        vsz = int(parts[5])
-        recs = int(parts[6]) if len(parts) > 6 else 0
+        sn = DATA_RENAME.get(parts[0].replace('YCSB_', ''), parts[0].replace('YCSB_', ''))
         records.append({
-            'system': sysname,
-            'threads': int(threads),
-            'workload': wl,
-            'valuesize': vsz,
-            'records': recs,
-            'p50_get': b.get('p50_get_ns', 0),
-            'p50_get_std': b.get('p50_get_ns_std', 0),
-            'p90_get': b.get('p90_get_ns', 0),
-            'p90_get_std': b.get('p90_get_ns_std', 0),
-            'p99_get': b.get('p99_get_ns', 0),
-            'p99_get_std': b.get('p99_get_ns_std', 0),
-            'p50_set': b.get('p50_set_ns', 0),
-            'p99_set': b.get('p99_set_ns', 0),
-            'ops_per_sec': b.get('ops_per_sec', 0),
-            'ops_per_sec_std': b.get('ops_per_sec_std', 0),
-            'hit_rate': b.get('hit_rate_pct', 0),
-            'runs': int(b.get('runs', 1)),
+            'system': sn, 'threads': int(parts[2]), 'capacity_kb': int(parts[3]),
+            'workload': wl_map.get(parts[4], parts[4]), 'valuesize': int(parts[5]),
+            'records': int(parts[6]) if len(parts) > 6 else 0,
+            'p50_get': b.get('p50_get_ns', 0), 'p50_get_std': b.get('p50_get_ns_std', 0),
+            'p90_get': b.get('p90_get_ns', 0), 'p90_get_std': b.get('p90_get_ns_std', 0),
+            'p99_get': b.get('p99_get_ns', 0), 'p99_get_std': b.get('p99_get_ns_std', 0),
+            'p50_set': b.get('p50_set_ns', 0), 'p99_set': b.get('p99_set_ns', 0),
+            'ops_per_sec': b.get('ops_per_sec', 0), 'ops_per_sec_std': b.get('ops_per_sec_std', 0),
+            'hit_rate': b.get('hit_rate_pct', 0), 'runs': int(b.get('runs', 1)),
         })
     return records
 
 def load_numabench(data):
-    """Parse NUMABench data into structured dict."""
     wl_map = {'0': 'part', '1': 'shared', '2': 'trace', '3': 'read', '4': 'heavy'}
     records = []
     for b in data:
         parts = b['name'].split('/')
-        sysname = parts[0].replace('NUMABench_', '')
-        threads = parts[2]
-        cap = int(parts[3])
-        wl = wl_map.get(parts[4], parts[4])
-        vsz = int(parts[5])
+        sn = DATA_RENAME.get(parts[0].replace('NUMABench_', ''), parts[0].replace('NUMABench_', ''))
         records.append({
-            'system': sysname,
-            'threads': int(threads),
-            'workload': wl,
-            'valuesize': vsz,
-            'p50_get': b.get('p50_get_ns', 0),
-            'p50_get_std': b.get('p50_get_ns_std', 0),
-            'p90_get': b.get('p90_get_ns', 0),
-            'p99_get': b.get('p99_get_ns', 0),
-            'p50_set': b.get('p50_set_ns', 0),
-            'p99_set': b.get('p99_set_ns', 0),
-            'ops_per_sec': b.get('ops_per_sec', 0),
-            'ops_per_sec_std': b.get('ops_per_sec_std', 0),
-            'hit_rate': b.get('hit_rate_pct', 0),
-            'runs': int(b.get('runs', 1)),
+            'system': sn, 'threads': int(parts[2]), 'capacity_kb': int(parts[3]),
+            'workload': wl_map.get(parts[4], parts[4]), 'valuesize': int(parts[5]),
+            'p50_get': b.get('p50_get_ns', 0), 'p50_get_std': b.get('p50_get_ns_std', 0),
+            'p90_get': b.get('p90_get_ns', 0), 'p99_get': b.get('p99_get_ns', 0),
+            'p50_set': b.get('p50_set_ns', 0), 'p99_set': b.get('p99_set_ns', 0),
+            'ops_per_sec': b.get('ops_per_sec', 0), 'ops_per_sec_std': b.get('ops_per_sec_std', 0),
+            'hit_rate': b.get('hit_rate_pct', 0), 'runs': int(b.get('runs', 1)),
         })
     return records
 
 def aggregate(records, group_keys, value_key, std_key=None):
-    """Group by keys, return dict of (mean, std) tuples."""
     groups = defaultdict(list)
+    std_groups = defaultdict(list)
     for r in records:
         key = tuple(r[k] for k in group_keys)
         groups[key].append(r[value_key])
+        if std_key and r.get(std_key, 0) > 0:
+            std_groups[key].append(r[std_key])
     result = {}
     for key, vals in groups.items():
         mean = sum(vals) / len(vals) if vals else 0
-        if std_key and any(r.get(std_key, 0) > 0 for r in records):
-            stds = [r[std_key] for r in records
-                     if tuple(r[k] for k in group_keys) == key and r[std_key] > 0]
-            std = (sum((s - mean)**2 for s in stds) / len(stds))**0.5 if stds else 0
-            result[key] = (mean, std)
+        if key in std_groups:
+            std_vals = std_groups[key]
+            std = sum(std_vals) / len(std_vals) if std_vals else 0
         else:
-            result[key] = (mean, 0)
+            std = 0
+        result[key] = (mean, std)
     return result
 
-# --- Figure: YCSB latency comparison ---
+
+def fig_capacity_sweep(ycsb_data, outdir):
+    """Line plot: p50 GET vs cache capacity, 4T and 2T, YCSB-B 64B."""
+    records = load_ycsb(ycsb_data)
+    caps_mb = [64, 128, 512]
+    caps_kb = [65536, 131072, 524288]
+    x_pos = [0, 1, 2]
+
+    if COL:
+        fig, axes = plt.subplots(2, 1, figsize=(3.33, 3.2), sharex=True)
+    else:
+        fig, axes = plt.subplots(1, 2, figsize=(6.5, 2.0), sharey=True)
+
+    for ax_idx, (title, nthreads) in enumerate([('4 threads', 4), ('2 threads', 2)]):
+        ax = axes[ax_idx]
+        for sysname in SYSTEM_ORDER:
+            data = aggregate(
+                [r for r in records
+                 if r['system'] == sysname and r['workload'] == 'B'
+                 and r['threads'] == nthreads and r['valuesize'] == 64
+                 and r['capacity_kb'] in caps_kb],
+                ['capacity_kb'], 'p50_get', 'p50_get_std')
+            vals = [data.get((c,), (0, 0))[0] for c in caps_kb]
+            errs = [data.get((c,), (0, 0))[1] for c in caps_kb]
+            ax.errorbar(x_pos, vals, yerr=errs,
+                        marker=MARKERS[sysname], color=COLORS[sysname],
+                        label=SHORT[sysname], linewidth=1.0, capsize=2, markersize=4)
+
+        ax.set_xlabel('Cache capacity (MB)')
+        if ax_idx == 0:
+            ax.set_ylabel('p50 GET (ns)')
+        ax.set_title(title)
+        ax.set_xticks(x_pos)
+        ax.set_xticklabels([f'{c}' for c in caps_mb])
+
+    axes[0].legend(loc='upper left', fontsize=5, framealpha=0.9, ncol=1)
+
+    plt.tight_layout()
+    save(fig, outdir, 'capacity_sweep')
+    plt.close(fig)
+
 
 def fig_ycsb_latency(ycsb_data, outdir):
-    """Bar chart: p50 GET latency across systems for YCSB A/B/C at 64B, 2T."""
+    """Bar chart: p50 (solid) + p99 (hatched) GET for YCSB A/B/C at 64B, 4T, 64MB."""
     records = load_ycsb(ycsb_data)
     if COL:
         fig, axes = plt.subplots(3, 1, figsize=(3.33, 3.8), sharex=True)
     else:
-        fig, axes = plt.subplots(1, 3, figsize=(6.5, 1.6), sharey=True)
+        fig, axes = plt.subplots(1, 3, figsize=(6.5, 1.8), sharey=True)
 
     for idx, wl in enumerate(['A', 'B', 'C']):
         ax = axes[idx]
-        data = aggregate(
-            [r for r in records if r['workload'] == wl and r['threads'] == 2 and r['valuesize'] == 64],
-            ['system'],
-            'p50_get', 'p50_get_std')
+        p50_data = aggregate(
+            [r for r in records
+             if r['workload'] == wl and r['threads'] == 4
+             and r['valuesize'] == 64 and r['capacity_kb'] == 65536],
+            ['system'], 'p50_get', 'p50_get_std')
+        p99_data = aggregate(
+            [r for r in records
+             if r['workload'] == wl and r['threads'] == 4
+             and r['valuesize'] == 64 and r['capacity_kb'] == 65536],
+            ['system'], 'p99_get', 'p99_get_std')
 
-        systems = [s for s in SYSTEM_ORDER if (s,) in data]
-        vals = [data[(s,)][0] for s in systems]
-        errs = [data[(s,)][1] for s in systems]
+        systems = [s for s in SYSTEM_ORDER if (s,) in p50_data]
+        x = np.arange(len(systems))
+        width = 0.35
+
+        p50_vals = [p50_data[(s,)][0] for s in systems]
+        p50_errs = [p50_data[(s,)][1] for s in systems]
+        p99_vals = [p99_data.get((s,), (0, 0))[0] for s in systems]
+        p99_errs = [p99_data.get((s,), (0, 0))[1] for s in systems]
         colors = [COLORS[s] for s in systems]
         labels = [SHORT[s] for s in systems]
 
-        bars = ax.bar(range(len(systems)), vals, yerr=errs, color=colors, width=0.7,
-                       edgecolor='white', linewidth=0.5, capsize=2, error_kw={'linewidth': 0.8})
+        bars50 = ax.bar(x - width/2, p50_vals, width, yerr=p50_errs, color=colors,
+                        edgecolor='white', linewidth=0.5, capsize=2, error_kw={'linewidth': 0.8},
+                        label='p50')
+        bars99 = ax.bar(x + width/2, p99_vals, width, yerr=p99_errs, color=colors,
+                        edgecolor='white', linewidth=0.5, capsize=2, error_kw={'linewidth': 0.8},
+                        hatch='///', alpha=0.6, label='p99')
+
         ax.set_title(f'YCSB-{wl} (64B)')
         if COL:
-            ax.set_ylabel('p50 GET (ns)')
-            if idx == 0:
-                ax.set_ylim(0, 2000)
-            elif idx == 1:
-                ax.set_ylim(0, 1000)
+            ax.set_ylabel('GET latency (ns)')
             if idx == 2:
-                ax.set_xticks(range(len(systems)))
+                ax.set_xticks(x)
                 ax.set_xticklabels(labels, rotation=30, ha='right')
             else:
                 ax.set_xticks([])
         else:
-            ax.set_xticks(range(len(systems)))
+            ax.set_xticks(x)
             ax.set_xticklabels(labels, rotation=30, ha='right')
             if idx == 0:
-                ax.set_ylabel('p50 GET (ns)')
+                ax.set_ylabel('GET latency (ns)')
+                ax.legend(['p50', 'p99'], loc='upper right', fontsize=5, framealpha=0.8)
 
-        for bar, v, e in zip(bars, vals, errs):
+        for bar, v, e in zip(bars50, p50_vals, p50_errs):
             if v > 0:
                 ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + e + 15,
                         f'{v:.0f}', ha='center', va='bottom', fontsize=5)
+
+        for bar, v, e in zip(bars99, p99_vals, p99_errs):
+            if v > 0:
+                ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + e + 15,
+                        f'{v/1000:.1f}k', ha='center', va='bottom', fontsize=5)
 
     plt.tight_layout()
     save(fig, outdir, 'ycsb_latency_64b')
     plt.close(fig)
 
+
 def fig_ycsb_latency_sweep(ycsb_data, outdir):
-    """Grouped bar: p50 GET across value sizes for YCSB B, 2T."""
+    """Grouped bar: p50 GET across value sizes for YCSB B, 2T, 32MB."""
     records = load_ycsb(ycsb_data)
-    fig, ax = plt.subplots(figsize=(3.33, 1.8))
+    fig, ax = plt.subplots(figsize=(3.33, 2.0))
 
     vsizes = [64, 256, 1024]
     x = np.arange(len(vsizes))
@@ -236,9 +239,9 @@ def fig_ycsb_latency_sweep(ycsb_data, outdir):
 
     for i, sysname in enumerate(SYSTEM_ORDER):
         data = aggregate(
-            [r for r in records if r['system'] == sysname and r['workload'] == 'B' and r['threads'] == 2],
-            ['valuesize'],
-            'p50_get', 'p50_get_std')
+            [r for r in records if r['system'] == sysname and r['workload'] == 'B'
+             and r['threads'] == 2 and r['capacity_kb'] == 32768],
+            ['valuesize'], 'p50_get', 'p50_get_std')
         vals = [data[(v,)][0] for v in vsizes]
         errs = [data[(v,)][1] for v in vsizes]
         ax.bar(x + i * width, vals, width, yerr=errs, label=SHORT[sysname],
@@ -250,16 +253,19 @@ def fig_ycsb_latency_sweep(ycsb_data, outdir):
     ax.set_title('YCSB-B, 2T, 32MB cache')
     ax.set_xticks(x + width * 2)
     ax.set_xticklabels(['64B', '256B', '1024B'])
-    ax.legend(loc='upper left', ncol=2, framealpha=0.8)
     ax.set_yscale('log')
     ax.yaxis.set_major_formatter(ticker.ScalarFormatter())
+    fig.tight_layout()
+    fig.subplots_adjust(bottom=0.28)
+    ax.legend(loc='upper center', ncol=3, framealpha=0.8, fontsize=5,
+              bbox_to_anchor=(0.5, -0.35))
 
-    plt.tight_layout()
     save(fig, outdir, 'ycsb_latency_sweep')
     plt.close(fig)
 
+
 def fig_ycsb_hitrate(ycsb_data, outdir):
-    """Grouped bar: hit rate across value sizes for YCSB B, 2T."""
+    """Grouped bar: hit rate across value sizes for YCSB B, 2T, 32MB."""
     records = load_ycsb(ycsb_data)
     fig, ax = plt.subplots(figsize=(3.33, 1.8))
 
@@ -269,9 +275,9 @@ def fig_ycsb_hitrate(ycsb_data, outdir):
 
     for i, sysname in enumerate(SYSTEM_ORDER):
         data = aggregate(
-            [r for r in records if r['system'] == sysname and r['workload'] == 'B' and r['threads'] == 2],
-            ['valuesize'],
-            'hit_rate')
+            [r for r in records if r['system'] == sysname and r['workload'] == 'B'
+             and r['threads'] == 2 and r['capacity_kb'] == 32768],
+            ['valuesize'], 'hit_rate')
         vals = [data[(v,)][0] for v in vsizes]
         ax.bar(x + i * width, vals, width, label=SHORT[sysname],
                color=COLORS[sysname], edgecolor='white', linewidth=0.3)
@@ -281,14 +287,13 @@ def fig_ycsb_hitrate(ycsb_data, outdir):
     ax.set_title('YCSB-B, 2T, 32MB cache')
     ax.set_xticks(x + width * 2)
     ax.set_xticklabels(['64B', '256B', '1024B'])
-    ax.legend(loc='lower left', ncol=2, framealpha=0.8)
+    ax.legend(loc='lower left', ncol=2, framealpha=0.8, fontsize=5)
     ax.set_ylim(0, 105)
 
     plt.tight_layout()
     save(fig, outdir, 'ycsb_hitrate')
     plt.close(fig)
 
-# --- Figure: Thread scaling ---
 
 def fig_thread_scaling(numabench_old, numabench_new, outdir):
     """Line plot: p50 GET vs thread count, before/after fix."""
@@ -303,21 +308,19 @@ def fig_thread_scaling(numabench_old, numabench_new, outdir):
         ('Before fix', old_recs), ('After fix', new_recs)
     ]):
         ax = axes[ax_idx]
-        for sysname in ['FurrBallTL', 'FurrBallSN', 'CacheLib', 'TBB']:
+        for sysname in ['TopazTL', 'TopazSN', 'CacheLib', 'TBB']:
             data = aggregate(
-                [r for r in recs if r['system'] == sysname and r['workload'] == 'part' and r['valuesize'] == 64],
-                ['threads'],
-                'p50_get', 'p50_get_std')
+                [r for r in recs if r['system'] == sysname
+                 and r['workload'] == 'part' and r['valuesize'] == 64],
+                ['threads'], 'p50_get', 'p50_get_std')
             threads = sorted(data.keys())
             vals = [data[t][0] for t in threads]
             errs = [data[t][1] for t in threads]
             ax.errorbar([t[0] for t in threads], vals, yerr=errs,
-                         fmt='none', linewidth=0.8, alpha=0.3,
-                         color=COLORS.get(sysname, 'gray'))
+                         fmt='none', linewidth=0.8, alpha=0.3, color=COLORS[sysname])
             ax.plot([t[0] for t in threads], vals,
-                    marker=MARKERS.get(sysname, 'o'),
-                    color=COLORS.get(sysname, 'gray'),
-                    label=SHORT.get(sysname, sysname))
+                    marker=MARKERS[sysname], color=COLORS[sysname],
+                    label=SHORT[sysname])
 
         ax.set_xlabel('Threads')
         ax.set_ylabel('p50 GET (ns)')
@@ -325,50 +328,16 @@ def fig_thread_scaling(numabench_old, numabench_new, outdir):
         ax.set_xscale('log', base=2)
         ax.set_xticks([1, 2, 4, 8, 16, 32])
         ax.set_xticklabels(['1', '2', '4', '8', '16', '32'])
-        if ax_idx == 1:
-            ax.legend(loc='upper left', fontsize=6, framealpha=0.8)
+        if ax_idx == 0:
+            ax.legend(loc='center right', fontsize=5, framealpha=0.9)
 
     plt.tight_layout()
     save(fig, outdir, 'thread_scaling_fix')
     plt.close(fig)
 
-# --- Figure: YCSB ops/sec ---
-
-def fig_ycsb_ops(ycsb_data, outdir):
-    """Bar chart: throughput (ops/sec) across systems for YCSB A, 2T, 64B."""
-    records = load_ycsb(ycsb_data)
-    fig, ax = plt.subplots(figsize=(3.33, 1.8))
-
-    data = aggregate(
-        [r for r in records if r['workload'] == 'A' and r['threads'] == 2 and r['valuesize'] == 64],
-        ['system'],
-        'ops_per_sec', 'ops_per_sec_std')
-
-    systems = [s for s in SYSTEM_ORDER if (s,) in data]
-    vals = [data[(s,)][0] / 1e6 for s in systems]
-    errs = [data[(s,)][1] / 1e6 for s in systems]
-    colors = [COLORS[s] for s in systems]
-    labels = [SHORT[s] for s in systems]
-
-    bars = ax.bar(range(len(systems)), vals, yerr=errs, color=colors, width=0.7,
-                   edgecolor='white', linewidth=0.5, capsize=2, error_kw={'linewidth': 0.8})
-    ax.set_xticks(range(len(systems)))
-    ax.set_xticklabels(labels, rotation=30, ha='right')
-    ax.set_ylabel('Throughput (M ops/s)')
-    ax.set_title('YCSB-A, 2T, 64B')
-
-    for bar, v, e in zip(bars, vals, errs):
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + e + 0.05,
-                f'{v:.1f}', ha='center', va='bottom', fontsize=5)
-
-    plt.tight_layout()
-    save(fig, outdir, 'ycsb_ops')
-    plt.close(fig)
-
-# --- Figure: YCSB comparison table as bar chart (TL vs CacheLib) ---
 
 def fig_ycsb_tl_vs_cachelib(ycsb_data, outdir):
-    """Paired bar: FurrBallTL vs CacheLib across YCSB A/B/C, 64B, 2T."""
+    """Paired bar: TopazTL vs CacheLib across YCSB A/B/C, 64B, 4T, 64MB."""
     records = load_ycsb(ycsb_data)
     if COL:
         fig, axes = plt.subplots(2, 1, figsize=(3.33, 3.0))
@@ -385,11 +354,12 @@ def fig_ycsb_tl_vs_cachelib(ycsb_data, outdir):
         width = 0.35
 
         std_metric = metric + '_std'
-        for i, sysname in enumerate(['FurrBallTL', 'CacheLib']):
+        for i, sysname in enumerate(['TopazTL', 'CacheLib']):
             data = aggregate(
-                [r for r in records if r['system'] == sysname and r['threads'] == 2 and r['valuesize'] == 64],
-                ['workload'],
-                metric, std_metric)
+                [r for r in records
+                 if r['system'] == sysname and r['threads'] == 4
+                 and r['valuesize'] == 64 and r['capacity_kb'] == 65536],
+                ['workload'], metric, std_metric)
             vals = [data[(w,)][0] for w in workloads]
             errs = [data[(w,)][1] for w in workloads]
             if metric == 'ops_per_sec':
@@ -410,25 +380,19 @@ def fig_ycsb_tl_vs_cachelib(ycsb_data, outdir):
     save(fig, outdir, 'ycsb_tl_vs_cachelib')
     plt.close(fig)
 
-# --- Utility ---
 
 def save(fig, outdir, name):
-    pgf_path = os.path.join(outdir, f'{name}.pgf')
-    pdf_path = os.path.join(outdir, f'{name}.pdf')
-    png_path = os.path.join(outdir, f'{name}.png')
-    fig.savefig(pgf_path, bbox_inches='tight')
-    fig.savefig(pdf_path, bbox_inches='tight')
-    fig.savefig(png_path, bbox_inches='tight', dpi=200)
+    for ext in ['.pgf', '.pdf', '.png']:
+        fig.savefig(os.path.join(outdir, f'{name}{ext}'),
+                    bbox_inches='tight', dpi=200 if ext == '.png' else 300)
     print(f'  {name}.pgf + {name}.pdf + {name}.png')
 
-# --- Main ---
 
 def main():
     global COL
-    parser = argparse.ArgumentParser(description='Generate ATC paper figures')
-    parser.add_argument('--col', action='store_true', help='Single-column layout for ACM two-column papers')
-    parser.add_argument('--preview', action='store_true', help='Also render PNG previews')
-    parser.add_argument('--outdir', default='docs/paper/figures', help='Output directory')
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--col', action='store_true')
+    parser.add_argument('--outdir', default='docs/paper/figures')
     args = parser.parse_args()
 
     COL = args.col
@@ -438,29 +402,21 @@ def main():
     os.makedirs(outdir, exist_ok=True)
 
     repo = Path(__file__).resolve().parent.parent.parent
-
-    ycsb_fix = load_json(repo / 'data/ec2-c6a/ycsb-c6a-v2.json')
-    numabench_old = load_json(repo / 'data/ec2-c6a/numabench-full-v3-fix.json')
-    numabench_new = load_json(repo / 'data/ec2-c6a/numabench-full-v4-stats.json')
+    ycsb_v3 = load_json(repo / 'data/ec2-c6a/ycsb-c6a-v3.json')
+    ycsb_cap = load_json(repo / 'data/ec2-c6a/ycsb-c6a-capacity-sweep.json')
+    ycsb_all = ycsb_v3 + ycsb_cap
+    nb_old = load_json(repo / 'data/ec2-c6a/numabench-full-v3-fix.json')
+    nb_new = load_json(repo / 'data/ec2-c6a/numabench-full-v4-stats.json')
 
     print('Generating figures...')
-    fig_ycsb_latency(ycsb_fix, outdir)
-    fig_ycsb_latency_sweep(ycsb_fix, outdir)
-    fig_ycsb_hitrate(ycsb_fix, outdir)
-    fig_ycsb_ops(ycsb_fix, outdir)
-    fig_ycsb_tl_vs_cachelib(ycsb_fix, outdir)
-    fig_thread_scaling(numabench_old, numabench_new, outdir)
-
-    if args.preview:
-        print('Generating PNG previews...')
-        matplotlib.use('Agg')
-        plt.rcParams.update({'text.usetex': False, 'pgf.texsystem': 'xelatex'})
-        for f in Path(outdir).glob('*.pdf'):
-            os.system(f'convert -density 150 {f} {f.with_suffix(".png")} 2>/dev/null')
-            if f.with_suffix('.png').exists():
-                print(f'  {f.stem}.png')
-
+    fig_capacity_sweep(ycsb_all, outdir)
+    fig_ycsb_latency(ycsb_all, outdir)
+    fig_ycsb_tl_vs_cachelib(ycsb_all, outdir)
+    fig_ycsb_latency_sweep(ycsb_v3, outdir)
+    fig_ycsb_hitrate(ycsb_v3, outdir)
+    fig_thread_scaling(nb_old, nb_new, outdir)
     print('Done.')
+
 
 if __name__ == '__main__':
     main()

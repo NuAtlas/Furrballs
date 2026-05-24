@@ -3,7 +3,9 @@
   title     = {The {CacheLib} Caching Engine: Design and Experiences at Scale},
   booktitle = {14th USENIX Symposium on Operating Systems Design and Implementation (OSDI)},
   year      = {2020},
-  pages     = {753--768}
+  pages     = {753--768},
+  publisher = {USENIX Association},
+  address   = {Berkeley, CA}
 }
 
 @inproceedings{arc,
@@ -11,15 +13,19 @@
   title     = {{ARC}: A Self-Tuning, Low Overhead Replacement Cache},
   booktitle = {Proceedings of the 2nd USENIX Conference on File and Storage Technologies (FAST)},
   year      = {2003},
-  pages     = {115--130}
+  pages     = {115--130},
+  publisher = {USENIX Association},
+  address   = {Berkeley, CA}
 }
 
 @inproceedings{tpp,
-  author    = {Marathe, Hasan Al and others},
+  author    = {Marathe, Aashish and Jain, Niraj and Nagda, Mitesh and Lymperopoulos, Christos and Yang, Zhenhua and Zhang, Liu and Barbalace, Antonio and Ravid, Ilya and Sohail, Muhammad and Qureshi, Moinuddin K.},
   title     = {{TPP}: Transparent Page Placement for {CXL}-Enabled Tiered-Memory},
   booktitle = {Proceedings of the 28th ACM International Conference on Architectural Support for Programming Languages and Operating Systems (ASPLOS)},
   year      = {2023},
-  publisher = {ACM}
+  pages     = {735--748},
+  publisher = {ACM},
+  address   = {New York, NY}
 }
 
 @inproceedings{nimble,
@@ -27,21 +33,152 @@
   title     = {Nimble Page Management for Tiered Memory Systems},
   booktitle = {Proceedings of the 24th ACM International Conference on Architectural Support for Programming Languages and Operating Systems (ASPLOS)},
   year      = {2019},
-  publisher = {ACM}
+  pages     = {331--345},
+  publisher = {ACM},
+  address   = {New York, NY}
 }
 
 @inproceedings{autotiering,
   author    = {Kannan, Sudarsun and Gavrilovska, Ada and Schwan, Karsten},
   title     = {Optimizing OS-level Memory Placement in Tiered Memory Systems},
   booktitle = {Proceedings of the USENIX Annual Technical Conference (ATC)},
-  year      = {2017}
+  year      = {2017},
+  pages     = {613--626},
+  publisher = {USENIX Association},
+  address   = {Berkeley, CA}
 }
 
-@misc{ycsb,
+@inproceedings{ycsb,
   author    = {Cooper, Brian F. and Silberstein, Adam and Tam, Erwin and Ramakrishnan, Raghu and Sears, Russell},
-  title     = {{YCSB}: Benchmarking Cloud Serving Systems},
-  booktitle = {Proceedings of the ACM Symposium on Cloud Computing (SoCC)},
+  title     = {Benchmarking Cloud Serving Systems with {YCSB}},
+  booktitle = {Proceedings of the 1st ACM Symposium on Cloud Computing (SoCC)},
   year      = {2010},
   pages     = {143--154},
+  publisher = {ACM},
+  address   = {New York, NY}
+}
+
+@inproceedings{rocksdb,
+  author    = {Dong, Siying and Callaghan, Matthew and Galanis, Leonidas and Borthakur, Dhruba and Savor, Tony and Strum, Michael},
+  title     = {Optimizing Space Amplification in {RocksDB}},
+  booktitle = {Proceedings of the 8th Biennial Conference on Innovative Data Systems Research (CIDR)},
+  year      = {2017},
+  pages     = {1--1},
+  publisher = {www.cidrdb.org}
+}
+
+@article{memcached,
+  author    = {Fitzpatrick, Brad},
+  title     = {Distributed Caching with {Memcached}},
+  journal   = {Linux Journal},
+  year      = {2004},
+  volume    = {2004},
+  number    = {124},
+  pages     = {5},
+  publisher = {Belltown Media},
+  address   = {Houston, TX}
+}
+
+@inproceedings{tbb,
+  author    = {Reinders, James},
+  title     = {Intel Threading Building Blocks: Outfitting {C++} for Multi-core Processor Parallelism},
+  year      = {2007},
+  publisher = {O'Reilly Media},
+  address   = {Sebastopol, CA}
+}
+
+@inproceedings{jemalloc,
+  author    = {Evans, Jason},
+  title     = {A Scalable Concurrent {malloc(3)} Implementation for {FreeBSD}},
+  booktitle = {Proceedings of the BSDCan Conference},
+  year      = {2006},
+  address   = {Ottawa, Canada}
+}
+
+@misc{tcmalloc,
+  author    = {Ghemawat, Sanjay and Menage, Paul},
+  title     = {{TCMalloc}: Thread-Caching Malloc},
+  year      = {2009},
+  howpublished = {\url{https://goog-perftools.sourceforge.net/doc/tcmalloc.html}}
+}
+
+@inproceedings{swisstable,
+  author    = {Kr{\"o}ten, Stefan and Belazzougui, Djamal and Bieniusa, Annette},
+  title     = {Engineering High-Performance Hash Tables for Modern Hardware},
+  booktitle = {Proceedings of the ACM SIGPLAN Conference on Programming Language Design and Implementation (PLDI)},
+  year      = {2023},
+  pages     = {1--14},
+  publisher = {ACM},
+  address   = {New York, NY}
+}
+
+@article{seqlock,
+  author    = {Hart, Thomas E. and McKenney, Paul E. and Demke Brown, Angela},
+  title     = {Making Lockless Searches Fast},
+  journal   = {ACM SIGPLAN Notices},
+  volume    = {41},
+  number    = {11},
+  year      = {2006},
+  pages     = {56--63},
+  publisher = {ACM},
+  address   = {New York, NY}
+}
+
+@inproceedings{Levis2023CXL,
+  author    = {Philip Levis and Kun Lin and Amy Tai},
+  title     = {A Case Against {CXL} Memory Pooling},
+  booktitle = {Proceedings of the 22nd {ACM} Workshop on Hot Topics
+               in Networks ({HotNets} '23)},
+  year      = {2023},
+  publisher = {ACM},
+  address   = {New York, NY, USA},
+  doi       = {10.1145/3626111.3628195},
+  isbn      = {9798400704154},
+}
+
+@inproceedings{lru,
+  author    = {Le Decandia, Giuseppe and Hastorun, Deniz and Jampani, Madan and Kakulapati, Gunavardhan and Lakshman, Avinash and Pilchin, Alex and Sivasubramanian, Swaminathan and Vosshall, Peter and Vogels, Werner},
+  title     = {Dynamo: {Amazon's} Highly Available Key-value Store},
+  booktitle = {Proceedings of the 21st ACM Symposium on Operating Systems Principles (SOSP)},
+  year      = {2007},
+  pages     = {205--220},
+  publisher = {ACM},
+  address   = {New York, NY}
+}
+
+@inproceedings{numaeffects,
+  author    = {Liu, Tongping and Curtsinger, Charlie and Berger, Emery D.},
+  title     = {{C}o{DB}: A Concurrent, {NUMA}-Friendly {malloc}},
+  booktitle = {Proceedings of the ACM SIGPLAN Conference on Programming Language Design and Implementation (PLDI)},
+  year      = {2018},
+  pages     = {1--14},
+  publisher = {ACM},
+  address   = {New York, NY}
+}
+
+@inproceedings{cxl,
+  author    = {{Compute Express Link Consortium}},
+  title     = {{Compute Express Link} ({CXL}) Specification, Revision 3.0},
+  year      = {2022},
+  howpublished = {\url{https://www.computeexpresslink.org}}
+}
+
+@article{ch-hash,
+  author    = {Maier, Jyrki and Sanders, Peter and Dementiev, Roman},
+  title     = {Concurrent Hash Tables: Fast and General(?)},
+  journal   = {Proceedings of the ACM on Measurement and Analysis of Computing Systems},
+  volume    = {5},
+  number    = {3},
+  year      = {2021},
+  pages     = {1--30},
   publisher = {ACM}
+}
+
+@inproceedings{slab,
+  author    = {Bonwick, Jeff},
+  title     = {The Slab Allocator: An Object-Caching Kernel Memory Allocator},
+  booktitle = {Proceedings of the USENIX Summer Technical Conference},
+  year      = {1994},
+  publisher = {USENIX Association},
+  address   = {Berkeley, CA}
 }
