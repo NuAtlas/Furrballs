@@ -269,12 +269,12 @@ struct GlobalRouteTable {
 
     void publish(uint64_t h2, uint8_t node) noexcept {
         size_t bucket = (h2 >> 12) & MASK;
-        entries[bucket].store(node, std::memory_order_release);
+        entries[bucket].store(node, std::memory_order_relaxed);
     }
 
     int8_t query(uint64_t h2) const noexcept {
         size_t bucket = (h2 >> 12) & MASK;
-        uint8_t node = entries[bucket].load(std::memory_order_acquire);
+        uint8_t node = entries[bucket].load(std::memory_order_relaxed);
         return node == NO_NODE ? -1 : static_cast<int8_t>(node);
     }
 
