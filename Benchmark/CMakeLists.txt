@@ -60,6 +60,12 @@ target_link_libraries(YCSBBench PRIVATE RocksDB::rocksdb)
 find_package(TBB CONFIG REQUIRED)
 target_link_libraries(YCSBBench PRIVATE TBB::tbb)
 
+add_executable(coherence_test "coherence_test.cpp")
+target_include_directories(coherence_test PRIVATE "${CMAKE_SOURCE_DIR}/Furrballs/include" "${CMAKE_SOURCE_DIR}/numatic/include")
+target_link_libraries(coherence_test PRIVATE Furrballs Numatic Threads::Threads)
+find_package(RocksDB CONFIG REQUIRED)
+target_link_libraries(coherence_test PRIVATE RocksDB::rocksdb)
+
 option(USE_CACHELIB "Build NUMABench/YCSBBench with CacheLib adapter" OFF)
 if(USE_CACHELIB)
     find_package(magic_enum QUIET)

@@ -82,6 +82,69 @@ namespace NuAtlas {
     }
 }
 
+struct RoutingCache {
+    struct Slot {
+        uint64_t h2;
+        int8_t node;
+    };
+    static constexpr uint64_t CAP = 1024;
+    static constexpr uint64_t MASK = CAP - 1;
+    static constexpr uint64_t EMPTY_H2 = ~0ULL;
+    static constexpr int8_t EMPTY_NODE = -1;
+
+    Slot slots[CAP];
+
+    RoutingCache() {
+        for (uint64_t i = 0; i < CAP; i++) {
+            slots[i].h2 = EMPTY_H2;
+            slots[i].node = EMPTY_NODE;
+        }
+    }
+
+    int8_t lookup(uint64_t h2) const noexcept {
+        uint64_t idx = h2 & MASK;
+        for (uint64_t i = 0; i < CAP; i++) {
+            const Slot& s = slots[idx];
+            if (s.h2 == h2) return s.node;
+            if (s.h2 == EMPTY_H2) return EMPTY_NODE;
+            idx = (idx + 1) & MASK;
+        }
+        return EMPTY_NODE;
+    }
+
+    void insert(uint64_t h2, int8_t node) noexcept {
+        uint64_t idx = h2 & MASK;
+        for (uint64_t i = 0; i < CAP; i++) {
+            Slot& s = slots[idx];
+            if (s.h2 == h2 || s.h2 == EMPTY_H2) {
+                s.h2 = h2;
+                s.node = node;
+                return;
+            }
+            idx = (idx + 1) & MASK;
+        }
+        idx = h2 & MASK;
+        slots[idx].h2 = h2;
+        slots[idx].node = node;
+    }
+
+    void invalidate(uint64_t h2) noexcept {
+        uint64_t idx = h2 & MASK;
+        for (uint64_t i = 0; i < CAP; i++) {
+            Slot& s = slots[idx];
+            if (s.h2 == h2) {
+                s.h2 = EMPTY_H2;
+                s.node = EMPTY_NODE;
+                return;
+            }
+            if (s.h2 == EMPTY_H2) return;
+            idx = (idx + 1) & MASK;
+        }
+    }
+};
+
+thread_local RoutingCache tlRoutingCache;
+
 struct FlatDesireMap {
     struct Slot { uint64_t h2; uint8_t desire; };
     static constexpr uint64_t EMPTY = ~0ULL;
@@ -1466,12 +1529,25 @@ Error NuAtlas::FurrBall<Policy>::Get(const std::string &key, void* outBuf, size_
         Error err = tryNode(local);
         if(err == NO_ERR){
             DataMembers->privateNumaState->NodeDetails[local]->NodeLocalHitCount.fetch_add(1, std::memory_order_relaxed);
+            tlRoutingCache.insert(hp.h2, static_cast<int8_t>(local));
             return NO_ERR;
+        }
+        int8_t hint = tlRoutingCache.lookup(hp.h2);
+        if(hint >= 0 && hint != local && hint < nodeCount){
+            err = tryNode(hint);
+            if(err == NO_ERR){
+                tlRoutingCache.insert(hp.h2, hint);
+                return NO_ERR;
+            }
         }
         auto& order = DataMembers->privateNumaState->probeOrder[local];
         for(int n : order){
+            if(n == hint) continue;
             err = tryNode(n);
-            if(err == NO_ERR) return NO_ERR;
+            if(err == NO_ERR){
+                tlRoutingCache.insert(hp.h2, static_cast<int8_t>(n));
+                return NO_ERR;
+            }
         }
     }else{
         for(int n = 0; n < nodeCount; n++){
@@ -1559,6 +1635,7 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
             }
 
             Stats.MigrationCount.fetch_add(1, std::memory_order_relaxed);
+            tlRoutingCache.insert(hp.h2, static_cast<int8_t>(targetNode));
             break;
         }
     }
