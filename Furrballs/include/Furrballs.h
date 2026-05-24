@@ -66,6 +66,7 @@ namespace NuAtlas {
         uint8_t TempCtrlIdx;
         uint32_t PageGeneration = 0;
         HashPair KeyHash{};
+        uint64_t Version = 0;
     };
 
     // --- Statistics (policy-independent) ---
@@ -342,6 +343,7 @@ namespace NuAtlas {
         Page* AllocatePage(size_t pageIndex) noexcept;
         void FlushPage(Page* page) noexcept;
         bool MigrateKey(const std::string& key, const HashPair& hp, int sourceNode, int destNode) noexcept;
+        void DrainMigrations(int nodeID) noexcept;
 
     public:
         Statistics Stats;

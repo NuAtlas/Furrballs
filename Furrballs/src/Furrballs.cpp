@@ -232,6 +232,22 @@ struct PerNodeDetails{
     alignas(64) std::atomic<unsigned int> NodeLocalHitCount{0};
     alignas(64) std::atomic<size_t> NodeBytesWritten{0};
 
+    struct PendingMigration {
+        std::string key;
+        HashPair hp;
+        int fromNode;
+        uint64_t version;
+    };
+    SpinLock MigrationQueueLock;
+    std::vector<PendingMigration> MigrationQueue;
+
+    alignas(64) std::atomic<uint64_t> VersionCounter{0};
+
+    uint64_t NextVersion(int nodeId) noexcept {
+        uint64_t seq = VersionCounter.fetch_add(1, std::memory_order_relaxed);
+        return (static_cast<uint64_t>(nodeId) << 48) | (seq & 0xFFFFFFFFFFFF);
+    }
+
     PerNodeDetails(size_t arcCap, CMapAllocFn af = CMapDefaultAlloc, CMapFreeFn ff = CMapDefaultFree)
         : NodePages(&nodeMR), KeyStore(arcCap, af, ff) { ShadowDesire.init(arcCap * 2); }
 };
@@ -688,6 +704,53 @@ void NuAtlas::FurrBall<Policy>::SyncNodeStats(int nodeID) noexcept {
     Stats.BytesRead.fetch_add(details->NodeBytesRead.exchange(0, std::memory_order_relaxed), std::memory_order_relaxed);
     Stats.LocalHitCount.fetch_add(details->NodeLocalHitCount.exchange(0, std::memory_order_relaxed), std::memory_order_relaxed);
     Stats.BytesWritten.fetch_add(details->NodeBytesWritten.exchange(0, std::memory_order_relaxed), std::memory_order_relaxed);
+}
+
+// =====================================================================
+//  DrainMigrations: process pending async erases from eventual coherence
+// =====================================================================
+
+template<typename Policy>
+void NuAtlas::FurrBall<Policy>::DrainMigrations(int nodeID) noexcept {
+    if (!DataMembers || !DataMembers->privateNumaState) return;
+    if (nodeID < 0 || nodeID >= Detail::globalNumaState.NumaNodeCount) return;
+
+    auto* details = DataMembers->privateNumaState->NodeDetails[nodeID];
+    if (!details) return;
+
+    std::vector<typename PerNodeDetails<Policy>::PendingMigration> pending;
+    {
+        details->MigrationQueueLock.lock();
+        pending.swap(details->MigrationQueue);
+        details->MigrationQueueLock.unlock();
+    }
+
+    for (auto& mig : pending) {
+        auto meta = details->KeyStore.Find(mig.key);
+        if (!meta.has_value()) continue;
+
+        auto erased = details->KeyStore.Erase(mig.key);
+        if (erased.err != NO_ERR) continue;
+
+        if (meta->PageIndex < details->NodePages.size()) {
+            Page& srcPage = details->NodePages[meta->PageIndex];
+            srcPage.CompactLock.lock();
+            size_t idx = srcPage.FindKeyIndex(mig.hp);
+            HashPair swapped{};
+            bool needSwapUpdate = false;
+            if (idx != SIZE_MAX) {
+                swapped = srcPage.RemoveKeyEntryLocked(idx);
+                needSwapUpdate = (idx < srcPage.KeyH2.size() && swapped != mig.hp);
+            }
+            srcPage.CompactLock.unlock();
+            if (needSwapUpdate) {
+                details->KeyStore.UpdateInPlaceByHash(swapped,
+                    [](KeyMeta& m) {
+                    m.TempCtrlIdx = static_cast<uint8_t>(SIZE_MAX);
+                });
+            }
+        }
+    }
 }
 
 // =====================================================================
@@ -1582,9 +1645,7 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
         }
     }
 
-    // --- Coherence: probe remote nodes for existing key ---
-    // If key exists on another node, transfer ownership here (erase remote, insert local).
-    // This ensures each key exists on exactly one node.
+    // --- Eventual coherence: find remote key, enqueue async migration ---
     int nodeCount = Detail::globalNumaState.NumaNodeCount;
     if (!existing.has_value() && nodeCount > 1) {
         auto& setOrder = DataMembers->privateNumaState->probeOrder[targetNode];
@@ -1593,29 +1654,12 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
             auto remoteMeta = remoteDetails->KeyStore.Find(key);
             if (!remoteMeta.has_value()) continue;
 
-            auto erased = remoteDetails->KeyStore.Erase(key);
-            if (erased.err != NO_ERR) continue;
-
-            if (remoteMeta->PageIndex < remoteDetails->NodePages.size()) {
-                Page& srcPage = remoteDetails->NodePages[remoteMeta->PageIndex];
-                srcPage.CompactLock.lock();
-                size_t idx = srcPage.FindKeyIndex(hp);
-                HashPair swapped{};
-                bool needSwapUpdate = false;
-                if (idx != SIZE_MAX) {
-                    swapped = srcPage.RemoveKeyEntryLocked(idx);
-                    needSwapUpdate = (idx < srcPage.KeyH2.size() && swapped != hp);
-                }
-                srcPage.CompactLock.unlock();
-                if (needSwapUpdate) {
-                    remoteDetails->KeyStore.UpdateInPlaceByHash(swapped,
-                        [idx](KeyMeta& m) {
-                        m.TempCtrlIdx = static_cast<uint8_t>(idx);
-                    });
-                }
-            }
-
             Stats.MigrationCount.fetch_add(1, std::memory_order_relaxed);
+
+            remoteDetails->MigrationQueueLock.lock();
+            remoteDetails->MigrationQueue.push_back({key, hp, n, remoteMeta->Version});
+            remoteDetails->MigrationQueueLock.unlock();
+
             DataMembers->privateNumaState->routeTable.publish(hp.h2, static_cast<uint8_t>(targetNode));
             break;
         }
@@ -1788,6 +1832,7 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
                 metadata.PageGeneration = page.Generation;
                 metadata.KeyHash = hp;
                 metadata.TempCtrlIdx = static_cast<uint8_t>(page.TempCtrl.size() - 1);
+                metadata.Version = details->NextVersion(targetNode);
 
                 Error err = details->KeyStore.Set(key, metadata);
                 if (err == NO_ERR) {
@@ -2118,6 +2163,7 @@ FurrBall<Policy> *FurrBall<Policy>::CreateBall(const std::string &DBpath, const 
                             continue;
                         }
                         ball->BackgroundEvict(nodeId);
+                        ball->DrainMigrations(nodeId);
                         ball->SyncNodeStats(nodeId);
                         ball->ActiveMaintenanceRefs.fetch_sub(1, std::memory_order_acq_rel);
                     }
