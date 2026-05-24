@@ -1589,28 +1589,6 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
         }
     }
 
-    // --- Eventual coherence: find remote key, enqueue async migration ---
-    int nodeCount = Detail::globalNumaState.NumaNodeCount;
-    if (!existing.has_value() && nodeCount > 1) {
-        auto& setOrder = DataMembers->privateNumaState->probeOrder[targetNode];
-        for (int n : setOrder) {
-            auto* remoteDetails = DataMembers->privateNumaState->NodeDetails[n];
-            auto remoteMeta = remoteDetails->KeyStore.Find(key);
-            if (!remoteMeta.has_value()) continue;
-
-            Stats.MigrationCount.fetch_add(1, std::memory_order_relaxed);
-
-            remoteDetails->MigrationQueueLock.lock();
-            remoteDetails->MigrationQueue.push_back({key, hp, n, targetNode, remoteMeta->Version});
-            remoteDetails->MigrationQueueLock.unlock();
-
-            if (Detail::globalNumaState.Workers)
-                Detail::globalNumaState.Workers[n].WakeMaintenance();
-
-            break;
-        }
-    }
-
     size_t pageIdx = details->CurrentPage.load(std::memory_order_relaxed);
     void* Loc = nullptr;
     [[maybe_unused]] bool didRotate = false;
