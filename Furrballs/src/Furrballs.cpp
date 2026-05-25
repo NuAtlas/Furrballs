@@ -738,24 +738,8 @@ void NuAtlas::FurrBall<Policy>::DrainMigrations(int nodeID) noexcept {
             if (n == dedup.ownerNode) continue;
             auto* remoteDetails = DataMembers->privateNumaState->NodeDetails[n];
 
-            auto erased = remoteDetails->KeyStore.EraseByHash(hp);
-            if (erased.err != NO_ERR || !erased.value.has_value()) continue;
-
-            if (erased.value->PageIndex < remoteDetails->NodePages.size()) {
-                Page& srcPage = remoteDetails->NodePages[erased.value->PageIndex];
-                srcPage.CompactLock.lock();
-                size_t idx = srcPage.FindKeyIndex(hp);
-                if (idx != SIZE_MAX) {
-                    HashPair swapped = srcPage.RemoveKeyEntryLocked(idx);
-                    if (idx < srcPage.KeyH2.size() && swapped != hp) {
-                        remoteDetails->KeyStore.UpdateInPlaceByHash(swapped,
-                            [](KeyMeta& m) {
-                            m.TempCtrlIdx = static_cast<uint8_t>(SIZE_MAX);
-                        });
-                    }
-                }
-                srcPage.CompactLock.unlock();
-            }
+            bool migrated = remoteDetails->KeyStore.MigrateAndLeaveSentinel(hp, dedup.ownerNode);
+            if (!migrated) continue;
 
             Stats.MigrationCount.fetch_add(1, std::memory_order_relaxed);
         }
@@ -1599,6 +1583,16 @@ Error NuAtlas::FurrBall<Policy>::Get(const std::string &key, void* outBuf, size_
     }else{
         for(int n = 0; n < nodeCount; n++){
             Error err = tryNode(n);
+            if(err == NO_ERR) return NO_ERR;
+        }
+    }
+
+    for (int n = 0; n < nodeCount; n++) {
+        if (n == currentNode) continue;
+        auto* details = DataMembers->privateNumaState->NodeDetails[n];
+        int target = details->KeyStore.FindSentinel(hp);
+        if (target >= 0 && target < nodeCount && target != n) {
+            Error err = tryNode(target);
             if(err == NO_ERR) return NO_ERR;
         }
     }

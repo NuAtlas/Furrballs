@@ -356,6 +356,9 @@ namespace NuAtlas {
             return store_.UpdateInPlaceByHash(hashes, std::forward<Fn>(fn));
         }
 
+        bool MigrateAndLeaveSentinel(const HashPair&, int) { return false; }
+        int FindSentinel(const HashPair&) const { return -1; }
+
         Error Set(const std::string& key, const Value& val) {
             std::lock_guard<SpinLock> guard(lock_);
             HashPair hashes = HashKey(key);

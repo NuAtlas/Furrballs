@@ -530,6 +530,53 @@ namespace NuAtlas {
             out.value = std::bit_cast<Value>(buf);
             return out;
         }
+
+        static constexpr uint8_t kSentinelBase = 0xF0;
+
+        bool MigrateAndLeaveSentinel(const HashPair& hashes, int destNode) noexcept {
+            ProbeResult result = Probe<false>(hashes);
+            if (result.matchSlot == SIZE_MAX) return false;
+
+            Slot& targetSlot = Slots()[result.matchSlot];
+            uint8_t expected = targetSlot.seq.load(std::memory_order_acquire);
+            if (expected & 1) return false;
+            if (!targetSlot.seq.compare_exchange_strong(expected, expected + 1,
+                    std::memory_order_acq_rel, std::memory_order_acquire))
+                return false;
+
+            uint8_t sentinelCtrl = kSentinelBase | static_cast<uint8_t>(destNode & 0x0F);
+            if (!CasCtrl(result.matchSlot, static_cast<uint8_t>(hashes.h2 >> 57), sentinelCtrl)) {
+                targetSlot.seq.store(expected, std::memory_order_release);
+                return false;
+            }
+
+            std::memset(&targetSlot.value, 0, sizeof(Value));
+            targetSlot.seq.store(expected + 2, std::memory_order_release);
+            return true;
+        }
+
+        int FindSentinel(const HashPair& hashes) const noexcept {
+            auto group = hashes.h1 & (numGroups_ - 1);
+            for (size_t probeCount = 0; probeCount < numGroups_; ++probeCount) {
+                __m128i ctrl_vec = _mm_loadu_si128(reinterpret_cast<const __m128i*>(Ctrl() + group * kGroupSize));
+                int matchMask = MatchCtrlMask(ctrl_vec, static_cast<uint8_t>(hashes.h2 >> 57));
+                while (matchMask != 0) {
+                    int i = std::countr_zero(static_cast<unsigned>(matchMask));
+                    matchMask &= matchMask - 1;
+                    size_t slotIdx = group * kGroupSize + static_cast<size_t>(i);
+                    if (Slots()[slotIdx].fingerprint.load(std::memory_order_relaxed) == hashes.h2) {
+                        uint8_t ctrl = Ctrl()[slotIdx];
+                        if (ctrl >= kSentinelBase && ctrl != static_cast<uint8_t>(CMapCtrlState::kDeleted)) {
+                            return static_cast<int>(ctrl & 0x0F);
+                        }
+                    }
+                }
+                int emptyMask = MatchCtrlMask(ctrl_vec, static_cast<uint8_t>(CMapCtrlState::kEmpty));
+                if (emptyMask != 0) break;
+                group = (group + 1) & (numGroups_ - 1);
+            }
+            return -1;
+        }
     };
 
     template <class Value>
@@ -684,6 +731,21 @@ namespace NuAtlas {
             b1_.erase(h2);
             b2_.erase(h2);
             return store_.FindAndEraseByHash(hashes);
+        }
+
+        bool MigrateAndLeaveSentinel(const HashPair& hashes, int destNode) {
+            std::lock_guard<SpinLock> guard(arcLock_);
+            promoteBuf_.drain(t1_, t2_);
+            uint64_t h2 = hashes.h2;
+            t1_.erase(h2);
+            t2_.erase(h2);
+            b1_.erase(h2);
+            b2_.erase(h2);
+            return store_.MigrateAndLeaveSentinel(hashes, destNode);
+        }
+
+        int FindSentinel(const HashPair& hashes) const {
+            return store_.FindSentinel(hashes);
         }
 
         Error Set(const std::string& key, const Value& val) {
@@ -1386,6 +1448,9 @@ namespace NuAtlas {
             lru_.push_front(hashes);
             return NO_ERR;
         }
+
+        bool MigrateAndLeaveSentinel(const HashPair&, int) { return false; }
+        int FindSentinel(const HashPair&) const { return -1; }
     };
 
     template<typename Value>
@@ -1421,6 +1486,9 @@ namespace NuAtlas {
         auto EraseByHash(const HashPair& hashes) {
             return store_.FindAndEraseByHash(hashes);
         }
+
+        bool MigrateAndLeaveSentinel(const HashPair&, int) { return false; }
+        int FindSentinel(const HashPair&) const { return -1; }
 
         Error Set(const std::string& key, const Value& val) {
             auto r = store_.Set(std::string_view(key), val);
