@@ -297,6 +297,7 @@ namespace NuAtlas {
                 bool EnableLogging : 1;
                 bool EnableNUMA : 1;
                 bool DisableMigration : 1;
+                bool StrictCoherence : 1;
             };
             uint8_t flags = 0;
         };
@@ -322,6 +323,7 @@ namespace NuAtlas {
         bool UseNUMA;
         bool ThreadLocalRoute;
         bool DisableMigration = false;
+        bool StrictCoherence = false;
         typename Policy::Config policyConfig;
 
         std::vector<void*> AllocatedPages;

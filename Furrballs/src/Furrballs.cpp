@@ -336,7 +336,8 @@ NuAtlas::FurrBall<Policy>::FurrBall(const FurrConfig& config, size_t numPages) n
     Volatile(config.IsVolatile),
     UseNUMA(config.EnableNUMA),
     ThreadLocalRoute(config.numaConfig ? config.numaConfig->UseThreadLocalRouting : false),
-    DisableMigration(config.DisableMigration),
+     DisableMigration(config.DisableMigration),
+     StrictCoherence(config.StrictCoherence),
     policyConfig(Policy::MakeConfig(config.remarcConfig)),
     DataMembers(new ImplDetail())
 {
@@ -1648,6 +1649,28 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
 
     int nodeCount = DataMembers->privateNumaState ? Detail::globalNumaState.NumaNodeCount : 0;
 
+    if (StrictCoherence && nodeCount > 1) {
+        for (int n = 0; n < nodeCount; n++) {
+            if (n == targetNode) continue;
+            auto* remoteDetails = DataMembers->privateNumaState->NodeDetails[n];
+            auto erased = remoteDetails->KeyStore.EraseByHash(hp);
+            if (erased.err != NO_ERR || !erased.value.has_value()) continue;
+
+            if (erased.value->PageIndex < remoteDetails->NodePages.size()) {
+                Page& srcPage = remoteDetails->NodePages[erased.value->PageIndex];
+                srcPage.CompactLock.lock();
+                size_t idx = srcPage.FindKeyIndex(hp);
+                if (idx != SIZE_MAX) {
+                    srcPage.RemoveKeyEntryLocked(idx);
+                }
+                srcPage.CompactLock.unlock();
+            }
+
+            Stats.MigrationCount.fetch_add(1, std::memory_order_relaxed);
+            break;
+        }
+    }
+
     size_t pageIdx = details->CurrentPage.load(std::memory_order_relaxed);
     void* Loc = nullptr;
     [[maybe_unused]] bool didRotate = false;
@@ -1820,7 +1843,7 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
                 Error err = details->KeyStore.Set(key, metadata);
                 if (err == NO_ERR) {
                     details->NodeBytesWritten.fetch_add(size, std::memory_order_relaxed);
-                    if (nodeCount > 1) {
+                    if (nodeCount > 1 && !StrictCoherence) {
                         details->EnqueueDedup(hp, targetNode);
                     }
                     if (!Volatile) {
