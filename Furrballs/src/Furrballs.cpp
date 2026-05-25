@@ -230,42 +230,70 @@ struct PerNodeDetails{
     alignas(64) std::atomic<unsigned int> NodeLocalHitCount{0};
     alignas(64) std::atomic<size_t> NodeBytesWritten{0};
 
-    struct DedupEntry {
+    struct DedupCheck {
+        HashPair hp;
+        int ownerNode;
+    };
+    static constexpr size_t DEDUP_RING_CAP = 8192;
+    static constexpr size_t DEDUP_RING_MASK = DEDUP_RING_CAP - 1;
+    alignas(64) std::atomic<uint64_t> DedupWritePos{0};
+    alignas(64) std::atomic<uint64_t> DedupReadPos{0};
+    DedupCheck* DedupRing = nullptr;
+
+    void InitDedupRing() {
+        DedupRing = new DedupCheck[DEDUP_RING_CAP];
+    }
+
+    void EnqueueDedup(const HashPair& hp, int ownerNode) noexcept {
+        uint64_t wp = DedupWritePos.load(std::memory_order_relaxed);
+        uint64_t rp = DedupReadPos.load(std::memory_order_acquire);
+        if (wp - rp >= DEDUP_RING_CAP) return;
+        DedupRing[wp & DEDUP_RING_MASK] = {hp, ownerNode};
+        DedupWritePos.store(wp + 1, std::memory_order_release);
+    }
+
+    struct DedupMergeSlot {
         uint64_t h2 = 0;
         uint64_t h1 = 0;
         int ownerNode = -1;
         bool occupied = false;
     };
-    static constexpr size_t DEDUP_MAP_CAP = 32768;
-    static constexpr size_t DEDUP_MAP_MASK = DEDUP_MAP_CAP - 1;
-    DedupEntry* DedupMap = nullptr;
+    static constexpr size_t MERGE_MAP_CAP = 16384;
+    static constexpr size_t MERGE_MAP_MASK = MERGE_MAP_CAP - 1;
 
-    void InitDedupMap() {
-        DedupMap = new DedupEntry[DEDUP_MAP_CAP]();
-    }
+    std::vector<DedupMergeSlot> DrainDedup() noexcept {
+        std::vector<DedupMergeSlot> result;
+        uint64_t rp = DedupReadPos.load(std::memory_order_relaxed);
+        uint64_t wp = DedupWritePos.load(std::memory_order_acquire);
+        size_t count = static_cast<size_t>(wp - rp);
+        if (count == 0) return result;
+        if (count > DEDUP_RING_CAP) count = DEDUP_RING_CAP;
 
-    void EnqueueDedup(const HashPair& hp, int ownerNode) noexcept {
-        size_t idx = hp.h2 & DEDUP_MAP_MASK;
-        for (size_t i = 0; i < DEDUP_MAP_CAP; i++) {
-            size_t slot = (idx + i) & DEDUP_MAP_MASK;
-            if (!DedupMap[slot].occupied) {
-                DedupMap[slot] = {hp.h2, hp.h1, ownerNode, true};
-                return;
-            }
-            if (DedupMap[slot].h2 == hp.h2 && DedupMap[slot].h1 == hp.h1) {
-                DedupMap[slot].ownerNode = ownerNode;
-                return;
+        DedupMergeSlot merge[MERGE_MAP_CAP];
+        memset(merge, 0, sizeof(merge));
+
+        for (size_t i = 0; i < count; i++) {
+            auto& src = DedupRing[(rp + i) & DEDUP_RING_MASK];
+            size_t idx = src.hp.h2 & MERGE_MAP_MASK;
+            for (size_t probe = 0; probe < MERGE_MAP_CAP; probe++) {
+                size_t slot = (idx + probe) & MERGE_MAP_MASK;
+                if (!merge[slot].occupied) {
+                    merge[slot] = {src.hp.h2, src.hp.h1, src.ownerNode, true};
+                    break;
+                }
+                if (merge[slot].h2 == src.hp.h2 && merge[slot].h1 == src.hp.h1) {
+                    merge[slot].ownerNode = src.ownerNode;
+                    break;
+                }
             }
         }
-    }
 
-    std::vector<DedupEntry> DrainDedup() noexcept {
-        std::vector<DedupEntry> result;
-        result.reserve(DEDUP_MAP_CAP / 4);
-        for (size_t i = 0; i < DEDUP_MAP_CAP; i++) {
-            if (DedupMap[i].occupied) {
-                result.push_back(DedupMap[i]);
-                DedupMap[i].occupied = false;
+        DedupReadPos.store(rp + count, std::memory_order_release);
+
+        result.reserve(count);
+        for (size_t i = 0; i < MERGE_MAP_CAP; i++) {
+            if (merge[i].occupied) {
+                result.push_back(merge[i]);
             }
         }
         return result;
@@ -2005,7 +2033,7 @@ FurrBall<Policy> *FurrBall<Policy>::CreateBall(const std::string &DBpath, const 
                 void* auxD = (void*)Numatic::AllocateLocal(sizeof(PerNodeDetails<Policy>));
                 Logger::getInstance().info(std::string("Per-node cache will have an inital capacity of ") + std::to_string(nodeArcCap) + " Keys." );
                 auto* details = new(auxD) PerNodeDetails<Policy>(nodeArcCap, Numatic::AllocateLocal, Numatic::FreeNUMA);
-                details->InitDedupMap();
+                details->InitDedupRing();
                 if constexpr (Policy::HasRemarcConfig) {
                     details->MaxDeadAge = config.remarcConfig.MaxDeadAge;
                 }
