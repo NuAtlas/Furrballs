@@ -298,9 +298,12 @@ namespace NuAtlas {
                 bool EnableNUMA : 1;
                 bool DisableMigration : 1;
                 bool StrictCoherence : 1;
+                bool EnableBloomFilter : 1;
             };
             uint8_t flags = 0;
         };
+
+        size_t BloomFilterBytes = 0;
 
         NumaConfig* numaConfig = nullptr;
     };
@@ -324,6 +327,8 @@ namespace NuAtlas {
         bool ThreadLocalRoute;
         bool DisableMigration = false;
         bool StrictCoherence = false;
+        bool UseBloomFilter = false;
+        size_t BloomFilterBytes = 0;
         typename Policy::Config policyConfig;
 
         std::vector<void*> AllocatedPages;

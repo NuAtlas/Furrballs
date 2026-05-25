@@ -374,6 +374,77 @@ struct FurrBallStrictAdapter {
 };
 template <Routing R, typename Policy> int FurrBallStrictAdapter<R, Policy>::runId = 0;
 
+// --- FurrBall TL with Bloom Filter ---
+template <Routing R = Routing::ThreadLocal, typename Policy = ArcPolicy>
+struct FurrBallBloomAdapter {
+    static constexpr const char* Name = "FurrBall_TL_Bloom";
+    static constexpr size_t PAGE_SIZE = 4096;
+    FurrBall<Policy>* fb = nullptr;
+    std::string fbPath;
+    int nodeCount = 1;
+    size_t footprintBytes_ = 0;
+    static int runId;
+
+    void create(int nodeCount, int totalCapacityKB) {
+        this->nodeCount = nodeCount;
+        footprintBytes_ = (size_t)totalCapacityKB * 1024;
+
+        auto& gs = Detail::globalNumaState;
+        bool needsInit = !gs.Initialized || gs.NumaNodeCount != nodeCount;
+        if (needsInit) {
+            if (gs.Initialized) {
+                for (int i = 0; i < gs.NumaNodeCount; i++) {
+                    gs.Workers[i].Stop();
+                    gs.Workers[i].~NodeJob();
+                }
+                free(gs.Workers);
+                gs = {};
+            }
+            gs.NumaNodeCount = nodeCount;
+            if (nodeCount > 1) gs.SysNumaPageSize = 65536;
+            gs.Workers = (NodeJob*)malloc(sizeof(NodeJob) * nodeCount);
+            for (int i = 0; i < nodeCount; i++) {
+                new(&gs.Workers[i]) NodeJob(i);
+                gs.Workers[i].Start([](){});
+            }
+            gs.Initialized = true;
+        }
+
+        fbPath = "/tmp/ycsb_bloom_" + std::to_string(runId++);
+
+        NumaConfig nc;
+        nc.AllocateUsingNodePageSize = false;
+        nc.UseThreadLocalRouting = (R == Routing::ThreadLocal);
+
+        FurrConfig fc;
+        fc.PageSize = PAGE_SIZE;
+        fc.TotalCapacityBytes = (size_t)totalCapacityKB * 1024;
+        fc.IsVolatile = true;
+        fc.EnableNUMA = true;
+        fc.EnableBloomFilter = true;
+        fc.BloomFilterBytes = 131072;
+        fc.numaConfig = &nc;
+
+        fb = FurrBall<Policy>::CreateBall(fbPath, fc, true);
+    }
+
+    bool get(const std::string& key, uint8_t* buf, size_t bufSize, size_t& outSize) {
+        Error err = fb->Get(key, buf, bufSize, outSize);
+        return (err == NO_ERR && outSize > 0);
+    }
+
+    void put(const std::string& key, const uint8_t* data, size_t size) {
+        fb->Set(key, const_cast<uint8_t*>(data), size);
+    }
+
+    void destroy() {
+        if (fb) { delete fb; fb = nullptr; }
+    }
+
+    int numNodes() const { return nodeCount; }
+};
+template <Routing R, typename Policy> int FurrBallBloomAdapter<R, Policy>::runId = 0;
+
 // --- FurrBall Single Node ---
 template <typename Policy = ArcPolicy>
 struct FurrBallSNAdapterT {
@@ -788,6 +859,12 @@ BENCHMARK_DEFINE_F(YCSB_FurrBallTL, Run)(benchmark::State& state) {
 struct YCSB_FurrBallTLStrict : YCSBBench<FurrBallStrictAdapter<Routing::ThreadLocal>> {};
 BENCHMARK_DEFINE_F(YCSB_FurrBallTLStrict, Run)(benchmark::State& state) {
     RunYCSBBench<FurrBallStrictAdapter<Routing::ThreadLocal>>(state);
+}
+
+// --- FurrBall TL Bloom YCSB ---
+struct YCSB_FurrBallTLBloom : YCSBBench<FurrBallBloomAdapter<Routing::ThreadLocal>> {};
+BENCHMARK_DEFINE_F(YCSB_FurrBallTLBloom, Run)(benchmark::State& state) {
+    RunYCSBBench<FurrBallBloomAdapter<Routing::ThreadLocal>>(state);
 }
 
 // --- FurrBall SN YCSB ---
@@ -1269,6 +1346,14 @@ BENCHMARK_REGISTER_F(YCSB_FurrBallTLStrict, Run)
 BENCHMARK_REGISTER_F(YCSB_FurrBallTLStrict, Run)
     ->Args({4, 65536, 11, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
 BENCHMARK_REGISTER_F(YCSB_FurrBallTLStrict, Run)
+    ->Args({4, 65536, 12, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+
+// --- FurrBall TL Bloom: 4T/64MB, A/B/C ---
+BENCHMARK_REGISTER_F(YCSB_FurrBallTLBloom, Run)
+    ->Args({4, 65536, 10, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallTLBloom, Run)
+    ->Args({4, 65536, 11, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallTLBloom, Run)
     ->Args({4, 65536, 12, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
 
 int main(int argc, char** argv) {

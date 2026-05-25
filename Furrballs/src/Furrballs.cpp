@@ -126,6 +126,66 @@ struct FlatDesireMap {
     }
 };
 
+class BlockedBloomFilter {
+    static constexpr size_t kBlockBytes = 64;
+    static constexpr size_t kBlockBits = kBlockBytes * 8;
+    static constexpr unsigned kNumPositions = 4;
+
+    std::atomic<uint64_t>* words_ = nullptr;
+    size_t numBlocks_ = 0;
+    size_t numWords_ = 0;
+
+    static inline size_t BlockIndex(uint64_t h1, size_t numBlocks) {
+        return (h1 >> 12) % numBlocks;
+    }
+
+    static inline void ComputePositions(uint64_t h2, unsigned pos[kNumPositions]) {
+        pos[0] = h2 & 0x1FF;
+        pos[1] = (h2 >> 9) & 0x1FF;
+        pos[2] = (h2 >> 18) & 0x1FF;
+        pos[3] = (h2 >> 27) & 0x1FF;
+    }
+
+public:
+    BlockedBloomFilter() = default;
+
+    bool Init(size_t totalBytes) {
+        if (totalBytes < kBlockBytes) return false;
+        numBlocks_ = totalBytes / kBlockBytes;
+        numWords_ = numBlocks_ * (kBlockBytes / sizeof(uint64_t));
+        words_ = new(std::align_val_t{64}) std::atomic<uint64_t>[numWords_]();
+        return words_ != nullptr;
+    }
+
+    void Add(uint64_t h1, uint64_t h2) {
+        size_t bi = BlockIndex(h1, numBlocks_);
+        size_t baseWord = bi * (kBlockBytes / sizeof(uint64_t));
+        unsigned pos[kNumPositions];
+        ComputePositions(h2, pos);
+        for (unsigned i = 0; i < kNumPositions; i++) {
+            size_t wordIdx = baseWord + pos[i] / 64;
+            uint64_t bit = uint64_t{1} << (pos[i] % 64);
+            words_[wordIdx].fetch_or(bit, std::memory_order_relaxed);
+        }
+    }
+
+    bool MayContain(uint64_t h1, uint64_t h2) const {
+        size_t bi = BlockIndex(h1, numBlocks_);
+        size_t baseWord = bi * (kBlockBytes / sizeof(uint64_t));
+        unsigned pos[kNumPositions];
+        ComputePositions(h2, pos);
+        for (unsigned i = 0; i < kNumPositions; i++) {
+            size_t wordIdx = baseWord + pos[i] / 64;
+            uint64_t bit = uint64_t{1} << (pos[i] % 64);
+            if (!(words_[wordIdx].load(std::memory_order_relaxed) & bit))
+                return false;
+        }
+        return true;
+    }
+
+    size_t NumBlocks() const { return numBlocks_; }
+};
+
 template<typename Policy>
 struct PerNodeDetails{
     Numatic::NumaLocalMemoryResource nodeMR;
@@ -141,6 +201,7 @@ struct PerNodeDetails{
     size_t PrevMigrationCount = 0;
     size_t PrevDeadKeys = 0;
     float AdaptiveStep = 0.05f;
+    BlockedBloomFilter KeyBloom;
     uint8_t MaxDeadAge = 8;
 
     // --- Reserve pages for background eviction ---
@@ -338,6 +399,8 @@ NuAtlas::FurrBall<Policy>::FurrBall(const FurrConfig& config, size_t numPages) n
     ThreadLocalRoute(config.numaConfig ? config.numaConfig->UseThreadLocalRouting : false),
      DisableMigration(config.DisableMigration),
      StrictCoherence(config.StrictCoherence),
+     UseBloomFilter(config.EnableBloomFilter),
+     BloomFilterBytes(config.BloomFilterBytes),
     policyConfig(Policy::MakeConfig(config.remarcConfig)),
     DataMembers(new ImplDetail())
 {
@@ -1576,11 +1639,21 @@ Error NuAtlas::FurrBall<Policy>::Get(const std::string &key, void* outBuf, size_
         }
         auto& order = DataMembers->privateNumaState->probeOrder[local];
         for(int n : order){
+            if (UseBloomFilter) {
+                auto* remoteDetails = DataMembers->privateNumaState->NodeDetails[n];
+                if (!remoteDetails->KeyBloom.MayContain(hp.h1, hp.h2))
+                    continue;
+            }
             err = tryNode(n);
             if(err == NO_ERR) return NO_ERR;
         }
     }else{
         for(int n = 0; n < nodeCount; n++){
+            if (UseBloomFilter) {
+                auto* remoteDetails = DataMembers->privateNumaState->NodeDetails[n];
+                if (!remoteDetails->KeyBloom.MayContain(hp.h1, hp.h2))
+                    continue;
+            }
             Error err = tryNode(n);
             if(err == NO_ERR) return NO_ERR;
         }
@@ -1885,6 +1958,9 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
     Error err = details->KeyStore.Set(key, metadata);
     if (err == NO_ERR) {
         details->NodeBytesWritten.fetch_add(size, std::memory_order_relaxed);
+        if (UseBloomFilter) {
+            details->KeyBloom.Add(hp.h1, hp.h2);
+        }
         if (!Volatile) {
             details->FrozenLock.lock();
             details->KeyNames[hp.h2] = key;
@@ -2032,6 +2108,9 @@ FurrBall<Policy> *FurrBall<Policy>::CreateBall(const std::string &DBpath, const 
                 Logger::getInstance().info(std::string("Per-node cache will have an inital capacity of ") + std::to_string(nodeArcCap) + " Keys." );
                 auto* details = new(auxD) PerNodeDetails<Policy>(nodeArcCap, Numatic::AllocateLocal, Numatic::FreeNUMA);
                 details->InitDedupRing();
+                if (config.EnableBloomFilter && config.BloomFilterBytes >= 64) {
+                    details->KeyBloom.Init(config.BloomFilterBytes);
+                }
                 if constexpr (Policy::HasRemarcConfig) {
                     details->MaxDeadAge = config.remarcConfig.MaxDeadAge;
                 }
