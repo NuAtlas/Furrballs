@@ -429,6 +429,11 @@ namespace NuAtlas {
                     std::memory_order_acq_rel, std::memory_order_acquire))
                 return ABANDONED_SET;
 
+            if (targetSlot.value.DataOffset == nullptr) {
+                targetSlot.seq.store(expected, std::memory_order_release);
+                return KEY_NOT_FOUND;
+            }
+
             fn(targetSlot.value);
 
             targetSlot.seq.store(expected + 2, std::memory_order_release);
@@ -449,6 +454,10 @@ namespace NuAtlas {
             if (!targetSlot.seq.compare_exchange_strong(expected, expected + 1,
                     std::memory_order_acq_rel, std::memory_order_acquire))
                 return ABANDONED_SET;
+            if (targetSlot.value.DataOffset == nullptr) {
+                targetSlot.seq.store(expected, std::memory_order_release);
+                return KEY_NOT_FOUND;
+            }
             fn(targetSlot.value);
             targetSlot.seq.store(expected + 2, std::memory_order_release);
             return NO_ERR;
