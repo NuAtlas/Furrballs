@@ -531,32 +531,6 @@ namespace NuAtlas {
             return out;
         }
 
-        bool MigrateAndLeaveSentinel(const HashPair& hashes, int destNode) noexcept {
-            ProbeResult result = Probe<false>(hashes);
-            if (result.matchSlot == SIZE_MAX) return false;
-
-            Slot& targetSlot = Slots()[result.matchSlot];
-            uint8_t expected = targetSlot.seq.load(std::memory_order_acquire);
-            if (expected & 1) return false;
-            if (!targetSlot.seq.compare_exchange_strong(expected, expected + 1,
-                    std::memory_order_acq_rel, std::memory_order_acquire))
-                return false;
-
-            std::memset(&targetSlot.value, 0, sizeof(Value));
-            targetSlot.value.DataOffset = reinterpret_cast<void*>(static_cast<uintptr_t>(destNode + 1));
-            targetSlot.seq.store(expected + 2, std::memory_order_release);
-            return true;
-        }
-
-        int FindSentinel(const HashPair& hashes) const noexcept {
-            ProbeResult result = Probe<false>(hashes);
-            if (result.matchSlot == SIZE_MAX) return -1;
-            const Slot& slot = Slots()[result.matchSlot];
-            uintptr_t val = reinterpret_cast<uintptr_t>(slot.value.DataOffset);
-            if (val == 0) return -1;
-            if (val >= 1 && val <= 64) return static_cast<int>(val - 1);
-            return -1;
-        }
     };
 
     template <class Value>
@@ -721,11 +695,7 @@ namespace NuAtlas {
             t2_.erase(h2);
             b1_.erase(h2);
             b2_.erase(h2);
-            return store_.MigrateAndLeaveSentinel(hashes, destNode);
-        }
-
-        int FindSentinel(const HashPair& hashes) const {
-            return store_.FindSentinel(hashes);
+            return store_.FindAndEraseByHash(hashes);
         }
 
         Error Set(const std::string& key, const Value& val) {
