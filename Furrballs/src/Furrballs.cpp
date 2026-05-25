@@ -1624,7 +1624,7 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
     HashPair hp = HashKey(key);
 
     auto existing = details->KeyStore.Find(key);
-    if(existing.has_value() && size <= existing->DataSize){
+    if(existing.has_value() && size <= existing->DataSize && existing->DataOffset != nullptr){
         Error err = details->KeyStore.UpdateInPlace(key, [&data, &size, this, targetNode, &details](KeyMeta& meta){
             memcpy(meta.DataOffset, data, size);
             meta.DataSize = size;
