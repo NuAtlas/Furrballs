@@ -1653,28 +1653,17 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
         for (int n = 0; n < nodeCount; n++) {
             if (n == targetNode) continue;
             auto* remoteDetails = DataMembers->privateNumaState->NodeDetails[n];
-            auto remoteMeta = remoteDetails->KeyStore.Find(key);
-            if (!remoteMeta.has_value()) continue;
+            auto erased = remoteDetails->KeyStore.EraseByHash(hp);
+            if (erased.err != NO_ERR || !erased.value.has_value()) continue;
 
-            auto erased = remoteDetails->KeyStore.Erase(key);
-            if (erased.err != NO_ERR) continue;
-
-            if (remoteMeta->PageIndex < remoteDetails->NodePages.size()) {
-                Page& srcPage = remoteDetails->NodePages[remoteMeta->PageIndex];
-                srcPage.CompactLock.lock();
-                size_t idx = srcPage.FindKeyIndex(hp);
-                bool needSwapUpdate = false;
-                HashPair swapped{};
-                if (idx != SIZE_MAX) {
-                    swapped = srcPage.RemoveKeyEntryLocked(idx);
-                    needSwapUpdate = (idx < srcPage.KeyH2.size() && swapped != hp);
-                }
-                srcPage.CompactLock.unlock();
-                if (needSwapUpdate) {
-                    remoteDetails->KeyStore.UpdateInPlaceByHash(swapped,
-                        [](KeyMeta& m) {
-                        m.TempCtrlIdx = static_cast<uint8_t>(SIZE_MAX);
-                    });
+            if (erased.value->PageIndex < remoteDetails->NodePages.size()) {
+                Page& srcPage = remoteDetails->NodePages[erased.value->PageIndex];
+                srcPage.ActiveKeys.fetch_sub(1, std::memory_order_relaxed);
+                if (erased.value->DataOffset && erased.value->DataSize > 0) {
+                    uint32_t off = static_cast<uint32_t>(
+                        reinterpret_cast<char*>(erased.value->DataOffset) -
+                        reinterpret_cast<char*>(srcPage.Data));
+                    srcPage.AddFreeSlot(off, static_cast<uint32_t>(erased.value->DataSize));
                 }
             }
 
