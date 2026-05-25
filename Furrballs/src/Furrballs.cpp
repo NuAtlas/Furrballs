@@ -230,41 +230,44 @@ struct PerNodeDetails{
     alignas(64) std::atomic<unsigned int> NodeLocalHitCount{0};
     alignas(64) std::atomic<size_t> NodeBytesWritten{0};
 
-    struct DedupCheck {
-        HashPair hp;
-        int ownerNode;
+    struct DedupEntry {
+        uint64_t h2 = 0;
+        uint64_t h1 = 0;
+        int ownerNode = -1;
+        bool occupied = false;
     };
-    static constexpr size_t DEDUP_RING_CAP = 8192;
-    static constexpr size_t DEDUP_RING_MASK = DEDUP_RING_CAP - 1;
-    alignas(64) std::atomic<uint64_t> DedupWritePos{0};
-    alignas(64) std::atomic<uint64_t> DedupReadPos{0};
-    DedupCheck* DedupRing = nullptr;
+    static constexpr size_t DEDUP_MAP_CAP = 32768;
+    static constexpr size_t DEDUP_MAP_MASK = DEDUP_MAP_CAP - 1;
+    DedupEntry* DedupMap = nullptr;
 
-    void InitDedupRing() {
-        DedupRing = new DedupCheck[DEDUP_RING_CAP];
+    void InitDedupMap() {
+        DedupMap = new DedupEntry[DEDUP_MAP_CAP]();
     }
 
-    bool EnqueueDedup(const HashPair& hp, int ownerNode) noexcept {
-        uint64_t wp = DedupWritePos.load(std::memory_order_relaxed);
-        uint64_t rp = DedupReadPos.load(std::memory_order_acquire);
-        if (wp - rp >= DEDUP_RING_CAP) return false;
-        DedupRing[wp & DEDUP_RING_MASK] = {hp, ownerNode};
-        DedupWritePos.store(wp + 1, std::memory_order_release);
-        return true;
-    }
-
-    std::vector<DedupCheck> DrainDedup() noexcept {
-        std::vector<DedupCheck> result;
-        uint64_t rp = DedupReadPos.load(std::memory_order_relaxed);
-        uint64_t wp = DedupWritePos.load(std::memory_order_acquire);
-        size_t count = static_cast<size_t>(wp - rp);
-        if (count == 0) return result;
-        if (count > DEDUP_RING_CAP) count = DEDUP_RING_CAP;
-        result.reserve(count);
-        for (size_t i = 0; i < count; i++) {
-            result.push_back(DedupRing[(rp + i) & DEDUP_RING_MASK]);
+    void EnqueueDedup(const HashPair& hp, int ownerNode) noexcept {
+        size_t idx = hp.h2 & DEDUP_MAP_MASK;
+        for (size_t i = 0; i < DEDUP_MAP_CAP; i++) {
+            size_t slot = (idx + i) & DEDUP_MAP_MASK;
+            if (!DedupMap[slot].occupied) {
+                DedupMap[slot] = {hp.h2, hp.h1, ownerNode, true};
+                return;
+            }
+            if (DedupMap[slot].h2 == hp.h2 && DedupMap[slot].h1 == hp.h1) {
+                DedupMap[slot].ownerNode = ownerNode;
+                return;
+            }
         }
-        DedupReadPos.store(rp + count, std::memory_order_release);
+    }
+
+    std::vector<DedupEntry> DrainDedup() noexcept {
+        std::vector<DedupEntry> result;
+        result.reserve(DEDUP_MAP_CAP / 4);
+        for (size_t i = 0; i < DEDUP_MAP_CAP; i++) {
+            if (DedupMap[i].occupied) {
+                result.push_back(DedupMap[i]);
+                DedupMap[i].occupied = false;
+            }
+        }
         return result;
     }
 
@@ -700,20 +703,21 @@ void NuAtlas::FurrBall<Policy>::DrainMigrations(int nodeID) noexcept {
     auto pending = details->DrainDedup();
 
     for (auto& dedup : pending) {
+        HashPair hp{dedup.h1, dedup.h2};
         for (int n = 0; n < nodeCount; n++) {
             if (n == dedup.ownerNode) continue;
             auto* remoteDetails = DataMembers->privateNumaState->NodeDetails[n];
 
-            auto erased = remoteDetails->KeyStore.EraseByHash(dedup.hp);
+            auto erased = remoteDetails->KeyStore.EraseByHash(hp);
             if (erased.err != NO_ERR || !erased.value.has_value()) continue;
 
             if (erased.value->PageIndex < remoteDetails->NodePages.size()) {
                 Page& srcPage = remoteDetails->NodePages[erased.value->PageIndex];
                 srcPage.CompactLock.lock();
-                size_t idx = srcPage.FindKeyIndex(dedup.hp);
+                size_t idx = srcPage.FindKeyIndex(hp);
                 if (idx != SIZE_MAX) {
                     HashPair swapped = srcPage.RemoveKeyEntryLocked(idx);
-                    if (idx < srcPage.KeyH2.size() && swapped != dedup.hp) {
+                    if (idx < srcPage.KeyH2.size() && swapped != hp) {
                         remoteDetails->KeyStore.UpdateInPlaceByHash(swapped,
                             [](KeyMeta& m) {
                             m.TempCtrlIdx = static_cast<uint8_t>(SIZE_MAX);
@@ -2001,7 +2005,7 @@ FurrBall<Policy> *FurrBall<Policy>::CreateBall(const std::string &DBpath, const 
                 void* auxD = (void*)Numatic::AllocateLocal(sizeof(PerNodeDetails<Policy>));
                 Logger::getInstance().info(std::string("Per-node cache will have an inital capacity of ") + std::to_string(nodeArcCap) + " Keys." );
                 auto* details = new(auxD) PerNodeDetails<Policy>(nodeArcCap, Numatic::AllocateLocal, Numatic::FreeNUMA);
-                details->InitDedupRing();
+                details->InitDedupMap();
                 if constexpr (Policy::HasRemarcConfig) {
                     details->MaxDeadAge = config.remarcConfig.MaxDeadAge;
                 }
