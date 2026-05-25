@@ -1657,14 +1657,7 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
             if (erased.err != NO_ERR || !erased.value.has_value()) continue;
 
             if (erased.value->PageIndex < remoteDetails->NodePages.size()) {
-                Page& srcPage = remoteDetails->NodePages[erased.value->PageIndex];
-                srcPage.ActiveKeys.fetch_sub(1, std::memory_order_relaxed);
-                if (erased.value->DataOffset && erased.value->DataSize > 0) {
-                    uint32_t off = static_cast<uint32_t>(
-                        reinterpret_cast<char*>(erased.value->DataOffset) -
-                        reinterpret_cast<char*>(srcPage.Data));
-                    srcPage.AddFreeSlot(off, static_cast<uint32_t>(erased.value->DataSize));
-                }
+                remoteDetails->NodePages[erased.value->PageIndex].ActiveKeys.fetch_sub(1, std::memory_order_relaxed);
             }
 
             Stats.MigrationCount.fetch_add(1, std::memory_order_relaxed);
