@@ -649,6 +649,16 @@ namespace NuAtlas {
         }
 
         template <typename Fn>
+        Error FindAndUpdateInPlace(const std::string& key, size_t maxDataSize, Fn&& fn) {
+            std::lock_guard<SpinLock> guard(arcLock_);
+            auto existing = store_.Find(key);
+            if (!existing.has_value() || existing->DataOffset == nullptr) return KEY_NOT_FOUND;
+            if (maxDataSize > existing->DataSize) return KEY_NOT_FOUND;
+            fn(*existing);
+            return NO_ERR;
+        }
+
+        template <typename Fn>
         Error UpdateInPlaceByHash(const HashPair& hashes, Fn&& fn) {
             return store_.UpdateInPlaceByHash(hashes, std::forward<Fn>(fn));
         }

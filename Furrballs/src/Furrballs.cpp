@@ -1623,25 +1623,27 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
     auto* details = DataMembers->privateNumaState->NodeDetails[targetNode];
     HashPair hp = HashKey(key);
 
-    auto existing = details->KeyStore.Find(key);
-    if(existing.has_value() && size <= existing->DataSize && existing->DataOffset != nullptr){
-        Error err = details->KeyStore.UpdateInPlace(key, [&data, &size, this, targetNode, &details](KeyMeta& meta){
-            memcpy(meta.DataOffset, data, size);
-            meta.DataSize = size;
-            if constexpr (Policy::HasPerKeyState) {
-                if(meta.PageIndex < details->NodePages.size()) {
-                    Page& page = details->NodePages[meta.PageIndex];
-                    if(meta.TempCtrlIdx < page.TempCtrl.size()) {
-                        int currentNode = Numatic::GetCurrentNode();
-                        bool isRemote = (currentNode != targetNode);
-                        uint8_t tc = page.TempCtrl[meta.TempCtrlIdx];
-                        tc = isRemote ? Policy::OnRemoteAccess(tc, policyConfig)
-                                      : Policy::OnLocalAccess(tc, policyConfig);
-                        page.TempCtrl[meta.TempCtrlIdx] = tc;
-                    }
+    auto updateFn = [&data, &size, this, targetNode, &details](KeyMeta& meta){
+        memcpy(meta.DataOffset, data, size);
+        meta.DataSize = size;
+        if constexpr (Policy::HasPerKeyState) {
+            if(meta.PageIndex < details->NodePages.size()) {
+                Page& page = details->NodePages[meta.PageIndex];
+                if(meta.TempCtrlIdx < page.TempCtrl.size()) {
+                    int currentNode = Numatic::GetCurrentNode();
+                    bool isRemote = (currentNode != targetNode);
+                    uint8_t tc = page.TempCtrl[meta.TempCtrlIdx];
+                    tc = isRemote ? Policy::OnRemoteAccess(tc, policyConfig)
+                                  : Policy::OnLocalAccess(tc, policyConfig);
+                    page.TempCtrl[meta.TempCtrlIdx] = tc;
                 }
             }
-        });
+        }
+    };
+
+    auto existing = details->KeyStore.Find(key);
+    if(existing.has_value() && size <= existing->DataSize && existing->DataOffset != nullptr){
+        Error err = details->KeyStore.UpdateInPlace(key, updateFn);
         if(err == NO_ERR){
             details->NodeBytesWritten.fetch_add(size, std::memory_order_relaxed);
             return NO_ERR;
