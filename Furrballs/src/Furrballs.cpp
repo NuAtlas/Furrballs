@@ -1378,10 +1378,17 @@ Error NuAtlas::FurrBall<Policy>::Get(const std::string &key, void* outBuf, size_
     int currentNode = Numatic::GetCurrentNode();
     HashPair hp = HashKey(key);
 
+    int sentinelRedirect = -1;
+
     auto tryNode = [&](int n) -> Error {
         auto* details = DataMembers->privateNumaState->NodeDetails[n];
         auto meta = details->KeyStore.Find(key);
         if(meta.has_value()){
+            uintptr_t ptrVal = reinterpret_cast<uintptr_t>(meta->DataOffset);
+            if (ptrVal >= 1 && ptrVal <= 64 && meta->DataSize == 0) {
+                sentinelRedirect = static_cast<int>(ptrVal - 1);
+                return INVALID_ARG;
+            }
             if(meta->PageIndex < details->NodePages.size()) {
                 Page& deadPage = details->NodePages[meta->PageIndex];
                 PageTier tier = deadPage.Tier.load(std::memory_order_acquire);
@@ -1575,25 +1582,29 @@ Error NuAtlas::FurrBall<Policy>::Get(const std::string &key, void* outBuf, size_
             DataMembers->privateNumaState->NodeDetails[local]->NodeLocalHitCount.fetch_add(1, std::memory_order_relaxed);
             return NO_ERR;
         }
+        if (sentinelRedirect >= 0 && sentinelRedirect < nodeCount) {
+            err = tryNode(sentinelRedirect);
+            if(err == NO_ERR) return NO_ERR;
+        }
         auto& order = DataMembers->privateNumaState->probeOrder[local];
         for(int n : order){
+            sentinelRedirect = -1;
             err = tryNode(n);
             if(err == NO_ERR) return NO_ERR;
+            if (sentinelRedirect >= 0 && sentinelRedirect < nodeCount) {
+                err = tryNode(sentinelRedirect);
+                if(err == NO_ERR) return NO_ERR;
+            }
         }
     }else{
         for(int n = 0; n < nodeCount; n++){
+            sentinelRedirect = -1;
             Error err = tryNode(n);
             if(err == NO_ERR) return NO_ERR;
-        }
-    }
-
-    for (int n = 0; n < nodeCount; n++) {
-        if (n == currentNode) continue;
-        auto* details = DataMembers->privateNumaState->NodeDetails[n];
-        int target = details->KeyStore.FindSentinel(hp);
-        if (target >= 0 && target < nodeCount && target != n) {
-            Error err = tryNode(target);
-            if(err == NO_ERR) return NO_ERR;
+            if (sentinelRedirect >= 0 && sentinelRedirect < nodeCount) {
+                err = tryNode(sentinelRedirect);
+                if(err == NO_ERR) return NO_ERR;
+            }
         }
     }
 
