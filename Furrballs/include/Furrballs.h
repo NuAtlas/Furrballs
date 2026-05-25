@@ -299,6 +299,7 @@ namespace NuAtlas {
                 bool DisableMigration : 1;
                 bool StrictCoherence : 1;
                 bool EnableBloomFilter : 1;
+                bool HashRouted : 1;
             };
             uint8_t flags = 0;
         };
@@ -328,6 +329,7 @@ namespace NuAtlas {
         bool DisableMigration = false;
         bool StrictCoherence = false;
         bool UseBloomFilter = false;
+        bool HashRouted = false;
         size_t BloomFilterBytes = 0;
         typename Policy::Config policyConfig;
 

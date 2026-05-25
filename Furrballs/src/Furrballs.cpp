@@ -399,8 +399,9 @@ NuAtlas::FurrBall<Policy>::FurrBall(const FurrConfig& config, size_t numPages) n
     ThreadLocalRoute(config.numaConfig ? config.numaConfig->UseThreadLocalRouting : false),
      DisableMigration(config.DisableMigration),
      StrictCoherence(config.StrictCoherence),
-     UseBloomFilter(config.EnableBloomFilter),
-     BloomFilterBytes(config.BloomFilterBytes),
+      UseBloomFilter(config.EnableBloomFilter),
+      BloomFilterBytes(config.BloomFilterBytes),
+      HashRouted(config.HashRouted),
     policyConfig(Policy::MakeConfig(config.remarcConfig)),
     DataMembers(new ImplDetail())
 {
@@ -785,7 +786,7 @@ void NuAtlas::FurrBall<Policy>::SyncNodeStats(int nodeID) noexcept {
 
 template<typename Policy>
 void NuAtlas::FurrBall<Policy>::DrainMigrations(int nodeID) noexcept {
-    if (StrictCoherence) return;
+    if (StrictCoherence || HashRouted) return;
     if (!DataMembers || !DataMembers->privateNumaState) return;
     if (nodeID < 0 || nodeID >= Detail::globalNumaState.NumaNodeCount) return;
 
@@ -1630,7 +1631,11 @@ Error NuAtlas::FurrBall<Policy>::Get(const std::string &key, void* outBuf, size_
         return INVALID_ARG;
     };
 
-    if(ThreadLocalRoute){
+    if(HashRouted && nodeCount > 1){
+        int target = static_cast<int>(hp.h1 % static_cast<uint64_t>(nodeCount));
+        Error err = tryNode(target);
+        if(err == NO_ERR) return NO_ERR;
+    }else if(ThreadLocalRoute){
         int local = currentNode;
         Error err = tryNode(local);
         if(err == NO_ERR){
@@ -1675,9 +1680,15 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
         return INVALID_ARG;
     }
 
-    int targetNode = ThreadLocalRoute ? Numatic::GetCurrentNode() : this->DataMembers->privateNumaState->rr.Get();
-    auto* details = DataMembers->privateNumaState->NodeDetails[targetNode];
+    int nodeCount = DataMembers->privateNumaState ? Detail::globalNumaState.NumaNodeCount : 1;
     HashPair hp = HashKey(key);
+    int targetNode;
+    if (HashRouted && nodeCount > 1) {
+        targetNode = static_cast<int>(hp.h1 % static_cast<uint64_t>(nodeCount));
+    } else {
+        targetNode = ThreadLocalRoute ? Numatic::GetCurrentNode() : this->DataMembers->privateNumaState->rr.Get();
+    }
+    auto* details = DataMembers->privateNumaState->NodeDetails[targetNode];
 
     auto updateFn = [&data, &size, this, targetNode, &details](KeyMeta& meta){
         memcpy(meta.DataOffset, data, size);
@@ -1706,9 +1717,7 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
         }
     }
 
-    int nodeCount = DataMembers->privateNumaState ? Detail::globalNumaState.NumaNodeCount : 0;
-
-    if (StrictCoherence && nodeCount > 1) {
+    if (!HashRouted && StrictCoherence && nodeCount > 1) {
         for (int n = 0; n < nodeCount; n++) {
             if (n == targetNode) continue;
             auto* remoteDetails = DataMembers->privateNumaState->NodeDetails[n];
@@ -1891,7 +1900,7 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
                 Error err = details->KeyStore.Set(key, metadata);
                 if (err == NO_ERR) {
                     details->NodeBytesWritten.fetch_add(size, std::memory_order_relaxed);
-                    if (nodeCount > 1 && !StrictCoherence) {
+                    if (nodeCount > 1 && !StrictCoherence && !HashRouted) {
                         details->EnqueueDedup(hp, targetNode);
                     }
                     if (!Volatile) {
