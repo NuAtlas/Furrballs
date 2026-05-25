@@ -26,7 +26,7 @@ namespace NuAtlas
         // --- Maintenance worker (new) ---
         std::thread maintWorker_;
         std::function<void(int)> maintenanceFn_;
-        std::chrono::milliseconds maintInterval_{10};
+        std::chrono::microseconds maintInterval_{1000};
         std::mutex maintMutex_;
         std::condition_variable_any maintCv_;
         std::atomic<bool> MaintRunning{false};
