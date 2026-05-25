@@ -1655,17 +1655,6 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
             auto* remoteDetails = DataMembers->privateNumaState->NodeDetails[n];
             auto erased = remoteDetails->KeyStore.EraseByHash(hp);
             if (erased.err != NO_ERR || !erased.value.has_value()) continue;
-
-            if (erased.value->PageIndex < remoteDetails->NodePages.size()) {
-                Page& srcPage = remoteDetails->NodePages[erased.value->PageIndex];
-                srcPage.CompactLock.lock();
-                size_t idx = srcPage.FindKeyIndex(hp);
-                if (idx != SIZE_MAX) {
-                    srcPage.RemoveKeyEntryLocked(idx);
-                }
-                srcPage.CompactLock.unlock();
-            }
-
             Stats.MigrationCount.fetch_add(1, std::memory_order_relaxed);
             break;
         }
