@@ -722,6 +722,7 @@ void NuAtlas::FurrBall<Policy>::SyncNodeStats(int nodeID) noexcept {
 
 template<typename Policy>
 void NuAtlas::FurrBall<Policy>::DrainMigrations(int nodeID) noexcept {
+    if (StrictCoherence) return;
     if (!DataMembers || !DataMembers->privateNumaState) return;
     if (nodeID < 0 || nodeID >= Detail::globalNumaState.NumaNodeCount) return;
 
@@ -1653,11 +1654,26 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
         for (int n = 0; n < nodeCount; n++) {
             if (n == targetNode) continue;
             auto* remoteDetails = DataMembers->privateNumaState->NodeDetails[n];
-            auto erased = remoteDetails->KeyStore.EraseByHash(hp);
-            if (erased.err != NO_ERR || !erased.value.has_value()) continue;
+            auto remoteMeta = remoteDetails->KeyStore.Find(key);
+            if (!remoteMeta.has_value()) continue;
 
-            if (erased.value->PageIndex < remoteDetails->NodePages.size()) {
-                remoteDetails->NodePages[erased.value->PageIndex].ActiveKeys.fetch_sub(1, std::memory_order_relaxed);
+            auto erased = remoteDetails->KeyStore.Erase(key);
+            if (erased.err != NO_ERR) continue;
+
+            if (remoteMeta->PageIndex < remoteDetails->NodePages.size()) {
+                Page& srcPage = remoteDetails->NodePages[remoteMeta->PageIndex];
+                srcPage.CompactLock.lock();
+                size_t idx = srcPage.FindKeyIndex(hp);
+                if (idx != SIZE_MAX) {
+                    HashPair swapped = srcPage.RemoveKeyEntryLocked(idx);
+                    if (idx < srcPage.KeyH2.size() && swapped != hp) {
+                        remoteDetails->KeyStore.UpdateInPlaceByHash(swapped,
+                            [](KeyMeta& m) {
+                            m.TempCtrlIdx = static_cast<uint8_t>(SIZE_MAX);
+                        });
+                    }
+                }
+                srcPage.CompactLock.unlock();
             }
 
             Stats.MigrationCount.fetch_add(1, std::memory_order_relaxed);
