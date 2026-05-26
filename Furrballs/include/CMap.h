@@ -1520,4 +1520,75 @@ namespace NuAtlas {
         }
     };
 
+    template <class Value>
+        requires std::is_move_constructible_v<Value> && std::is_trivially_copyable_v<Value>
+    class FragmentedCMapStore {
+        struct alignas(64) Segment {
+            ConcurrentARC<Value> arc;
+            Segment(size_t cap, CMapAllocFn af, CMapFreeFn ff) : arc(cap, af, ff) {}
+        };
+
+        std::vector<std::unique_ptr<Segment>> segments_;
+        size_t numSegments_;
+
+    public:
+        using EvictionCallback = std::function<void(const Value&)>;
+
+        FragmentedCMapStore(size_t totalCapacity, size_t numSegments,
+                            CMapAllocFn af = CMapDefaultAlloc, CMapFreeFn ff = CMapDefaultFree)
+            : numSegments_(numSegments) {
+            size_t perSeg = totalCapacity / numSegments;
+            for (size_t i = 0; i < numSegments; i++) {
+                segments_.push_back(std::make_unique<Segment>(perSeg, af, ff));
+            }
+        }
+
+        void SetEvictionCallback(EvictionCallback cb) {
+            for (auto& seg : segments_) seg->arc.SetEvictionCallback(cb);
+        }
+        void setWakeCallback(std::function<void()>) {}
+        void drainPromotes() {}
+        uint8_t GetDesire(uint64_t) const { return 0; }
+
+        std::optional<Value> Find(const std::string& key) {
+            HashPair hashes = HashKey(key);
+            return segments_[hashes.h2 % numSegments_]->arc.Find(key);
+        }
+
+        Error Set(const std::string& key, const Value& val) {
+            HashPair hashes = HashKey(key);
+            return segments_[hashes.h2 % numSegments_]->arc.Set(key, val);
+        }
+
+        bool ForceEvictOne() {
+            for (auto& seg : segments_) {
+                if (seg->arc.ForceEvictOne()) return true;
+            }
+            return false;
+        }
+
+        typename CMap<Value>::FindAndEraseResult Erase(const std::string& key) {
+            HashPair hashes = HashKey(key);
+            return segments_[hashes.h2 % numSegments_]->arc.Erase(key);
+        }
+
+        auto EraseByHash(const HashPair& hashes) {
+            return segments_[hashes.h2 % numSegments_]->arc.EraseByHash(hashes);
+        }
+
+        template <typename Fn>
+        Error UpdateInPlace(const std::string& key, Fn&& fn) {
+            HashPair hashes = HashKey(key);
+            return segments_[hashes.h2 % numSegments_]->arc.UpdateInPlace(key, std::forward<Fn>(fn));
+        }
+
+        template <typename Fn>
+        Error UpdateInPlaceByHash(const HashPair& hashes, Fn&& fn) {
+            return segments_[hashes.h2 % numSegments_]->arc.UpdateInPlaceByHash(hashes, std::forward<Fn>(fn));
+        }
+
+        bool MigrateAndLeaveSentinel(const HashPair&, int) { return false; }
+        int FindSentinel(const HashPair&) const { return -1; }
+    };
+
 } // namespace NuAtlas

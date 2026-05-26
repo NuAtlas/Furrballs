@@ -31,6 +31,7 @@
 #include <random>
 
 #include "Furrballs.h"
+#include "CMap.h"
 #include "Policy.h"
 #include "Numatic.h"
 
@@ -780,6 +781,61 @@ template <typename Policy> int FurrBallSNAdapterT<Policy>::runId = 0;
 using FurrBallSNAdapter = FurrBallSNAdapterT<ArcPolicy>;
 
 // --- TBB adapter ---
+struct FragmentedCMapAdapter {
+    static constexpr const char* Name = "FurrBall_Frag";
+    static constexpr size_t PAGE_SIZE = 4096;
+
+    struct KeyMeta {
+        void* DataOffset = nullptr;
+        size_t DataSize = 0;
+        size_t PageIndex = 0;
+        size_t PageGeneration = 0;
+        uint8_t TempCtrlIdx = 0;
+        int NodeId = 0;
+    };
+
+    FragmentedCMapStore<KeyMeta>* fragStore_ = nullptr;
+    int nodeCount_ = 1;
+    size_t footprintBytes_ = 0;
+    static int runId;
+
+    void create(int numThreads, int totalCapacityKB) {
+        auto& gs = Detail::globalNumaState;
+        nodeCount_ = gs.Initialized ? gs.NumaNodeCount : 1;
+        if (nodeCount_ < 1) nodeCount_ = 1;
+
+        footprintBytes_ = (size_t)totalCapacityKB * 1024;
+        size_t cap = footprintBytes_ / sizeof(KeyMeta);
+
+        fragStore_ = new FragmentedCMapStore<KeyMeta>(cap, nodeCount_);
+    }
+
+    bool get(const std::string& key, uint8_t*, size_t, size_t& outSize) {
+        auto val = fragStore_->Find(key);
+        if (val) {
+            outSize = val->DataSize;
+            return true;
+        }
+        outSize = 0;
+        return false;
+    }
+
+    void put(const std::string& key, const uint8_t* data, size_t size) {
+        KeyMeta meta;
+        meta.DataOffset = nullptr;
+        meta.DataSize = size;
+        fragStore_->Set(key, meta);
+    }
+
+    void destroy() {
+        delete fragStore_;
+        fragStore_ = nullptr;
+    }
+
+    int numNodes() const { return nodeCount_; }
+};
+int FragmentedCMapAdapter::runId = 0;
+
 struct TBBAdapter {
     static constexpr const char* Name = "TBB";
     using Map = tbb::concurrent_hash_map<std::string, std::vector<uint8_t>>;
@@ -1168,6 +1224,12 @@ BENCHMARK_DEFINE_F(YCSB_FurrBallNoMaint, Run)(benchmark::State& state) {
     RunYCSBBench<FurrBallNoMaintAdapter<ArcPolicy>>(state);
 }
 
+// --- Fragmented CMap YCSB ---
+struct YCSB_FurrBallFrag : YCSBBench<FragmentedCMapAdapter> {};
+BENCHMARK_DEFINE_F(YCSB_FurrBallFrag, Run)(benchmark::State& state) {
+    RunYCSBBench<FragmentedCMapAdapter>(state);
+}
+
 // --- TBB YCSB ---
 struct YCSB_TBB : YCSBBench<TBBAdapter> {};
 BENCHMARK_DEFINE_F(YCSB_TBB, Run)(benchmark::State& state) {
@@ -1242,6 +1304,11 @@ BENCHMARK_REGISTER_F(YCSB_FurrBallSN, Run)
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
+BENCHMARK_REGISTER_F(YCSB_FurrBallFrag, Run)
+    ->Args({2, 32768, 10, 64, 100000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
 BENCHMARK_REGISTER_F(YCSB_TBB, Run)
     ->Args({2, 32768, 10, 64, 100000})
     ->Iterations(10)
@@ -1270,6 +1337,11 @@ BENCHMARK_REGISTER_F(YCSB_FurrBallSN, Run)
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
+BENCHMARK_REGISTER_F(YCSB_FurrBallFrag, Run)
+    ->Args({2, 32768, 11, 64, 100000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
 BENCHMARK_REGISTER_F(YCSB_TBB, Run)
     ->Args({2, 32768, 11, 64, 100000})
     ->Iterations(10)
@@ -1294,6 +1366,11 @@ BENCHMARK_REGISTER_F(YCSB_FurrBallTL, Run)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(YCSB_FurrBallSN, Run)
+    ->Args({2, 32768, 12, 64, 100000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(YCSB_FurrBallFrag, Run)
     ->Args({2, 32768, 12, 64, 100000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
