@@ -1392,6 +1392,94 @@ BENCHMARK_REGISTER_F(YCSB_CacheLib, Run)
     ->Unit(benchmark::kMicrosecond);
 #endif
 
+// ============================================================================
+//  4-thread / 64MB / A/B/C / 64B — NUMA scaling
+// ============================================================================
+
+// --- YCSB A (50R/50W) ---
+BENCHMARK_REGISTER_F(YCSB_FurrBallTL, Run)
+    ->Args({4, 65536, 10, 64, 100000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallSN, Run)
+    ->Args({4, 65536, 10, 64, 100000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallFrag, Run)
+    ->Args({4, 65536, 10, 64, 100000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_TBB, Run)
+    ->Args({4, 65536, 10, 64, 100000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_RocksDB, Run)
+    ->Args({4, 65536, 10, 64, 100000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+#ifdef USE_CACHELIB
+BENCHMARK_REGISTER_F(YCSB_CacheLib, Run)
+    ->Args({4, 65536, 10, 64, 100000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+#endif
+
+// --- YCSB B (95R/5W) ---
+BENCHMARK_REGISTER_F(YCSB_FurrBallTL, Run)
+    ->Args({4, 65536, 11, 64, 100000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallSN, Run)
+    ->Args({4, 65536, 11, 64, 100000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallFrag, Run)
+    ->Args({4, 65536, 11, 64, 100000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_TBB, Run)
+    ->Args({4, 65536, 11, 64, 100000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_RocksDB, Run)
+    ->Args({4, 65536, 11, 64, 100000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+#ifdef USE_CACHELIB
+BENCHMARK_REGISTER_F(YCSB_CacheLib, Run)
+    ->Args({4, 65536, 11, 64, 100000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+#endif
+
+// --- YCSB C (100R) ---
+BENCHMARK_REGISTER_F(YCSB_FurrBallTL, Run)
+    ->Args({4, 65536, 12, 64, 100000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallSN, Run)
+    ->Args({4, 65536, 12, 64, 100000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallFrag, Run)
+    ->Args({4, 65536, 12, 64, 100000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_TBB, Run)
+    ->Args({4, 65536, 12, 64, 100000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_RocksDB, Run)
+    ->Args({4, 65536, 12, 64, 100000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+#ifdef USE_CACHELIB
+BENCHMARK_REGISTER_F(YCSB_CacheLib, Run)
+    ->Args({4, 65536, 12, 64, 100000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+#endif
+
 // --- YCSB A/B/C at 256B (100K × 256B = 25MB, light oversubscription vs 32MB cache) ---
 BENCHMARK_REGISTER_F(YCSB_FurrBallTL, Run)
     ->Args({2, 32768, 10, 256, 100000})
