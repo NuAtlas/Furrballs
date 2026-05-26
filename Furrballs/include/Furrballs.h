@@ -300,8 +300,9 @@ namespace NuAtlas {
                 bool StrictCoherence : 1;
                 bool EnableBloomFilter : 1;
                 bool HashRouted : 1;
+                bool SkipMaintenance : 1;
             };
-            uint8_t flags = 0;
+            uint16_t flags = 0;
         };
 
         size_t BloomFilterBytes = 0;
@@ -376,6 +377,7 @@ namespace NuAtlas {
         void UpdateMinDesire(int nodeID) noexcept;
 
         void BackgroundEvict(int nodeID) noexcept;
+        void DrainPromotes(int nodeID) noexcept;
 
         void SyncNodeStats(int nodeID) noexcept;
 

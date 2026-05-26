@@ -1084,6 +1084,15 @@ void NuAtlas::FurrBall<Policy>::BackgroundEvict(int nodeID) noexcept {
     }
 }
 
+template<typename Policy>
+void NuAtlas::FurrBall<Policy>::DrainPromotes(int nodeID) noexcept {
+    if (!DataMembers || !DataMembers->privateNumaState) return;
+    if (nodeID < 0 || nodeID >= Detail::globalNumaState.NumaNodeCount) return;
+    auto* details = DataMembers->privateNumaState->NodeDetails[nodeID];
+    if (!details) return;
+    details->KeyStore.drainPromotes();
+}
+
 // =====================================================================
 //  ManagePages: REMARC-driven page eviction + key migration (simulated)
 // =====================================================================
@@ -2216,29 +2225,41 @@ FurrBall<Policy> *FurrBall<Policy>::CreateBall(const std::string &DBpath, const 
 
     OpenBalls.push_back(fb);
 
-    if (config.EnableNUMA && Detail::globalNumaState.Workers) {
-        for (int i = 0; i < Detail::globalNumaState.NumaNodeCount; i++) {
-            Detail::globalNumaState.Workers[i].StartMaintenance(
-                [](int nodeId) {
-                    std::vector<FurrBall*> snapshot;
-                    {
-                        std::lock_guard<std::mutex> lock(OpenBallsMutex);
-                        snapshot.assign(OpenBalls.begin(), OpenBalls.end());
-                    }
-                    for (auto* ball : snapshot) {
-                        if (ball->Destroying.load(std::memory_order_acquire)) continue;
-                        ball->ActiveMaintenanceRefs.fetch_add(1, std::memory_order_acq_rel);
-                        if (ball->Destroying.load(std::memory_order_acquire)) {
-                            ball->ActiveMaintenanceRefs.fetch_sub(1, std::memory_order_acq_rel);
-                            continue;
-                        }
-                        ball->BackgroundEvict(nodeId);
-                        ball->DrainMigrations(nodeId);
-                        ball->SyncNodeStats(nodeId);
-                        ball->ActiveMaintenanceRefs.fetch_sub(1, std::memory_order_acq_rel);
-                    }
-                },
-                std::chrono::milliseconds(2));
+    {
+        auto maintenanceFn = [](int nodeId) {
+            std::vector<FurrBall*> snapshot;
+            {
+                std::lock_guard<std::mutex> lock(OpenBallsMutex);
+                snapshot.assign(OpenBalls.begin(), OpenBalls.end());
+            }
+            for (auto* ball : snapshot) {
+                if (ball->Destroying.load(std::memory_order_acquire)) continue;
+                ball->ActiveMaintenanceRefs.fetch_add(1, std::memory_order_acq_rel);
+                if (ball->Destroying.load(std::memory_order_acquire)) {
+                    ball->ActiveMaintenanceRefs.fetch_sub(1, std::memory_order_acq_rel);
+                    continue;
+                }
+                ball->DrainPromotes(nodeId);
+                if (!ball->DisableMigration) ball->BackgroundEvict(nodeId);
+                ball->DrainMigrations(nodeId);
+                ball->SyncNodeStats(nodeId);
+                ball->ActiveMaintenanceRefs.fetch_sub(1, std::memory_order_acq_rel);
+            }
+        };
+
+        if (!config.SkipMaintenance && Detail::globalNumaState.Workers) {
+            for (int i = 0; i < Detail::globalNumaState.NumaNodeCount; i++) {
+                auto* details = pNumaState->NodeDetails[i];
+                if (details) {
+                    auto* worker = &Detail::globalNumaState.Workers[i];
+                    details->KeyStore.setWakeCallback([worker] {
+                        worker->WakeMaintenance();
+                    });
+                }
+                Detail::globalNumaState.Workers[i].StartMaintenance(
+                    maintenanceFn,
+                    config.EnableNUMA ? std::chrono::milliseconds(2) : std::chrono::milliseconds(10));
+            }
         }
     }
     

@@ -283,6 +283,9 @@ namespace NuAtlas {
             evictionCallback_ = std::move(cb);
         }
 
+        void setWakeCallback(std::function<void()>) {}
+        void drainPromotes() {}
+
         bool ForceEvictOne() {
             std::lock_guard<SpinLock> guard(lock_);
             return evictColdestLocked();

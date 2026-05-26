@@ -587,6 +587,135 @@ struct FurrBallHashRoutedAdapter {
 };
 template <Routing R, typename Policy> int FurrBallHashRoutedAdapter<R, Policy>::runId = 0;
 
+template <typename Policy = ArcPolicy>
+struct FurrBallSharedAdapter {
+    static constexpr const char* Name = "FurrBall_Shared";
+    static constexpr size_t PAGE_SIZE = 4096;
+    FurrBall<Policy>* fb = nullptr;
+    std::string fbPath;
+    int nodeCount = 1;
+    size_t footprintBytes_ = 0;
+    static int runId;
+
+    void create(int, int totalCapacityKB) {
+        nodeCount = 1;
+        footprintBytes_ = (size_t)totalCapacityKB * 1024;
+
+        auto& gs = Detail::globalNumaState;
+        if (gs.Initialized && gs.NumaNodeCount != 1) {
+            for (int i = 0; i < gs.NumaNodeCount; i++) {
+                gs.Workers[i].Stop();
+                gs.Workers[i].~NodeJob();
+            }
+            free(gs.Workers);
+            gs = {};
+        }
+        if (!gs.Initialized) {
+            gs.NumaNodeCount = 1;
+            gs.Workers = (NodeJob*)malloc(sizeof(NodeJob));
+            new(&gs.Workers[0]) NodeJob(0);
+            gs.Workers[0].Start([](){});
+            gs.Initialized = true;
+        }
+
+        fbPath = "/tmp/ycsb_shared_" + std::to_string(runId++);
+
+        NumaConfig nc;
+        nc.AllocateUsingNodePageSize = false;
+        nc.UseThreadLocalRouting = false;
+
+        FurrConfig fc;
+        fc.PageSize = PAGE_SIZE;
+        fc.TotalCapacityBytes = (size_t)totalCapacityKB * 1024;
+        fc.IsVolatile = true;
+        fc.EnableNUMA = true;
+        fc.numaConfig = &nc;
+
+        fb = FurrBall<Policy>::CreateBall(fbPath, fc, true);
+    }
+
+    bool get(const std::string& key, uint8_t* buf, size_t bufSize, size_t& outSize) {
+        Error err = fb->Get(key, buf, bufSize, outSize);
+        return (err == NO_ERR && outSize > 0);
+    }
+
+    void put(const std::string& key, const uint8_t* data, size_t size) {
+        fb->Set(key, const_cast<uint8_t*>(data), size);
+    }
+
+    void destroy() {
+        if (fb) { delete fb; fb = nullptr; }
+    }
+
+    int numNodes() const { return nodeCount; }
+};
+template <typename Policy> int FurrBallSharedAdapter<Policy>::runId = 0;
+
+template <typename Policy = ArcPolicy>
+struct FurrBallNoMaintAdapter {
+    static constexpr const char* Name = "FurrBall_NoMaint";
+    static constexpr size_t PAGE_SIZE = 4096;
+    FurrBall<Policy>* fb = nullptr;
+    std::string fbPath;
+    int nodeCount = 1;
+    size_t footprintBytes_ = 0;
+    static int runId;
+
+    void create(int, int totalCapacityKB) {
+        nodeCount = 1;
+        footprintBytes_ = (size_t)totalCapacityKB * 1024;
+
+        auto& gs = Detail::globalNumaState;
+        if (gs.Initialized && gs.NumaNodeCount != 1) {
+            for (int i = 0; i < gs.NumaNodeCount; i++) {
+                gs.Workers[i].Stop();
+                gs.Workers[i].~NodeJob();
+            }
+            free(gs.Workers);
+            gs = {};
+        }
+        if (!gs.Initialized) {
+            gs.NumaNodeCount = 1;
+            gs.Workers = (NodeJob*)malloc(sizeof(NodeJob));
+            new(&gs.Workers[0]) NodeJob(0);
+            gs.Workers[0].Start([](){});
+            gs.Initialized = true;
+        }
+
+        fbPath = "/tmp/ycsb_nomaint_" + std::to_string(runId++);
+
+        NumaConfig nc;
+        nc.AllocateUsingNodePageSize = false;
+        nc.UseThreadLocalRouting = false;
+
+        FurrConfig fc;
+        fc.PageSize = PAGE_SIZE;
+        fc.TotalCapacityBytes = (size_t)totalCapacityKB * 1024;
+        fc.IsVolatile = true;
+        fc.EnableNUMA = true;
+        fc.SkipMaintenance = true;
+        fc.numaConfig = &nc;
+
+        fb = FurrBall<Policy>::CreateBall(fbPath, fc, true);
+    }
+
+    bool get(const std::string& key, uint8_t* buf, size_t bufSize, size_t& outSize) {
+        Error err = fb->Get(key, buf, bufSize, outSize);
+        return (err == NO_ERR && outSize > 0);
+    }
+
+    void put(const std::string& key, const uint8_t* data, size_t size) {
+        fb->Set(key, const_cast<uint8_t*>(data), size);
+    }
+
+    void destroy() {
+        if (fb) { delete fb; fb = nullptr; }
+    }
+
+    int numNodes() const { return nodeCount; }
+};
+template <typename Policy> int FurrBallNoMaintAdapter<Policy>::runId = 0;
+
 // --- FurrBall Single Node ---
 template <typename Policy = ArcPolicy>
 struct FurrBallSNAdapterT {
@@ -1027,6 +1156,18 @@ BENCHMARK_DEFINE_F(YCSB_FurrBallSN, Run)(benchmark::State& state) {
     RunYCSBBench<FurrBallSNAdapter>(state);
 }
 
+// --- FurrBall Shared (non-NUMA safe) YCSB ---
+struct YCSB_FurrBallShared : YCSBBench<FurrBallSharedAdapter<ArcPolicy>> {};
+BENCHMARK_DEFINE_F(YCSB_FurrBallShared, Run)(benchmark::State& state) {
+    RunYCSBBench<FurrBallSharedAdapter<ArcPolicy>>(state);
+}
+
+// --- FurrBall NoMaint (shared, no background maintenance) YCSB ---
+struct YCSB_FurrBallNoMaint : YCSBBench<FurrBallNoMaintAdapter<ArcPolicy>> {};
+BENCHMARK_DEFINE_F(YCSB_FurrBallNoMaint, Run)(benchmark::State& state) {
+    RunYCSBBench<FurrBallNoMaintAdapter<ArcPolicy>>(state);
+}
+
 // --- TBB YCSB ---
 struct YCSB_TBB : YCSBBench<TBBAdapter> {};
 BENCHMARK_DEFINE_F(YCSB_TBB, Run)(benchmark::State& state) {
@@ -1058,7 +1199,39 @@ BENCHMARK_DEFINE_F(YCSB_CacheLib, Run)(benchmark::State& state) {
 //    totalCapacityKB=32768 (32MB)
 // ============================================================================
 
-// --- YCSB A (50R/50W), 64B ---
+// ============================================================================
+//  1-thread / 32MB / A/B/C / 64B — non-NUMA baseline
+// ============================================================================
+
+BENCHMARK_REGISTER_F(YCSB_FurrBallShared, Run)
+    ->Args({1, 32768, 10, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallShared, Run)
+    ->Args({1, 32768, 11, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallShared, Run)
+    ->Args({1, 32768, 12, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(YCSB_FurrBallNoMaint, Run)
+    ->Args({1, 32768, 10, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallNoMaint, Run)
+    ->Args({1, 32768, 11, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallNoMaint, Run)
+    ->Args({1, 32768, 12, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(YCSB_TBB, Run)
+    ->Args({1, 32768, 10, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_TBB, Run)
+    ->Args({1, 32768, 11, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_TBB, Run)
+    ->Args({1, 32768, 12, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(YCSB_RocksDB, Run)
+    ->Args({1, 32768, 10, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_RocksDB, Run)
+    ->Args({1, 32768, 11, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_RocksDB, Run)
+    ->Args({1, 32768, 12, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+
+// --- YCSB A (50R/50W), 64B, 2T ---
 BENCHMARK_REGISTER_F(YCSB_FurrBallTL, Run)
     ->Args({2, 32768, 10, 64, 100000})
     ->Iterations(10)
@@ -1525,6 +1698,14 @@ BENCHMARK_REGISTER_F(YCSB_FurrBallHashRouted, Run)
     ->Args({4, 65536, 11, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
 BENCHMARK_REGISTER_F(YCSB_FurrBallHashRouted, Run)
     ->Args({4, 65536, 12, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+
+// --- FurrBall Shared (non-NUMA safe): 2T/32MB, A/B/C ---
+BENCHMARK_REGISTER_F(YCSB_FurrBallShared, Run)
+    ->Args({2, 32768, 10, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallShared, Run)
+    ->Args({2, 32768, 11, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallShared, Run)
+    ->Args({2, 32768, 12, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
 
 int main(int argc, char** argv) {
     benchmark::Initialize(&argc, argv);

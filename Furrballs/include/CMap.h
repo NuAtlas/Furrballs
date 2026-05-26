@@ -18,6 +18,81 @@
 
 namespace NuAtlas {
 
+    class OpenIdx {
+        static constexpr uint64_t kEmpty = UINT64_MAX;
+
+        std::vector<uint64_t> keys_;
+        std::vector<uint32_t> vals_;
+        size_t mask_;
+
+    public:
+        explicit OpenIdx(size_t capacity) {
+            size_t sz = 4;
+            while (sz < capacity * 3) sz <<= 1;
+            keys_.assign(sz, kEmpty);
+            vals_.assign(sz, 0);
+            mask_ = sz - 1;
+        }
+
+        bool contains(uint64_t key) const noexcept {
+            size_t idx = key & mask_;
+            for (size_t i = 0; i <= mask_; i++) {
+                if (keys_[idx] == key) return true;
+                if (keys_[idx] == kEmpty) return false;
+                idx = (idx + 1) & mask_;
+            }
+            return false;
+        }
+
+        uint32_t* find(uint64_t key) noexcept {
+            size_t idx = key & mask_;
+            for (size_t i = 0; i <= mask_; i++) {
+                if (keys_[idx] == key) return &vals_[idx];
+                if (keys_[idx] == kEmpty) return nullptr;
+                idx = (idx + 1) & mask_;
+            }
+            return nullptr;
+        }
+
+        void insert(uint64_t key, uint32_t value) noexcept {
+            size_t idx = key & mask_;
+            for (;;) {
+                if (keys_[idx] == kEmpty || keys_[idx] == key) {
+                    keys_[idx] = key;
+                    vals_[idx] = value;
+                    return;
+                }
+                idx = (idx + 1) & mask_;
+            }
+        }
+
+        void erase(uint64_t key) noexcept {
+            size_t idx = key & mask_;
+            for (size_t i = 0; i <= mask_; i++) {
+                if (keys_[idx] == key) {
+                    keys_[idx] = kEmpty;
+                    size_t gap = idx;
+                    size_t cur = (idx + 1) & mask_;
+                    while (keys_[cur] != kEmpty) {
+                        size_t ideal = keys_[cur] & mask_;
+                        size_t probe_dist = (cur - ideal) & mask_;
+                        size_t gap_dist = (cur - gap) & mask_;
+                        if (gap_dist <= probe_dist) {
+                            keys_[gap] = keys_[cur];
+                            vals_[gap] = vals_[cur];
+                            keys_[cur] = kEmpty;
+                            gap = cur;
+                        }
+                        cur = (cur + 1) & mask_;
+                    }
+                    return;
+                }
+                if (keys_[idx] == kEmpty) return;
+                idx = (idx + 1) & mask_;
+            }
+        }
+    };
+
     class FlatList {
         static constexpr uint32_t NIL = UINT32_MAX;
 
@@ -28,7 +103,7 @@ namespace NuAtlas {
         };
 
         std::vector<Slot> slots_;
-        std::unordered_map<uint64_t, uint32_t> idx_;
+        OpenIdx idx_;
         uint32_t head_{NIL};
         uint32_t tail_{NIL};
         uint32_t freeHead_{NIL};
@@ -48,18 +123,18 @@ namespace NuAtlas {
         }
 
     public:
-        explicit FlatList(size_t maxEntries) {
+        explicit FlatList(size_t maxEntries)
+            : idx_(maxEntries) {
             slots_.resize(maxEntries);
             for (size_t i = 0; i < maxEntries; i++) {
                 slots_[i] = {{}, NIL, static_cast<uint32_t>(i + 1)};
             }
             slots_[maxEntries - 1].next = NIL;
             freeHead_ = 0;
-            idx_.reserve(maxEntries);
         }
 
-        bool contains(uint64_t h2) const {
-            return idx_.find(h2) != idx_.end();
+        bool contains(uint64_t h2) const noexcept {
+            return idx_.contains(h2);
         }
 
         void push_front(HashPair hashes) {
@@ -70,7 +145,7 @@ namespace NuAtlas {
             if (head_ != NIL) slots_[head_].prev = s;
             else tail_ = s;
             head_ = s;
-            idx_[hashes.h2] = s;
+            idx_.insert(hashes.h2, s);
             count_++;
         }
 
@@ -87,10 +162,10 @@ namespace NuAtlas {
         }
 
         void erase(uint64_t h2) {
-            auto it = idx_.find(h2);
-            if (it == idx_.end()) return;
-            uint32_t s = it->second;
-            idx_.erase(it);
+            uint32_t* val = idx_.find(h2);
+            if (!val) return;
+            uint32_t s = *val;
+            idx_.erase(h2);
             uint32_t p = slots_[s].prev, n = slots_[s].next;
             if (p != NIL) slots_[p].next = n;
             else head_ = n;
@@ -101,9 +176,9 @@ namespace NuAtlas {
         }
 
         void splice_front(uint64_t h2) {
-            auto it = idx_.find(h2);
-            if (it == idx_.end()) return;
-            uint32_t s = it->second;
+            uint32_t* val = idx_.find(h2);
+            if (!val) return;
+            uint32_t s = *val;
             if (s == head_) return;
             uint32_t p = slots_[s].prev, n = slots_[s].next;
             if (p != NIL) slots_[p].next = n;
@@ -120,55 +195,45 @@ namespace NuAtlas {
         bool empty() const { return count_ == 0; }
     };
 
-    // TODO: Per-thread sharded PromoteBuf for high thread counts (100+).
-    // Current single writeHead_ scales to ~20 threads per node. For production:
-    //   struct PromoteRegistry {
-    //       std::atomic<PromoteBuf*> head{nullptr};
-    //       PromoteBuf& get() {
-    //           thread_local PromoteBuf* mine = nullptr;
-    //           if (!mine) {
-    //               mine = new PromoteBuf();
-    //               mine->next = head.load(relaxed);
-    //               while (!head.compare_exchange_weak(mine->next, mine, release, relaxed));
-    //           }
-    //           return *mine;
-    //       }
-    //       void drainAll(FlatList& t1, FlatList& t2) {
-    //           for (auto* buf = head.load(acquire); buf; buf = buf->next)
-    //               buf->drain(t1, t2);
-    //       }
-    //   };
-    // Each thread gets its own buffer on first Get(). Zero shared contention on
-    // enqueue. Drain iterates the linked list under SpinLock. No max thread count
-    // needed. Acceptable memory leak on thread exit for server workloads.
-
     class PromoteBuf {
-        static constexpr size_t kCapacity = 256;
-        static constexpr size_t kDrainEvery = 64;
+        static constexpr size_t kCapacity = 4096;
+        static constexpr size_t kThreshold = 1024;
 
         struct Slot {
             HashPair hashes;
             std::atomic<bool> ready{false};
         };
 
-        std::array<Slot, kCapacity> slots_;
+        std::vector<Slot> slots_;
         std::atomic<size_t> writeHead_{0};
         size_t drainTail_ = 0;
+        std::function<void()> wakeCb_;
 
     public:
+        PromoteBuf() : slots_(kCapacity) {}
+
+        PromoteBuf(const PromoteBuf&) = delete;
+        PromoteBuf& operator=(const PromoteBuf&) = delete;
+
+        void setWakeCallback(std::function<void()> cb) { wakeCb_ = std::move(cb); }
+
+        size_t pending() const {
+            return writeHead_.load(std::memory_order_relaxed) - drainTail_;
+        }
+
         bool enqueue(HashPair hashes) {
             size_t pos = writeHead_.fetch_add(1, std::memory_order_relaxed);
             size_t idx = pos % kCapacity;
             if (slots_[idx].ready.load(std::memory_order_acquire)) return false;
             slots_[idx].hashes = hashes;
             slots_[idx].ready.store(true, std::memory_order_release);
-            return (pos + 1) % kDrainEvery != 0;
+            if (pending() >= kThreshold && wakeCb_) wakeCb_();
+            return true;
         }
 
         void drain(FlatList& t1, FlatList& t2) {
             size_t head = writeHead_.load(std::memory_order_acquire);
-            size_t drained = 0;
-            while (drainTail_ < head && drained < kCapacity) {
+            while (drainTail_ < head) {
                 size_t idx = drainTail_ % kCapacity;
                 if (!slots_[idx].ready.load(std::memory_order_acquire)) break;
                 slots_[idx].ready.store(false, std::memory_order_relaxed);
@@ -180,14 +245,12 @@ namespace NuAtlas {
                     t2.splice_front(h2);
                 }
                 ++drainTail_;
-                ++drained;
             }
         }
 
         void drainSingle(FlatList& lru) {
             size_t head = writeHead_.load(std::memory_order_acquire);
-            size_t drained = 0;
-            while (drainTail_ < head && drained < kCapacity) {
+            while (drainTail_ < head) {
                 size_t idx = drainTail_ % kCapacity;
                 if (!slots_[idx].ready.load(std::memory_order_acquire)) break;
                 slots_[idx].ready.store(false, std::memory_order_relaxed);
@@ -196,7 +259,6 @@ namespace NuAtlas {
                     lru.splice_front(h2);
                 }
                 ++drainTail_;
-                ++drained;
             }
         }
     };
@@ -356,6 +418,10 @@ namespace NuAtlas {
 
         std::optional<Value> Find(std::string_view key) const noexcept {
             HashPair pair = HashKey(key);
+            return FindByHash(pair);
+        }
+
+        std::optional<Value> FindByHash(const HashPair& pair) const noexcept {
             ProbeResult result = Probe<false>(pair);
             if (result.matchSlot == SIZE_MAX) return std::nullopt;
             const Slot& slot = Slots()[result.matchSlot];
@@ -602,6 +668,13 @@ namespace NuAtlas {
             : store_(cap, af, ff), t1_(2 * cap), t2_(2 * cap), b1_(2 * cap), b2_(2 * cap),
               capacity_(cap), p_(0) {}
 
+        void setWakeCallback(std::function<void()> cb) { promoteBuf_.setWakeCallback(std::move(cb)); }
+
+        void drainPromotes() {
+            std::lock_guard<SpinLock> guard(arcLock_);
+            promoteBuf_.drain(t1_, t2_);
+        }
+
         void SetEvictionCallback(EvictionCallback cb) { evictionCallback_ = cb; }
 
         bool ForceEvictOne() {
@@ -631,16 +704,10 @@ namespace NuAtlas {
         uint8_t GetDesire(uint64_t) const { return 0; }
 
         std::optional<Value> Find(const std::string& key) {
-            auto val = store_.Find(key);
-            if (!val) return std::nullopt;
-
             HashPair hashes = HashKey(key);
-            if (!promoteBuf_.enqueue(hashes)) {
-                if (arcLock_.try_lock()) {
-                    promoteBuf_.drain(t1_, t2_);
-                    arcLock_.unlock();
-                }
-            }
+            auto val = store_.FindByHash(hashes);
+            if (!val) return std::nullopt;
+            promoteBuf_.enqueue(hashes);
             return val;
         }
 
@@ -1150,6 +1217,13 @@ namespace NuAtlas {
             : store_(cap, af, ff), t1_(2 * cap), t2_(2 * cap), b1_(2 * cap), b2_(2 * cap),
               scorer_(cap), capacity_(cap), p_(0) {}
 
+        void setWakeCallback(std::function<void()> cb) { promoteBuf_.setWakeCallback(std::move(cb)); }
+
+        void drainPromotes() {
+            std::lock_guard<SpinLock> guard(lock_);
+            promoteBuf_.drain(t1_, t2_);
+        }
+
         void SetEvictionCallback(EvictionCallback cb) { evictionCallback_ = cb; }
 
         uint8_t GetDesire(uint64_t h2) const {
@@ -1163,16 +1237,10 @@ namespace NuAtlas {
         }
 
         std::optional<Value> Find(const std::string& key) {
-            auto val = store_.Find(key);
-            if (!val) return std::nullopt;
-
             HashPair hashes = HashKey(key);
-            if (!promoteBuf_.enqueue(hashes)) {
-                if (lock_.try_lock()) {
-                    promoteBuf_.drain(t1_, t2_);
-                    lock_.unlock();
-                }
-            }
+            auto val = store_.FindByHash(hashes);
+            if (!val) return std::nullopt;
+            promoteBuf_.enqueue(hashes);
             return val;
         }
 
@@ -1306,6 +1374,15 @@ namespace NuAtlas {
                       CMapFreeFn ff = CMapDefaultFree)
             : store_(cap, af, ff), lru_(2 * cap), capacity_(cap) {}
 
+        ~ConcurrentLRU() = default;
+
+        void setWakeCallback(std::function<void()> cb) { promoteBuf_.setWakeCallback(std::move(cb)); }
+
+        void drainPromotes() {
+            std::lock_guard<SpinLock> guard(lock_);
+            promoteBuf_.drainSingle(lru_);
+        }
+
         void SetEvictionCallback(EvictionCallback cb) {
             evictionCallback_ = std::move(cb);
         }
@@ -1319,15 +1396,10 @@ namespace NuAtlas {
         uint8_t GetDesire(uint64_t) const { return 0; }
 
         std::optional<Value> Find(const std::string& key) {
-            auto val = store_.Find(key);
-            if (!val) return std::nullopt;
             HashPair hashes = HashKey(key);
-            if (!promoteBuf_.enqueue(hashes)) {
-                if (lock_.try_lock()) {
-                    promoteBuf_.drainSingle(lru_);
-                    lock_.unlock();
-                }
-            }
+            auto val = store_.FindByHash(hashes);
+            if (!val) return std::nullopt;
+            promoteBuf_.enqueue(hashes);
             return val;
         }
 
@@ -1414,6 +1486,8 @@ namespace NuAtlas {
             : store_(cap, af, ff) {}
 
         void SetEvictionCallback(auto) {}
+        void setWakeCallback(std::function<void()>) {}
+        void drainPromotes() {}
 
         uint8_t GetDesire(uint64_t) const { return 0; }
 
