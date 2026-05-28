@@ -186,6 +186,44 @@ public:
     size_t NumBlocks() const { return numBlocks_; }
 };
 
+struct AnnexDrainBuf {
+    static constexpr size_t kCapacity = 131072;
+    struct Slot {
+        uint64_t h2;
+        uint32_t nodeId;
+        std::atomic<bool> ready{false};
+    };
+    std::unique_ptr<Slot[]> slots_;
+    std::atomic<size_t> writePos_{0};
+    size_t readPos_{0};
+
+    AnnexDrainBuf() : slots_(new Slot[kCapacity]{}) {}
+
+    void enqueue(uint64_t h2, uint32_t nodeId) noexcept {
+        size_t pos = writePos_.fetch_add(1, std::memory_order_relaxed) % kCapacity;
+        slots_[pos].h2 = h2;
+        slots_[pos].nodeId = nodeId;
+        slots_[pos].ready.store(true, std::memory_order_release);
+    }
+
+    bool hasPending() const noexcept {
+        return writePos_.load(std::memory_order_acquire) > readPos_;
+    }
+
+    template <typename Fn>
+    void drain(Fn&& fn, size_t maxBatch = 256) noexcept {
+        size_t drained = 0;
+        while (drained < maxBatch) {
+            size_t pos = readPos_ % kCapacity;
+            if (!slots_[pos].ready.load(std::memory_order_acquire)) break;
+            fn(slots_[pos].h2, slots_[pos].nodeId);
+            slots_[pos].ready.store(false, std::memory_order_relaxed);
+            readPos_++;
+            drained++;
+        }
+    }
+};
+
 template<typename Policy>
 struct PerNodeDetails{
     Numatic::NumaLocalMemoryResource nodeMR;
@@ -203,6 +241,11 @@ struct PerNodeDetails{
     float AdaptiveStep = 0.05f;
     BlockedBloomFilter KeyBloom;
     uint8_t MaxDeadAge = 8;
+
+    OpenIdx annexIdx;
+    SpinLock annexLock;
+    AnnexDrainBuf annexDrainBuf;
+    bool annexEnabled = false;
 
     // --- Reserve pages for background eviction ---
     static constexpr size_t kDefaultReserveCapacity = 2;
@@ -367,8 +410,8 @@ struct PerNodeDetails{
         return (static_cast<uint64_t>(nodeId) << 48) | (seq & 0xFFFFFFFFFFFF);
     }
 
-    PerNodeDetails(size_t arcCap, CMapAllocFn af = CMapDefaultAlloc, CMapFreeFn ff = CMapDefaultFree)
-        : NodePages(&nodeMR), KeyStore(arcCap, af, ff) { ShadowDesire.init(arcCap * 2); }
+    PerNodeDetails(size_t arcCap, CMapAllocFn af = CMapDefaultAlloc, CMapFreeFn ff = CMapDefaultFree, bool useAnnex = false, size_t annexCap = 0)
+        : NodePages(&nodeMR), KeyStore(arcCap, af, ff), annexIdx(annexCap > 0 ? annexCap : 1), annexEnabled(useAnnex) { ShadowDesire.init(arcCap * 2); }
 };
 
 template<typename Policy>
@@ -401,7 +444,8 @@ NuAtlas::FurrBall<Policy>::FurrBall(const FurrConfig& config, size_t numPages) n
      StrictCoherence(config.StrictCoherence),
       UseBloomFilter(config.EnableBloomFilter),
       BloomFilterBytes(config.BloomFilterBytes),
-      HashRouted(config.HashRouted),
+       HashRouted(config.HashRouted),
+       UseAnnex(config.EnableAnnex),
     policyConfig(Policy::MakeConfig(config.remarcConfig)),
     DataMembers(new ImplDetail())
 {
@@ -1093,6 +1137,19 @@ void NuAtlas::FurrBall<Policy>::DrainPromotes(int nodeID) noexcept {
     details->KeyStore.drainPromotes();
 }
 
+template<typename Policy>
+void NuAtlas::FurrBall<Policy>::DrainAnnex(int nodeID) noexcept {
+    if (!DataMembers || !DataMembers->privateNumaState) return;
+    if (nodeID < 0 || nodeID >= Detail::globalNumaState.NumaNodeCount) return;
+    auto* details = DataMembers->privateNumaState->NodeDetails[nodeID];
+    if (!details || !details->annexEnabled) return;
+    if (!details->annexDrainBuf.hasPending()) return;
+    std::lock_guard<SpinLock> lk(details->annexLock);
+    details->annexDrainBuf.drain([&](uint64_t h2, uint32_t nid) {
+        details->annexIdx.insert(h2, nid);
+    });
+}
+
 // =====================================================================
 //  ManagePages: REMARC-driven page eviction + key migration (simulated)
 // =====================================================================
@@ -1651,15 +1708,40 @@ Error NuAtlas::FurrBall<Policy>::Get(const std::string &key, void* outBuf, size_
             DataMembers->privateNumaState->NodeDetails[local]->NodeLocalHitCount.fetch_add(1, std::memory_order_relaxed);
             return NO_ERR;
         }
-        auto& order = DataMembers->privateNumaState->probeOrder[local];
-        for(int n : order){
-            if (UseBloomFilter) {
-                auto* remoteDetails = DataMembers->privateNumaState->NodeDetails[n];
-                if (!remoteDetails->KeyBloom.MayContain(hp.h1, hp.h2))
-                    continue;
+        if (UseAnnex) {
+            auto* localDetails = DataMembers->privateNumaState->NodeDetails[local];
+            int owner = -1;
+            {
+                std::lock_guard<SpinLock> lk(localDetails->annexLock);
+                if (localDetails->annexDrainBuf.hasPending()) {
+                    localDetails->annexDrainBuf.drain([&](uint64_t h2, uint32_t nid) {
+                        localDetails->annexIdx.insert(h2, nid);
+                    });
+                }
+                uint32_t* found = localDetails->annexIdx.find(hp.h2);
+                if (found) owner = static_cast<int>(*found);
             }
-            err = tryNode(n);
-            if(err == NO_ERR) return NO_ERR;
+            if (owner >= 0 && owner != local && owner < nodeCount) {
+                err = tryNode(owner);
+                if(err == NO_ERR) return NO_ERR;
+            }
+            auto& order = DataMembers->privateNumaState->probeOrder[local];
+            for(int n : order){
+                if (n == owner) continue;
+                err = tryNode(n);
+                if(err == NO_ERR) return NO_ERR;
+            }
+        } else {
+            auto& order = DataMembers->privateNumaState->probeOrder[local];
+            for(int n : order){
+                if (UseBloomFilter) {
+                    auto* remoteDetails = DataMembers->privateNumaState->NodeDetails[n];
+                    if (!remoteDetails->KeyBloom.MayContain(hp.h1, hp.h2))
+                        continue;
+                }
+                err = tryNode(n);
+                if(err == NO_ERR) return NO_ERR;
+            }
         }
     }else{
         for(int n = 0; n < nodeCount; n++){
@@ -1990,6 +2072,16 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
             desire = Policy::OnLocalAccess(desire, policyConfig);
             details->ShadowDesire.set(hp.h2, desire);
         }
+        if (UseAnnex && nodeCount > 1) {
+            {
+                std::lock_guard<SpinLock> lk(details->annexLock);
+                details->annexIdx.insert(hp.h2, static_cast<uint32_t>(targetNode));
+            }
+            for (int n = 0; n < nodeCount; n++) {
+                if (n == targetNode) continue;
+                DataMembers->privateNumaState->NodeDetails[n]->annexDrainBuf.enqueue(hp.h2, static_cast<uint32_t>(targetNode));
+            }
+        }
     } else {
         page.RemoveKeyByHash(hp);
     }
@@ -2124,7 +2216,7 @@ FurrBall<Policy> *FurrBall<Policy>::CreateBall(const std::string &DBpath, const 
                 }
                 void* auxD = (void*)Numatic::AllocateLocal(sizeof(PerNodeDetails<Policy>));
                 Logger::getInstance().info(std::string("Per-node cache will have an inital capacity of ") + std::to_string(nodeArcCap) + " Keys." );
-                auto* details = new(auxD) PerNodeDetails<Policy>(nodeArcCap, Numatic::AllocateLocal, Numatic::FreeNUMA);
+                auto* details = new(auxD) PerNodeDetails<Policy>(nodeArcCap, Numatic::AllocateLocal, Numatic::FreeNUMA, config.EnableAnnex, config.EnableAnnex ? nodeArcCap : 0);
                 details->InitDedupRing();
                 if (config.EnableBloomFilter && config.BloomFilterBytes >= 64) {
                     details->KeyBloom.Init(config.BloomFilterBytes);
@@ -2240,6 +2332,7 @@ FurrBall<Policy> *FurrBall<Policy>::CreateBall(const std::string &DBpath, const 
                     continue;
                 }
                 ball->DrainPromotes(nodeId);
+                ball->DrainAnnex(nodeId);
                 if (!ball->DisableMigration) ball->BackgroundEvict(nodeId);
                 ball->DrainMigrations(nodeId);
                 ball->SyncNodeStats(nodeId);

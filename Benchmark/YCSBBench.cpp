@@ -996,6 +996,75 @@ struct AnnexCMapAdapter {
 };
 int AnnexCMapAdapter::runId = 0;
 
+template <Routing R = Routing::ThreadLocal, typename Policy = ArcPolicy>
+struct FurrBallAnnexAdapter {
+    static constexpr const char* Name = "FurrBall_TL_Annex";
+    static constexpr size_t PAGE_SIZE = 4096;
+    FurrBall<Policy>* fb = nullptr;
+    std::string fbPath;
+    int nodeCount = 1;
+    size_t footprintBytes_ = 0;
+    static int runId;
+
+    void create(int nodeCount, int totalCapacityKB) {
+        this->nodeCount = nodeCount;
+        footprintBytes_ = (size_t)totalCapacityKB * 1024;
+
+        auto& gs = Detail::globalNumaState;
+        bool needsInit = !gs.Initialized || gs.NumaNodeCount != nodeCount;
+        if (needsInit) {
+            if (gs.Initialized) {
+                for (int i = 0; i < gs.NumaNodeCount; i++) {
+                    gs.Workers[i].Stop();
+                    gs.Workers[i].~NodeJob();
+                }
+                free(gs.Workers);
+                gs = {};
+            }
+            gs.NumaNodeCount = nodeCount;
+            if (nodeCount > 1) gs.SysNumaPageSize = 65536;
+            gs.Workers = (NodeJob*)malloc(sizeof(NodeJob) * nodeCount);
+            for (int i = 0; i < nodeCount; i++) {
+                new(&gs.Workers[i]) NodeJob(i);
+                gs.Workers[i].Start([](){});
+            }
+            gs.Initialized = true;
+        }
+
+        fbPath = "/tmp/ycsb_annex_" + std::to_string(runId++);
+
+        NumaConfig nc;
+        nc.AllocateUsingNodePageSize = false;
+        nc.UseThreadLocalRouting = (R == Routing::ThreadLocal);
+
+        FurrConfig fc;
+        fc.PageSize = PAGE_SIZE;
+        fc.TotalCapacityBytes = (size_t)totalCapacityKB * 1024;
+        fc.IsVolatile = true;
+        fc.EnableNUMA = true;
+        fc.EnableAnnex = true;
+        fc.numaConfig = &nc;
+
+        fb = FurrBall<Policy>::CreateBall(fbPath, fc, true);
+    }
+
+    bool get(const std::string& key, uint8_t* buf, size_t bufSize, size_t& outSize) {
+        Error err = fb->Get(key, buf, bufSize, outSize);
+        return (err == NO_ERR && outSize > 0);
+    }
+
+    void put(const std::string& key, const uint8_t* data, size_t size) {
+        fb->Set(key, const_cast<uint8_t*>(data), size);
+    }
+
+    void destroy() {
+        if (fb) { delete fb; fb = nullptr; }
+    }
+
+    int numNodes() const { return nodeCount; }
+};
+template <Routing R, typename Policy> int FurrBallAnnexAdapter<R, Policy>::runId = 0;
+
 struct TBBAdapter {
     static constexpr const char* Name = "TBB";
     using Map = tbb::concurrent_hash_map<std::string, std::vector<uint8_t>>;
@@ -1396,6 +1465,12 @@ BENCHMARK_DEFINE_F(YCSB_FurrBallAnnex, Run)(benchmark::State& state) {
     RunYCSBBench<AnnexCMapAdapter>(state);
 }
 
+// --- FurrBall TL with integrated Annex YCSB ---
+struct YCSB_FurrBallTLAnnex : YCSBBench<FurrBallAnnexAdapter<>> {};
+BENCHMARK_DEFINE_F(YCSB_FurrBallTLAnnex, Run)(benchmark::State& state) {
+    RunYCSBBench<FurrBallAnnexAdapter<>>(state);
+}
+
 // --- TBB YCSB ---
 struct YCSB_TBB : YCSBBench<TBBAdapter> {};
 BENCHMARK_DEFINE_F(YCSB_TBB, Run)(benchmark::State& state) {
@@ -1479,6 +1554,10 @@ BENCHMARK_REGISTER_F(YCSB_FurrBallAnnex, Run)
     ->Args({2, 32768, 10, 64, 100000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallTLAnnex, Run)
+    ->Args({2, 32768, 10, 64, 100000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(YCSB_TBB, Run)
     ->Args({2, 32768, 10, 64, 100000})
@@ -1517,6 +1596,10 @@ BENCHMARK_REGISTER_F(YCSB_FurrBallAnnex, Run)
     ->Args({2, 32768, 11, 64, 100000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallTLAnnex, Run)
+    ->Args({2, 32768, 11, 64, 100000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(YCSB_TBB, Run)
     ->Args({2, 32768, 11, 64, 100000})
@@ -1552,6 +1635,10 @@ BENCHMARK_REGISTER_F(YCSB_FurrBallFrag, Run)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(YCSB_FurrBallAnnex, Run)
+    ->Args({2, 32768, 12, 64, 100000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallTLAnnex, Run)
     ->Args({2, 32768, 12, 64, 100000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
@@ -1594,6 +1681,10 @@ BENCHMARK_REGISTER_F(YCSB_FurrBallAnnex, Run)
     ->Args({4, 65536, 10, 64, 100000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallTLAnnex, Run)
+    ->Args({4, 65536, 10, 64, 100000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
 BENCHMARK_REGISTER_F(YCSB_TBB, Run)
     ->Args({4, 65536, 10, 64, 100000})
     ->Iterations(10)
@@ -1626,6 +1717,10 @@ BENCHMARK_REGISTER_F(YCSB_FurrBallAnnex, Run)
     ->Args({4, 65536, 11, 64, 100000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallTLAnnex, Run)
+    ->Args({4, 65536, 11, 64, 100000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
 BENCHMARK_REGISTER_F(YCSB_TBB, Run)
     ->Args({4, 65536, 11, 64, 100000})
     ->Iterations(10)
@@ -1655,6 +1750,10 @@ BENCHMARK_REGISTER_F(YCSB_FurrBallFrag, Run)
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 BENCHMARK_REGISTER_F(YCSB_FurrBallAnnex, Run)
+    ->Args({4, 65536, 12, 64, 100000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallTLAnnex, Run)
     ->Args({4, 65536, 12, 64, 100000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);

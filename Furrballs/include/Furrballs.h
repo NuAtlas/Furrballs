@@ -301,6 +301,7 @@ namespace NuAtlas {
                 bool EnableBloomFilter : 1;
                 bool HashRouted : 1;
                 bool SkipMaintenance : 1;
+                bool EnableAnnex : 1;
             };
             uint16_t flags = 0;
         };
@@ -331,6 +332,7 @@ namespace NuAtlas {
         bool StrictCoherence = false;
         bool UseBloomFilter = false;
         bool HashRouted = false;
+        bool UseAnnex = false;
         size_t BloomFilterBytes = 0;
         typename Policy::Config policyConfig;
 
@@ -378,6 +380,7 @@ namespace NuAtlas {
 
         void BackgroundEvict(int nodeID) noexcept;
         void DrainPromotes(int nodeID) noexcept;
+        void DrainAnnex(int nodeID) noexcept;
 
         void SyncNodeStats(int nodeID) noexcept;
 
