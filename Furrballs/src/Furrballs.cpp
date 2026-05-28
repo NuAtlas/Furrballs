@@ -186,11 +186,17 @@ public:
     size_t NumBlocks() const { return numBlocks_; }
 };
 
+struct FatAnnexEntry {
+    uint32_t nodeId;
+    void* dataOffset;
+    uint32_t dataSize;
+};
+
 struct AnnexDrainBuf {
     static constexpr size_t kCapacity = 131072;
     struct Slot {
         uint64_t h2;
-        uint32_t nodeId;
+        FatAnnexEntry entry;
         std::atomic<bool> ready{false};
     };
     std::unique_ptr<Slot[]> slots_;
@@ -199,10 +205,10 @@ struct AnnexDrainBuf {
 
     AnnexDrainBuf() : slots_(new Slot[kCapacity]{}) {}
 
-    void enqueue(uint64_t h2, uint32_t nodeId) noexcept {
+    void enqueue(uint64_t h2, FatAnnexEntry entry) noexcept {
         size_t pos = writePos_.fetch_add(1, std::memory_order_relaxed) % kCapacity;
         slots_[pos].h2 = h2;
-        slots_[pos].nodeId = nodeId;
+        slots_[pos].entry = entry;
         slots_[pos].ready.store(true, std::memory_order_release);
     }
 
@@ -216,7 +222,7 @@ struct AnnexDrainBuf {
         while (drained < maxBatch) {
             size_t pos = readPos_ % kCapacity;
             if (!slots_[pos].ready.load(std::memory_order_acquire)) break;
-            fn(slots_[pos].h2, slots_[pos].nodeId);
+            fn(slots_[pos].h2, slots_[pos].entry);
             slots_[pos].ready.store(false, std::memory_order_relaxed);
             readPos_++;
             drained++;
@@ -242,7 +248,7 @@ struct PerNodeDetails{
     BlockedBloomFilter KeyBloom;
     uint8_t MaxDeadAge = 8;
 
-    OpenIdx annexIdx;
+    OpenIdx<FatAnnexEntry> annexIdx;
     SpinLock annexLock;
     AnnexDrainBuf annexDrainBuf;
     bool annexEnabled = false;
@@ -1149,8 +1155,8 @@ void NuAtlas::FurrBall<Policy>::DrainAnnex(int nodeID) noexcept {
     if (!details || !details->annexEnabled) return;
     if (!details->annexDrainBuf.hasPending()) return;
     std::lock_guard<SpinLock> lk(details->annexLock);
-    details->annexDrainBuf.drain([&](uint64_t h2, uint32_t nid) {
-        details->annexIdx.insert(h2, nid);
+    details->annexDrainBuf.drain([&](uint64_t h2, const FatAnnexEntry& entry) {
+        details->annexIdx.insert(h2, entry);
     });
 }
 
@@ -1332,28 +1338,32 @@ Error NuAtlas::FurrBall<Policy>::Get(const std::string &key, void* outBuf, size_
         }
         if (UseAnnex) {
             auto* localDetails = DataMembers->privateNumaState->NodeDetails[local];
-            int owner = -1;
+            FatAnnexEntry fatEntry{};
+            bool hasFat = false;
             {
                 std::lock_guard<SpinLock> lk(localDetails->annexLock);
                 if (localDetails->annexDrainBuf.hasPending()) {
-                    localDetails->annexDrainBuf.drain([&](uint64_t h2, uint32_t nid) {
-                        localDetails->annexIdx.insert(h2, nid);
+                    localDetails->annexDrainBuf.drain([&](uint64_t h2, const FatAnnexEntry& entry) {
+                        localDetails->annexIdx.insert(h2, entry);
                     });
                 }
-                uint32_t* found = localDetails->annexIdx.find(hp.h2);
-                if (found) owner = static_cast<int>(*found);
+                FatAnnexEntry* found = localDetails->annexIdx.find(hp.h2);
+                if (found) { fatEntry = *found; hasFat = true; }
                 else localDetails->AnnexLookupMiss.fetch_add(1, std::memory_order_relaxed);
             }
-            if (owner >= 0 && owner != local && owner < nodeCount) {
-                err = tryNode(owner);
-                if(err == NO_ERR) {
+            if (hasFat && fatEntry.nodeId != static_cast<uint32_t>(local) && fatEntry.nodeId < static_cast<uint32_t>(nodeCount)) {
+                if (BufSize >= fatEntry.dataSize) {
+                    _mm_prefetch(fatEntry.dataOffset, _MM_HINT_T0);
+                    memcpy(outBuf, fatEntry.dataOffset, fatEntry.dataSize);
+                    outSize = fatEntry.dataSize;
                     localDetails->AnnexDirectedHit.fetch_add(1, std::memory_order_relaxed);
                     return NO_ERR;
                 }
+                return BUF_NOT_LARGE_ENOUGH;
             }
             auto& order = DataMembers->privateNumaState->probeOrder[local];
             for(int n : order){
-                if (n == owner) continue;
+                if (hasFat && n == static_cast<int>(fatEntry.nodeId)) continue;
                 err = tryNode(n);
                 if(err == NO_ERR) {
                     localDetails->AnnexFallbackHit.fetch_add(1, std::memory_order_relaxed);
@@ -1702,14 +1712,15 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
             details->ShadowDesire.set(hp.h2, desire);
         }
         if (UseAnnex && nodeCount > 1) {
+            FatAnnexEntry fatEntry{static_cast<uint32_t>(targetNode), metadata.DataOffset, static_cast<uint32_t>(metadata.DataSize)};
             {
                 std::lock_guard<SpinLock> lk(details->annexLock);
-                details->annexIdx.insert(hp.h2, static_cast<uint32_t>(targetNode));
+                details->annexIdx.insert(hp.h2, fatEntry);
                 details->AnnexEntriesInserted.fetch_add(1, std::memory_order_relaxed);
             }
             for (int n = 0; n < nodeCount; n++) {
                 if (n == targetNode) continue;
-                DataMembers->privateNumaState->NodeDetails[n]->annexDrainBuf.enqueue(hp.h2, static_cast<uint32_t>(targetNode));
+                DataMembers->privateNumaState->NodeDetails[n]->annexDrainBuf.enqueue(hp.h2, fatEntry);
             }
         }
     } else {

@@ -18,11 +18,12 @@
 
 namespace NuAtlas {
 
+    template<typename V = uint32_t>
     class OpenIdx {
         static constexpr uint64_t kEmpty = UINT64_MAX;
 
         std::vector<uint64_t> keys_;
-        std::vector<uint32_t> vals_;
+        std::vector<V> vals_;
         size_t mask_;
 
     public:
@@ -30,7 +31,7 @@ namespace NuAtlas {
             size_t sz = 4;
             while (sz < capacity * 3) sz <<= 1;
             keys_.assign(sz, kEmpty);
-            vals_.assign(sz, 0);
+            vals_.assign(sz, V{});
             mask_ = sz - 1;
         }
 
@@ -44,7 +45,7 @@ namespace NuAtlas {
             return false;
         }
 
-        uint32_t* find(uint64_t key) noexcept {
+        V* find(uint64_t key) noexcept {
             size_t idx = key & mask_;
             for (size_t i = 0; i <= mask_; i++) {
                 if (keys_[idx] == key) return &vals_[idx];
@@ -54,7 +55,7 @@ namespace NuAtlas {
             return nullptr;
         }
 
-        void insert(uint64_t key, uint32_t value) noexcept {
+        void insert(uint64_t key, V value) noexcept {
             size_t idx = key & mask_;
             for (;;) {
                 if (keys_[idx] == kEmpty || keys_[idx] == key) {
@@ -103,7 +104,7 @@ namespace NuAtlas {
         };
 
         std::vector<Slot> slots_;
-        OpenIdx idx_;
+        OpenIdx<> idx_;
         uint32_t head_{NIL};
         uint32_t tail_{NIL};
         uint32_t freeHead_{NIL};

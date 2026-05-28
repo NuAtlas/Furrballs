@@ -850,7 +850,7 @@ struct AnnexCMapAdapter {
 
     struct alignas(64) AnnexNode {
         SpinLock lock;
-        OpenIdx idx;
+        OpenIdx<> idx;
         explicit AnnexNode(size_t cap) : idx(cap) {}
     };
 
