@@ -1713,11 +1713,6 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
         }
         if (UseAnnex && nodeCount > 1) {
             FatAnnexEntry fatEntry{static_cast<uint32_t>(targetNode), metadata.DataOffset, static_cast<uint32_t>(metadata.DataSize)};
-            {
-                std::lock_guard<SpinLock> lk(details->annexLock);
-                details->annexIdx.insert(hp.h2, fatEntry);
-                details->AnnexEntriesInserted.fetch_add(1, std::memory_order_relaxed);
-            }
             for (int n = 0; n < nodeCount; n++) {
                 if (n == targetNode) continue;
                 DataMembers->privateNumaState->NodeDetails[n]->annexDrainBuf.enqueue(hp.h2, fatEntry);
