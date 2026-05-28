@@ -854,8 +854,47 @@ struct AnnexCMapAdapter {
         explicit AnnexNode(size_t cap) : idx(cap) {}
     };
 
+    struct DrainBuf {
+        static constexpr size_t kCapacity = 131072;
+        struct Slot {
+            uint64_t h2;
+            uint32_t nodeId;
+            std::atomic<bool> ready{false};
+        };
+        std::unique_ptr<Slot[]> slots_;
+        std::atomic<size_t> writePos_{0};
+        size_t readPos_{0};
+
+        DrainBuf() : slots_(new Slot[kCapacity]{}) {}
+
+        void enqueue(uint64_t h2, uint32_t nodeId) noexcept {
+            size_t pos = writePos_.fetch_add(1, std::memory_order_relaxed) % kCapacity;
+            slots_[pos].h2 = h2;
+            slots_[pos].nodeId = nodeId;
+            slots_[pos].ready.store(true, std::memory_order_release);
+        }
+
+        bool hasPending() const noexcept {
+            return writePos_.load(std::memory_order_acquire) > readPos_;
+        }
+
+        template <typename Fn>
+        void drain(Fn&& fn, size_t maxBatch = 256) noexcept {
+            size_t drained = 0;
+            while (drained < maxBatch) {
+                size_t pos = readPos_ % kCapacity;
+                if (!slots_[pos].ready.load(std::memory_order_acquire)) break;
+                fn(slots_[pos].h2, slots_[pos].nodeId);
+                slots_[pos].ready.store(false, std::memory_order_relaxed);
+                readPos_++;
+                drained++;
+            }
+        }
+    };
+
     std::vector<std::unique_ptr<ConcurrentARC<KeyMeta>>> stores_;
     std::vector<std::unique_ptr<AnnexNode>> annex_;
+    std::vector<std::unique_ptr<DrainBuf>> drainBufs_;
     int nodeCount_ = 1;
     size_t footprintBytes_ = 0;
     static int runId;
@@ -871,9 +910,11 @@ struct AnnexCMapAdapter {
 
         stores_.clear();
         annex_.clear();
+        drainBufs_.clear();
         for (int i = 0; i < nodeCount_; i++) {
             stores_.push_back(std::make_unique<ConcurrentARC<KeyMeta>>(perNode));
             annex_.push_back(std::make_unique<AnnexNode>(perNode));
+            drainBufs_.push_back(std::make_unique<DrainBuf>());
         }
     }
 
@@ -891,6 +932,12 @@ struct AnnexCMapAdapter {
         int owner = -1;
         {
             std::lock_guard<SpinLock> lk(annex_[myNode]->lock);
+            auto* db = drainBufs_[myNode].get();
+            if (db->hasPending()) {
+                db->drain([&](uint64_t h2, uint32_t nid) {
+                    annex_[myNode]->idx.insert(h2, nid);
+                });
+            }
             uint32_t* found = annex_[myNode]->idx.find(hashes.h2);
             if (found) owner = static_cast<int>(*found);
         }
@@ -928,15 +975,21 @@ struct AnnexCMapAdapter {
         stores_[myNode]->Set(key, meta);
 
         HashPair hashes = HashKey(key);
+        {
+            std::lock_guard<SpinLock> lk(annex_[myNode]->lock);
+            annex_[myNode]->idx.insert(hashes.h2, static_cast<uint32_t>(myNode));
+        }
+
         for (int i = 0; i < nodeCount_; i++) {
-            std::lock_guard<SpinLock> lk(annex_[i]->lock);
-            annex_[i]->idx.insert(hashes.h2, static_cast<uint32_t>(myNode));
+            if (i == myNode) continue;
+            drainBufs_[i]->enqueue(hashes.h2, static_cast<uint32_t>(myNode));
         }
     }
 
     void destroy() {
         stores_.clear();
         annex_.clear();
+        drainBufs_.clear();
     }
 
     int numNodes() const { return nodeCount_; }
