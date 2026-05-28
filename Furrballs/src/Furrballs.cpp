@@ -192,6 +192,13 @@ struct FatAnnexEntry {
     uint32_t dataSize;
 };
 
+struct AnnexOutBatch {
+    static constexpr size_t kBatchSize = 16;
+    uint64_t h2s[kBatchSize];
+    FatAnnexEntry entries[kBatchSize];
+    size_t count = 0;
+};
+
 struct AnnexDrainBuf {
     static constexpr size_t kCapacity = 131072;
     struct Slot {
@@ -210,6 +217,16 @@ struct AnnexDrainBuf {
         slots_[pos].h2 = h2;
         slots_[pos].entry = entry;
         slots_[pos].ready.store(true, std::memory_order_release);
+    }
+
+    void enqueueBatch(const uint64_t* h2s, const FatAnnexEntry* entries, size_t count) noexcept {
+        size_t pos = writePos_.fetch_add(count, std::memory_order_relaxed);
+        for (size_t i = 0; i < count; i++) {
+            size_t slotPos = (pos + i) % kCapacity;
+            slots_[slotPos].h2 = h2s[i];
+            slots_[slotPos].entry = entries[i];
+            slots_[slotPos].ready.store(true, std::memory_order_release);
+        }
     }
 
     bool hasPending() const noexcept {
@@ -251,6 +268,9 @@ struct PerNodeDetails{
     OpenIdx<FatAnnexEntry> annexIdx;
     SpinLock annexLock;
     AnnexDrainBuf annexDrainBuf;
+    static constexpr int kMaxAnnexNodes = 8;
+    AnnexOutBatch annexOutBatches[kMaxAnnexNodes];
+    int annexOutBatchCount = 0;
     bool annexEnabled = false;
 
     // --- Reserve pages for background eviction ---
@@ -1338,6 +1358,14 @@ Error NuAtlas::FurrBall<Policy>::Get(const std::string &key, void* outBuf, size_
         }
         if (UseAnnex) {
             auto* localDetails = DataMembers->privateNumaState->NodeDetails[local];
+            for (int n = 0; n < nodeCount; n++) {
+                if (n == local) continue;
+                auto& batch = localDetails->annexOutBatches[n];
+                if (batch.count > 0) {
+                    DataMembers->privateNumaState->NodeDetails[n]->annexDrainBuf.enqueueBatch(batch.h2s, batch.entries, batch.count);
+                    batch.count = 0;
+                }
+            }
             FatAnnexEntry fatEntry{};
             bool hasFat = false;
             {
@@ -1713,9 +1741,18 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
         }
         if (UseAnnex && nodeCount > 1) {
             FatAnnexEntry fatEntry{static_cast<uint32_t>(targetNode), metadata.DataOffset, static_cast<uint32_t>(metadata.DataSize)};
+            int callingNode = Numatic::GetCurrentNode();
+            auto* localDetails = DataMembers->privateNumaState->NodeDetails[callingNode];
             for (int n = 0; n < nodeCount; n++) {
                 if (n == targetNode) continue;
-                DataMembers->privateNumaState->NodeDetails[n]->annexDrainBuf.enqueue(hp.h2, fatEntry);
+                auto& batch = localDetails->annexOutBatches[n];
+                batch.h2s[batch.count] = hp.h2;
+                batch.entries[batch.count] = fatEntry;
+                batch.count++;
+                if (batch.count >= AnnexOutBatch::kBatchSize) {
+                    DataMembers->privateNumaState->NodeDetails[n]->annexDrainBuf.enqueueBatch(batch.h2s, batch.entries, batch.count);
+                    batch.count = 0;
+                }
             }
         }
     } else {
@@ -1853,6 +1890,7 @@ FurrBall<Policy> *FurrBall<Policy>::CreateBall(const std::string &DBpath, const 
                 void* auxD = (void*)Numatic::AllocateLocal(sizeof(PerNodeDetails<Policy>));
                 Logger::getInstance().info(std::string("Per-node cache will have an inital capacity of ") + std::to_string(nodeArcCap) + " Keys." );
                 auto* details = new(auxD) PerNodeDetails<Policy>(nodeArcCap, Numatic::AllocateLocal, Numatic::FreeNUMA, config.EnableAnnex, config.EnableAnnex ? nodeArcCap : 0);
+                if (config.EnableAnnex) details->annexOutBatchCount = Detail::globalNumaState.NumaNodeCount;
                 details->InitDedupRing();
                 if (config.EnableBloomFilter && config.BloomFilterBytes >= 64) {
                     details->KeyBloom.Init(config.BloomFilterBytes);
