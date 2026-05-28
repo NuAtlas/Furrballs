@@ -333,6 +333,10 @@ struct PerNodeDetails{
     alignas(64) std::atomic<size_t> NodeBytesRead{0};
     alignas(64) std::atomic<unsigned int> NodeLocalHitCount{0};
     alignas(64) std::atomic<size_t> NodeBytesWritten{0};
+    alignas(64) std::atomic<unsigned int> AnnexDirectedHit{0};
+    alignas(64) std::atomic<unsigned int> AnnexLookupMiss{0};
+    alignas(64) std::atomic<unsigned int> AnnexFallbackHit{0};
+    alignas(64) std::atomic<unsigned int> AnnexEntriesInserted{0};
 
     struct DedupCheck {
         HashPair hp;
@@ -1150,6 +1154,22 @@ void NuAtlas::FurrBall<Policy>::DrainAnnex(int nodeID) noexcept {
     });
 }
 
+template<typename Policy>
+typename FurrBall<Policy>::AnnexStats
+NuAtlas::FurrBall<Policy>::GetAnnexStats() const noexcept {
+    AnnexStats s;
+    if (!DataMembers || !DataMembers->privateNumaState) return s;
+    for (int i = 0; i < Detail::globalNumaState.NumaNodeCount; i++) {
+        auto* d = DataMembers->privateNumaState->NodeDetails[i];
+        if (!d) continue;
+        s.directedHits += d->AnnexDirectedHit.load(std::memory_order_relaxed);
+        s.lookupMisses += d->AnnexLookupMiss.load(std::memory_order_relaxed);
+        s.fallbackHits += d->AnnexFallbackHit.load(std::memory_order_relaxed);
+        s.entriesInserted += d->AnnexEntriesInserted.load(std::memory_order_relaxed);
+    }
+    return s;
+}
+
 // =====================================================================
 //  ManagePages: REMARC-driven page eviction + key migration (simulated)
 // =====================================================================
@@ -1720,16 +1740,23 @@ Error NuAtlas::FurrBall<Policy>::Get(const std::string &key, void* outBuf, size_
                 }
                 uint32_t* found = localDetails->annexIdx.find(hp.h2);
                 if (found) owner = static_cast<int>(*found);
+                else localDetails->AnnexLookupMiss.fetch_add(1, std::memory_order_relaxed);
             }
             if (owner >= 0 && owner != local && owner < nodeCount) {
                 err = tryNode(owner);
-                if(err == NO_ERR) return NO_ERR;
+                if(err == NO_ERR) {
+                    localDetails->AnnexDirectedHit.fetch_add(1, std::memory_order_relaxed);
+                    return NO_ERR;
+                }
             }
             auto& order = DataMembers->privateNumaState->probeOrder[local];
             for(int n : order){
                 if (n == owner) continue;
                 err = tryNode(n);
-                if(err == NO_ERR) return NO_ERR;
+                if(err == NO_ERR) {
+                    localDetails->AnnexFallbackHit.fetch_add(1, std::memory_order_relaxed);
+                    return NO_ERR;
+                }
             }
         } else {
             auto& order = DataMembers->privateNumaState->probeOrder[local];
@@ -2076,6 +2103,7 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
             {
                 std::lock_guard<SpinLock> lk(details->annexLock);
                 details->annexIdx.insert(hp.h2, static_cast<uint32_t>(targetNode));
+                details->AnnexEntriesInserted.fetch_add(1, std::memory_order_relaxed);
             }
             for (int n = 0; n < nodeCount; n++) {
                 if (n == targetNode) continue;

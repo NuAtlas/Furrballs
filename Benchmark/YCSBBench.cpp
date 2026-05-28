@@ -1058,7 +1058,12 @@ struct FurrBallAnnexAdapter {
     }
 
     void destroy() {
-        if (fb) { delete fb; fb = nullptr; }
+        if (fb) {
+            auto s = fb->GetAnnexStats();
+            fprintf(stderr, "[ANNEX] directed=%u lookup_miss=%u fallback=%u inserted=%u\n",
+                s.directedHits, s.lookupMisses, s.fallbackHits, s.entriesInserted);
+            delete fb; fb = nullptr;
+        }
     }
 
     int numNodes() const { return nodeCount; }

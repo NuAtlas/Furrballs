@@ -382,6 +382,14 @@ namespace NuAtlas {
         void DrainPromotes(int nodeID) noexcept;
         void DrainAnnex(int nodeID) noexcept;
 
+        struct AnnexStats {
+            unsigned directedHits = 0;
+            unsigned lookupMisses = 0;
+            unsigned fallbackHits = 0;
+            unsigned entriesInserted = 0;
+        };
+        AnnexStats GetAnnexStats() const noexcept;
+
         void SyncNodeStats(int nodeID) noexcept;
 
         size_t EvictOneKey(int nodeID) noexcept;
