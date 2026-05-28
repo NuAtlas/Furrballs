@@ -836,6 +836,113 @@ struct FragmentedCMapAdapter {
 };
 int FragmentedCMapAdapter::runId = 0;
 
+struct AnnexCMapAdapter {
+    static constexpr const char* Name = "FurrBall_Annex";
+
+    struct KeyMeta {
+        void* DataOffset = nullptr;
+        size_t DataSize = 0;
+        size_t PageIndex = 0;
+        size_t PageGeneration = 0;
+        uint8_t TempCtrlIdx = 0;
+        int NodeId = 0;
+    };
+
+    struct alignas(64) AnnexNode {
+        SpinLock lock;
+        OpenIdx idx;
+        explicit AnnexNode(size_t cap) : idx(cap) {}
+    };
+
+    std::vector<std::unique_ptr<ConcurrentARC<KeyMeta>>> stores_;
+    std::vector<std::unique_ptr<AnnexNode>> annex_;
+    int nodeCount_ = 1;
+    size_t footprintBytes_ = 0;
+    static int runId;
+
+    void create(int numThreads, int totalCapacityKB) {
+        auto& gs = Detail::globalNumaState;
+        nodeCount_ = gs.Initialized ? gs.NumaNodeCount : 1;
+        if (nodeCount_ < 1) nodeCount_ = 1;
+
+        footprintBytes_ = (size_t)totalCapacityKB * 1024;
+        size_t cap = footprintBytes_ / sizeof(KeyMeta);
+        size_t perNode = cap / nodeCount_;
+
+        stores_.clear();
+        annex_.clear();
+        for (int i = 0; i < nodeCount_; i++) {
+            stores_.push_back(std::make_unique<ConcurrentARC<KeyMeta>>(perNode));
+            annex_.push_back(std::make_unique<AnnexNode>(perNode));
+        }
+    }
+
+    bool get(const std::string& key, uint8_t*, size_t, size_t& outSize) {
+        int myNode = Numatic::GetCurrentNode();
+        if (myNode < 0 || myNode >= nodeCount_) myNode = 0;
+
+        auto val = stores_[myNode]->Find(key);
+        if (val) {
+            outSize = val->DataSize;
+            return true;
+        }
+
+        HashPair hashes = HashKey(key);
+        int owner = -1;
+        {
+            std::lock_guard<SpinLock> lk(annex_[myNode]->lock);
+            uint32_t* found = annex_[myNode]->idx.find(hashes.h2);
+            if (found) owner = static_cast<int>(*found);
+        }
+
+        if (owner >= 0 && owner < nodeCount_ && owner != myNode) {
+            val = stores_[owner]->Find(key);
+            if (val) {
+                outSize = val->DataSize;
+                return true;
+            }
+        }
+
+        for (int i = 0; i < nodeCount_; i++) {
+            if (i == myNode || i == owner) continue;
+            val = stores_[i]->Find(key);
+            if (val) {
+                outSize = val->DataSize;
+                return true;
+            }
+        }
+
+        outSize = 0;
+        return false;
+    }
+
+    void put(const std::string& key, const uint8_t* data, size_t size) {
+        int myNode = Numatic::GetCurrentNode();
+        if (myNode < 0 || myNode >= nodeCount_) myNode = 0;
+
+        KeyMeta meta;
+        meta.DataOffset = nullptr;
+        meta.DataSize = size;
+        meta.NodeId = myNode;
+
+        stores_[myNode]->Set(key, meta);
+
+        HashPair hashes = HashKey(key);
+        for (int i = 0; i < nodeCount_; i++) {
+            std::lock_guard<SpinLock> lk(annex_[i]->lock);
+            annex_[i]->idx.insert(hashes.h2, static_cast<uint32_t>(myNode));
+        }
+    }
+
+    void destroy() {
+        stores_.clear();
+        annex_.clear();
+    }
+
+    int numNodes() const { return nodeCount_; }
+};
+int AnnexCMapAdapter::runId = 0;
+
 struct TBBAdapter {
     static constexpr const char* Name = "TBB";
     using Map = tbb::concurrent_hash_map<std::string, std::vector<uint8_t>>;
@@ -1230,6 +1337,12 @@ BENCHMARK_DEFINE_F(YCSB_FurrBallFrag, Run)(benchmark::State& state) {
     RunYCSBBench<FragmentedCMapAdapter>(state);
 }
 
+// --- Annex (TL writes + replicated routing index) YCSB ---
+struct YCSB_FurrBallAnnex : YCSBBench<AnnexCMapAdapter> {};
+BENCHMARK_DEFINE_F(YCSB_FurrBallAnnex, Run)(benchmark::State& state) {
+    RunYCSBBench<AnnexCMapAdapter>(state);
+}
+
 // --- TBB YCSB ---
 struct YCSB_TBB : YCSBBench<TBBAdapter> {};
 BENCHMARK_DEFINE_F(YCSB_TBB, Run)(benchmark::State& state) {
@@ -1309,6 +1422,11 @@ BENCHMARK_REGISTER_F(YCSB_FurrBallFrag, Run)
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
+BENCHMARK_REGISTER_F(YCSB_FurrBallAnnex, Run)
+    ->Args({2, 32768, 10, 64, 100000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
 BENCHMARK_REGISTER_F(YCSB_TBB, Run)
     ->Args({2, 32768, 10, 64, 100000})
     ->Iterations(10)
@@ -1342,6 +1460,11 @@ BENCHMARK_REGISTER_F(YCSB_FurrBallFrag, Run)
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
+BENCHMARK_REGISTER_F(YCSB_FurrBallAnnex, Run)
+    ->Args({2, 32768, 11, 64, 100000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
 BENCHMARK_REGISTER_F(YCSB_TBB, Run)
     ->Args({2, 32768, 11, 64, 100000})
     ->Iterations(10)
@@ -1371,6 +1494,11 @@ BENCHMARK_REGISTER_F(YCSB_FurrBallSN, Run)
     ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK_REGISTER_F(YCSB_FurrBallFrag, Run)
+    ->Args({2, 32768, 12, 64, 100000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(YCSB_FurrBallAnnex, Run)
     ->Args({2, 32768, 12, 64, 100000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
@@ -1409,6 +1537,10 @@ BENCHMARK_REGISTER_F(YCSB_FurrBallFrag, Run)
     ->Args({4, 65536, 10, 64, 100000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallAnnex, Run)
+    ->Args({4, 65536, 10, 64, 100000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
 BENCHMARK_REGISTER_F(YCSB_TBB, Run)
     ->Args({4, 65536, 10, 64, 100000})
     ->Iterations(10)
@@ -1437,6 +1569,10 @@ BENCHMARK_REGISTER_F(YCSB_FurrBallFrag, Run)
     ->Args({4, 65536, 11, 64, 100000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallAnnex, Run)
+    ->Args({4, 65536, 11, 64, 100000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
 BENCHMARK_REGISTER_F(YCSB_TBB, Run)
     ->Args({4, 65536, 11, 64, 100000})
     ->Iterations(10)
@@ -1462,6 +1598,10 @@ BENCHMARK_REGISTER_F(YCSB_FurrBallSN, Run)
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 BENCHMARK_REGISTER_F(YCSB_FurrBallFrag, Run)
+    ->Args({4, 65536, 12, 64, 100000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallAnnex, Run)
     ->Args({4, 65536, 12, 64, 100000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
