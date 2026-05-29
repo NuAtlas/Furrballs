@@ -793,15 +793,27 @@ namespace NuAtlas {
         size_t p_;
         EvictionCallback evictionCallback_ = [](const Value&) {};
 
-        void drainPromoteBuf() {
+        static constexpr size_t kMaxDrainBatch = 64;
+        HashPair drainBatch_[kMaxDrainBatch];
+        size_t drainCount_ = 0;
+
+        void drainPromoteBufOutsideLock() {
+            drainCount_ = 0;
             promoteBuf_.drainWith([&](HashPair hashes) {
-                uint8_t lid = lists_.whichList(hashes.h2);
-                if (lid == 0) {
-                    lists_.promoteT1toT2(hashes);
-                } else if (lid == 1) {
-                    lists_.spliceFrontT2(hashes.h2);
-                }
+                if (drainCount_ < kMaxDrainBatch) drainBatch_[drainCount_++] = hashes;
             });
+        }
+
+        void applyDrainedPromotes() {
+            for (size_t i = 0; i < drainCount_; i++) {
+                uint8_t lid = lists_.whichList(drainBatch_[i].h2);
+                if (lid == 0) {
+                    lists_.promoteT1toT2(drainBatch_[i]);
+                } else if (lid == 1) {
+                    lists_.spliceFrontT2(drainBatch_[i].h2);
+                }
+            }
+            drainCount_ = 0;
         }
 
         bool replaceLocked(uint64_t h2) {
@@ -861,15 +873,17 @@ namespace NuAtlas {
         void setWakeCallback(std::function<void()> cb) { promoteBuf_.setWakeCallback(std::move(cb)); }
 
         void drainPromotes() {
+            drainPromoteBufOutsideLock();
             std::lock_guard<SpinLock> guard(arcLock_);
-            drainPromoteBuf();
+            applyDrainedPromotes();
         }
 
         void SetEvictionCallback(EvictionCallback cb) { evictionCallback_ = cb; }
 
         bool ForceEvictOne() {
+            drainPromoteBufOutsideLock();
             std::lock_guard<SpinLock> guard(arcLock_);
-            drainPromoteBuf();
+            applyDrainedPromotes();
             if (!lists_.emptyT1() && (lists_.sizeT1() > p_ || lists_.emptyT2())) {
                 HashPair old = lists_.backT1();
                 auto result = store_.FindAndEraseByHash(old);
@@ -922,30 +936,34 @@ namespace NuAtlas {
         }
 
         typename CMap<Value>::FindAndEraseResult Erase(const std::string& key) {
+            drainPromoteBufOutsideLock();
             std::lock_guard<SpinLock> guard(arcLock_);
-            drainPromoteBuf();
+            applyDrainedPromotes();
             HashPair hashes = HashKey(key);
             lists_.erase(hashes.h2);
             return store_.FindAndErase(key);
         }
 
         typename CMap<Value>::FindAndEraseResult EraseByHash(const HashPair& hashes) {
+            drainPromoteBufOutsideLock();
             std::lock_guard<SpinLock> guard(arcLock_);
-            drainPromoteBuf();
+            applyDrainedPromotes();
             lists_.erase(hashes.h2);
             return store_.FindAndEraseByHash(hashes);
         }
 
         bool MigrateAndLeaveSentinel(const HashPair& hashes, int destNode) {
+            drainPromoteBufOutsideLock();
             std::lock_guard<SpinLock> guard(arcLock_);
-            drainPromoteBuf();
+            applyDrainedPromotes();
             lists_.erase(hashes.h2);
             return store_.FindAndEraseByHash(hashes);
         }
 
         Error Set(const std::string& key, const Value& val) {
+            drainPromoteBufOutsideLock();
             std::lock_guard<SpinLock> guard(arcLock_);
-            drainPromoteBuf();
+            applyDrainedPromotes();
 
             HashPair hashes = HashKey(key);
             uint64_t h2 = hashes.h2;
@@ -985,8 +1003,9 @@ namespace NuAtlas {
         }
 
         Error EvictAndSet(const std::string& key, const Value& val) {
+            drainPromoteBufOutsideLock();
             std::lock_guard<SpinLock> guard(arcLock_);
-            drainPromoteBuf();
+            applyDrainedPromotes();
 
             bool evicted = false;
             if (!lists_.emptyT1() && (lists_.sizeT1() > p_ || lists_.emptyT2())) {
