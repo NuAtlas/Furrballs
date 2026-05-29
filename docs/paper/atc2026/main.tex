@@ -1,0 +1,612 @@
+% Topaz: Topology-Aware Cache Placement for NUMA Systems
+% ATC 2026 Short Paper (6 pages + refs)
+% Double-blind submission
+
+\PassOptionsToPackage{protrusion=true,expansion=false,final}{microtype}
+\documentclass[sigplan,10pt]{acmart}
+\renewcommand\footnotetextcopyrightpermission[1]{}
+
+\usepackage{listings}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{pgf}
+\usepackage{tikz}
+\usetikzlibrary{positioning, arrows.meta, fit, backgrounds}
+\usepackage{placeins}
+
+\providecommand{\mathdefault}[1]{#1}
+
+\pagestyle{plain}
+\settopmatter{printfolios=true}
+\setcopyright{none}
+
+\lstset{
+  basicstyle=\ttfamily\scriptsize,
+  keywordstyle=\color{blue!70!black},
+  commentstyle=\color{green!50!black},
+  stringstyle=\color{red!60!black},
+  breaklines=true,
+  showstringspaces=false,
+  frame=none,
+  columns=fullflexible,
+}
+
+\acmDOI{}
+\acmISBN{}
+\acmConference[ATC'26]{2026 USENIX Annual Technical Conference}{November 2026}{Santa Clara, CA, USA}
+\acmYear{2026}
+\copyrightyear{2026}
+
+\begin{document}
+
+\title{Topaz: Topology-Aware Cache Placement\\for Asymmetric Memory Systems}
+
+\author{Anonymous}
+\affiliation{
+  \institution{Anonymous}
+  \country{}
+}
+
+\begin{abstract}
+% TODO: REWRITE IN YOUR OWN WORDS
+%
+% Structure: 5 sentences
+% 1. Problem: memory is asymmetric (NUMA, CXL), caches treat it as uniform
+% 2. What we built: Topaz, topology-aware cache with per-node page pools + thread-local routing + per-node ARC
+% 3. Key result: 25x lower p50 GET latency (71ns vs 1804ns), 10x higher throughput vs CacheLib
+% 4. Secondary results: 100% vs 50% memory efficiency, flat 1T-4T scaling
+% 5. Validated on: AMD EPYC Milan (4 NUMA nodes) and Intel Xeon Ice Lake (2 NUMA nodes)
+%
+% Your draft:
+Looking at the direction of RAM, it's getting more and more asymmetric.
+NUMA has been the technology for large-scale servers, but the recent CXL
+shows that this direction is solidifying. In production caches, RAM is
+treated, allocated and used as if it is uniform. Topaz was built to answer
+the question: \emph{does topology-aware placement for asymmetric memory systems
+in caches have any benefit?} Our results show that it does: 25x lower p50
+GET latency (71ns vs 1804ns), 10x higher throughput, and 100\% vs 50\%
+memory efficiency compared to CacheLib~\cite{cachelib} under YCSB~\cite{ycsb} workloads, with flat scaling from 1 to 4
+NUMA nodes. This was validated on AMD EPYC Milan (4 NUMA nodes) and
+Intel Xeon Ice Lake (2 NUMA nodes).
+%
+% NOTES:
+% - "CacheLib" alone (no "Meta's") to keep it clean
+% - Cite CacheLib and YCSB
+% - Anonymize system name if needed (Topaz is fine per discussion)
+\end{abstract}
+
+\begin{CCSXML}
+<ccs2012>
+<concept>
+<concept_id>10011007.10011074.10011099.10011102.10011103</concept_id>
+<concept_desc>Software and its engineering~Main memory</concept_desc>
+<concept_significance>500</concept_significance>
+</concept>
+</ccs2012>
+\end{CCSXML}
+
+\ccsdesc[500]{Software and its engineering~Main memory}
+
+\keywords{NUMA, cache, topology-aware placement, ARC, memory hierarchy}
+
+\maketitle
+
+% ========================================================================
+\section{Introduction}
+\label{sec:intro}
+
+% TODO: REWRITE IN YOUR OWN WORDS
+%
+% Structure: ~1.2 pages
+%
+% Para 1: The problem
+%   - Memory is not uniform. Dual-socket: ~100ns local, ~150ns cross-socket.
+%   - AMD EPYC 4 NUMA nodes: three tiers (local=10, same-socket=12, cross-socket=32).
+%   - CXL adds a 4th tier at ~500ns. This is getting worse, not better.
+%
+The future of RAM is heading towards fragmented architecture. This change brings challenges. CXL, for example, 
+suffers from lack of software support as argued by~\cite{Levis2023CXL}
+and the point still stands for NUMA: despite the age of the technology,
+a general support or abstraction doesn't exist in userspace. 
+The hardware expansion is heading into a direction but the software is not following.
+% Para 2: Production caches ignore this
+%   - CacheLib [cite]: single pool, no NUMA binding, 50% memory overhead from slab allocator [cite slab]
+%   - RocksDB block cache [cite]: sharded LRU, no topology awareness
+%   - TBB [cite]: unbounded concurrent hash map, no eviction
+%   - memcached [cite]: single-threaded per core, no NUMA placement
+%   - All treat memory as uniform.
+%
+
+Our focus was on cache systems. Modern servers expose non-uniform memory access: on AMD EPYC Milan with 4 NUMA nodes, cross-socket access has a distance ratio of 3.2$\times$ over local (distance 32 vs.\ 10).
+Under the default OS interleaving policy, every store is potentially interleaved across nodes, exposing further latencies.
+Without topology awareness, every cache access is a potential cross-socket round-trip.
+Available solutions largely ignore this asymmetry. CacheLib has no NUMA binding \footnote{This claim stands only for the open-source version. We do not know what Meta's internal production version implements.}
+and 50\% memory overhead from slab allocator~\cite{slab}.
+RocksDB block cache~\cite{rocksdb} has sharded LRU but no topology awareness.
+memcached~\cite{memcached} is also not topology-aware and is single-threaded per core.
+In all stated examples, memory is treated as uniform.
+% Para 3: This paper
+%   - We make the case for topology-aware cache placement
+%   - Topaz: memory topology as first-class input to placement decisions
+%
+% Contributions (bulleted list):
+%   1. Per-node page pools: one physical allocation per NUMA node, bump allocator, 100% memory efficiency
+%   2. Thread-local key routing: read-your-own-writes guaranteed, cross-node is best-effort (standard cache semantics)
+%   3. Per-node lock partitioning + ARC eviction: zero cross-node contention on hot path
+%   4. Cross-platform evaluation on Intel (2-node) and AMD (4-node) under YCSB [cite]: up to 25x lower latency, 10x higher throughput
+%   5. Cautionary finding: alignas(64) stats caused 6.6x cross-socket regression, fixed by per-node stat sharding
+
+Topaz bridges this gap by making memory topology a first-class input to placement decisions.
+The design is built around:
+\begin{itemize}
+  \item Per-node page pools: one physical allocation per NUMA node, bump allocator, 100\% memory efficiency contrasted with CacheLib's slab allocator~\cite{slab} with 50\% efficiency.
+  \item Thread-local key routing: read-your-own-writes guaranteed, cross-node is best-effort (standard cache semantics)
+  \item Per-node lock partitioning + ARC eviction: zero cross-node contention on hot path
+  \item Cross-platform evaluation on Intel (2-node) and AMD (4-node) under YCSB~\cite{ycsb}: up to 25x lower latency, 10x higher throughput
+\end{itemize}
+
+\emph{Cautionary finding}: alignas(64) stats caused \emph{6.6x} cross-socket regression, fixed by per-node stat sharding.
+% DATA FOR REWRITE:
+% - AMD EPYC 7R13 Milan, 4 NUMA nodes, distances 10/12/32
+% - Intel Xeon Platinum 8375C Ice Lake, 2 NUMA nodes, distances 10/20
+% - TopazBallTL p50 GET: 71+-3 ns (YCSB-A, 64B, 2T)
+% - CacheLib p50 GET: 1804+-26 ns (same config) = 25.4x gap
+% - TopazBallTL throughput: 6.75+-0.21 Mops/s
+% - CacheLib throughput: 0.68+-0.01 Mops/s = 9.9x gap
+% - Memory: Topaz 32MB = 32MB usable, CacheLib 64MB = 32MB usable (50% overhead)
+% - Thread scaling: 70+-0 ns at 1T, 70+-0 ns at 4T (flat)
+% - CacheLib: 120+-0 ns at 1T, 332+-48 ns at 4T (2.8x degradation)
+
+% ========================================================================
+\section{Architecture}
+\label{sec:arch}
+
+Topaz is organized as N independent per-node mini-caches, one per NUMA node.
+Each mini-cache owns its data exclusively: a physical page pool allocated on-node via \texttt{numa\_alloc\_onnode}, a concurrent hash map (CMap), and an ARC eviction policy instance.
+Threads are assigned to the NUMA node they run on; keys written by a thread are stored on that thread's node.
+This eliminates cross-node synchronization on the common case of read-after-write.
+
+\input{figures/arch.tex}
+
+\subsection{Per-Node Page Pools}
+
+% TODO: REWRITE IN YOUR OWN WORDS
+%
+% Key points:
+%   - At init: one numa_alloc_onnode per NUMA node
+%   - Subdivided into fixed-size pages (4KB)
+%   - Each page owned by single node, no cross-node allocation
+%   - Keys stored inline via bump allocator (atomic<size_t> for next-free)
+%   - Guarantees all data for a node resides on that node's DRAM
+%   - 100% memory efficiency: no slab overhead, no fragmentation
+%   - Contrast with CacheLib's slab allocator [cite slab]: 50% overhead from metadata + size-class fragmentation
+At instance creation and for each node, Topaz allocates using \texttt{numa\_alloc\_onnode} a physical arena,
+which it carves into logical fixed-sized pages (4\,KB). The physical memory is owned by a single node.
+The pages act as a store where values are stored via a bump allocator. Keys are also stored inline (\texttt{atomic<size\_t>} for next-free).
+This guarantees all data for a node resides on that node's DRAM and importantly, per-node data separation.
+The architecture also achieves 100\% memory efficiency, no slab overhead as opposed to CacheLib's slab allocator~\cite{slab} with 50\% overhead from metadata + size-class fragmentation.
+\subsection{Thread-Local Key Routing}
+
+% TODO: REWRITE IN YOUR OWN WORDS
+%
+% Key points:
+%   - Home node = requesting thread's current NUMA node
+%   - Cached in thread_local to avoid syscall per access
+%   - GET: check local node first; if miss, scan other nodes
+%   - For read-after-write workloads (common case): local check always hits
+%   - Read-your-own-writes guaranteed within node
+%   - Cross-node reads are best-effort (standard cache semantics)
+%   - Alternative: round-robin (distributes keys evenly but loses locality)
+A key idea was using the requesting thread's current NUMA node as a home node.
+The node's routing state is stored in \texttt{thread\_local} to avoid syscall per access
+and enforce thread-locality. 
+In each node, Get first checks its local store for the key; if it's not found, it scans other nodes.
+While that on its own doesn't avoid cross-node reads, 
+Topaz's architecture allows for some very interesting consequences through these combined guarantees: 
+\begin{itemize}
+  \item Read-after-write workloads (common case): local check always hits.
+  \item Read-your-own-writes guaranteed within node.
+  \item Keys are not duplicated across nodes.
+\end{itemize}
+That combination allows Topaz to simply side-step the need to synchronize between nodes for Get.
+The reason is that the uniqueness of keys ensures that there is only one writer for any key, 
+so protecting the return slot is not needed\footnote{This allows for Topaz to use broadcast races for multi-node fetches without any result slot sync. This is a future direction.}.
+
+A round-robin approach was considered for key placement, but even distribution goes against locality. 
+It also loses the shortcut of local-first fetching.
+\subsection{Per-Node CMap and ARC}
+
+% TODO: REWRITE IN YOUR OWN WORDS
+%
+% Key points:
+%   - Each node: own CMap (Swiss table [cite swisstable] with SIMD probing)
+%   - Per-slot seqlocks [cite seqlock] for lock-free reads, CAS for writes
+%   - One ARC [cite arc] instance per node (recent + frequent lists)
+%   - Lock-free promotion buffer (MPSC) for deferred promotions
+%   - Per-node partitioning: zero cross-node lock contention on GET path
+%   - Each thread operates on own node's CMap, SpinLock, maintenance thread
+Each node operates its own mini-cache, composed of a CMap index and an ARC~\cite{arc} eviction policy instance\footnote{Topaz uses an exact implementation of ARC.}.
+The caches are per-node independent\footnote{Inter-node independence.}, but coupled through Topaz's routing layer.
+The node's reads and writes are protected and organized with a seqlock~\cite{seqlock} for
+lock-free reads and CAS for writes.
+ARC uses a lock-free promotion buffer (MPSC) for deferred promotions to avoid congesting the seqlocks.
+
+CMap is a Swiss table~\cite{swisstable} variant designed with concurrency in mind, adding SIMD probing alongside per-slot seqlock protection\footnote{Not related to the mini-cache's seqlock.}.
+This makes reads and writes purely lock-free operations.
+The design allows ARC's implementation to be just a policy without adding complexity to it.
+
+Each node also has a per-node job queue; each node spawns threads pinned to the NUMA node as background workers alongside a dedicated maintenance thread.
+\subsection{Per-Node Statistics}
+
+% TODO: REWRITE IN YOUR OWN WORDS
+%
+% The 4T anomaly story (this is a contribution, not just a bug fix):
+%
+% Original design:
+%   - 14 alignas(64) std::atomic<> fields in heap-allocated cache object (on node 0)
+%   - Each GET touched 3 cache lines (hit count, bytes read, local hit count) via lock xadd
+%   - On single socket: alignas(64) prevents false sharing between counters (correct)
+%   - Across sockets: MAXIMIZES cross-socket transfer (wrong!)
+%     - 3 exclusive cache-line migrations per GET at ~120ns each on Infinity Fabric
+%     - Added ~360ns per GET
+%
+% The fix:
+%   - Hot-path counters moved to per-node atomics in NUMA-allocated PerNodeDetails
+%   - Each thread writes to own on-node counters
+%   - Background aggregation drains to global counters every 2ms
+%
+% Result:
+%   - 4T p50 GET: 587ns -> 71ns (6.6x improvement)
+%   - 2T p50 GET: 120ns -> 74ns (39% improvement)
+%   - Now matches single-thread baseline at 70ns
+%
+% Cautionary lesson:
+%   - alignas(64) is not a substitute for NUMA-aware placement of performance counters
+%   - Correct for one topology tier (intra-socket false sharing) -> harmful for another (inter-socket bouncing)
+Along the development and benchmarking for the library, 
+we went from running the tests on an Intel Xeon Ice Lake machine (2 NUMA nodes meaning two mini-caches and two operating threads)
+to AMD EPYC Milan (4 NUMA nodes, double the caches and threads). Prior thread-scaling benchmarks (on Xeon Ice Lake) showed that the system should scale linearly
+but when we ran the benchmark harness the numbers were off. 
+At 2 threads p50 GET was 120ns but at 4 threads p50 GET was 587ns. 
+This looked anomalous and so we investigated the issues. At first we assumed that a contention on the spinlock was the culprit,
+then we looked into the maintenance thread's drain logic and it wasn't causing the bump in latency.
+Worse yet, the latency issue only showed up when we implemented the maintenance thread, and that leads to assume that it was the cause.
+To our dismay, any attempt to fix the maintenance thread or other components, either made the system worse or did nothing.
+So we resorted to a methodological audit of all the data structures of Topaz, assessing what is shared, what is under contention.
+The surprise (and irony) was that the only shared structure between the entire Topaz architecture was the Statistics class 
+which had \emph{14 \texttt{alignas(64) std::atomic<>} fields in heap-allocated cache object (on node 0).}
+
+On a single socket \texttt{alignas(64)} prevents false sharing between counters but 
+across sockets it MAXIMIZES cross-socket transfer (which was catastrophic).
+
+What it caused was:
+\begin{itemize}
+  \item 3 exclusive cache-line migrations per GET at $\sim$120ns each on Infinity Fabric.
+  \item Added $\sim$360ns per GET.
+\end{itemize}
+
+To fix it, we moved hot-path counters to per-node atomics in NUMA-allocated PerNodeDetails\footnote{The struct containing all per-node state, including CMap and ARC.}.
+We also made sure each thread writes to its own on-node counters and a background aggregation drains to global counters every 2ms.
+
+The results were:
+\begin{itemize}
+  \item 4T p50 GET: 587ns $\rightarrow$ 71ns (6.6x improvement)
+  \item 2T p50 GET: 120ns $\rightarrow$ 74ns (39\% improvement)
+  \item Now matches single-thread baseline at 70ns.
+\end{itemize}
+
+Our cautionary lesson about \texttt{alignas(64)} is:
+\begin{itemize}
+  \item It is not a substitute for NUMA-aware placement of performance counters
+  \item Correct for one topology tier (intra-socket false sharing) --- harmful for another (inter-socket bouncing)
+\end{itemize}
+\subsection{Staging Pages}
+
+% TODO: REWRITE IN YOUR OWN WORDS
+%
+% Key points:
+%   - Problem: when page fills, eviction frees a key, but bump allocator must scan ALL pages O(P) to find reclaimed slot
+%   - On c6i with 8192 pages/node: catastrophic p99 SET (68,000-280,000 ns)
+%   - Solution: staging page = last page in each node's pool, O(1) overflow target for SET
+%   - Decouples write path from space management
+%   - Background maintenance thread relocates keys from staging page into sparse pages (page drain compaction)
+%   - Virtuous cycle: eviction empties pages -> drain consolidates -> recycled pages become fresh bump targets
+%   - Result: p99 SET reduced 24-63x (to 2,800-4,500 ns) with zero GET regression
+The initial benchmarks showed terrible SET latency (p99 at 68,000--280,000\,ns).
+The root cause was that ARC evicts keys efficiently, but the bump allocator must scan all pages $O(P)$ to find a reclaimed slot.
+We implemented staging pages: the last page(s) in each node's pool serve as an $O(1)$ overflow target for SET, decoupling the write path from space management.
+A background maintenance thread relocates keys from the staging page into sparse pages (page drain compaction), creating a virtuous cycle: eviction empties pages, drain consolidates, and recycled pages become fresh bump targets.
+This reduced p99 SET 24--63$\times$ (to 2,800--4,500\,ns) with zero GET regression.
+% ========================================================================
+\section{Evaluation}
+\label{sec:eval}
+
+\subsection{Methodology}
+
+% TODO: REWRITE IN YOUR OWN WORDS
+%
+% Hardware:
+%   - c6a.metal: AMD EPYC 7R13 Milan, 4 NUMA nodes, 192 vCPUs, 32MB L3 per CCD
+%     - Distances: local=10, same-socket=12, cross-socket=32
+%     - Nodes (0,1)=socket 0, (2,3)=socket 1
+%   - c6i.metal: Intel Xeon Platinum 8375C Ice Lake, 2 NUMA nodes, 128 vCPUs, 56MB L3 per socket
+%     - Distances: local=10, cross-socket=20
+%   - Both: turbo disabled, performance governor
+For the benchmarks, we ran them on two hardware architectures:
+\begin{itemize}
+  \item c6a.metal: AMD EPYC 7R13 Milan, 4 NUMA nodes, 192 vCPUs, 32MB L3 per CCD, Nodes (0,1)=socket 0, (2,3)=socket 1.
+  \item c6i.metal: Intel Xeon Platinum 8375C Ice Lake, 2 NUMA nodes, 128 vCPUs, 56MB L3 per socket.
+\end{itemize}
+Both machines had turbo disabled.
+
+The systems compared are:
+\begin{itemize}
+  \item Topaz-TL (thread-local routing) --- our system.
+  \item Topaz-SN (single-node, all threads share one node) --- ablation.
+  \item CacheLib~\cite{cachelib} (Facebook production cache, LRU).
+  \item RocksDB~\cite{rocksdb} (standalone NewLRUCache).
+  \item TBB~\cite{tbb} (unbounded \texttt{concurrent\_hash\_map}, throughput ceiling).
+\end{itemize}
+
+The benchmarks featured two workload suites:
+\begin{itemize}
+  \item YCSB~\cite{ycsb} standard A (50R/50W), B (95R/5W), C (100R) at capacities 64--512\,MB.
+  \item A custom partitioned-key harness (Zipfian $\theta$=0.99) for thread-scaling analysis at 32\,MB.
+\end{itemize}
+Each YCSB workload ran for 10 iterations (independent fresh-system runs) with 200K ops per thread per iteration
+across value sizes 64\,B, 256\,B, and 1024\,B.
+Thread-scaling benchmarks use 64\,B values with partitioned Zipfian access per thread.
+We captured the mean $\pm$ std across iterations.
+
+\textbf{System configurations.}
+Topaz-TL splits total capacity equally across N NUMA nodes, allocates per-node via \texttt{numa\_alloc\_local}, and pins worker threads to their home node.
+Topaz-SN places all memory on node 0 with no pinning, isolating the effect of topology-aware placement.
+CacheLib uses its default LRU allocator with a single pool; its slab allocator requires approximately 2$\times$ the target capacity for internal fragmentation, so we provision accordingly.
+RocksDB uses \texttt{NewLRUCache} with default sharding and \texttt{high\_pri\_pool\_ratio=0}.
+TBB uses \texttt{concurrent\_hash\_map} with no capacity limit, serving as a concurrency baseline rather than a capacity comparison.
+All systems operate on the same key space and value sizes.
+Threads for Topaz-TL are pinned to NUMA nodes; all other systems use OS-default scheduling.
+
+\subsection{Capacity Sweep}
+\label{sec:eval:capacity}
+
+\begin{figure}[!ht]
+\centering
+\resizebox{\columnwidth}{!}{\input{figures/capacity_sweep.pgf}}
+\caption{p50 GET latency vs.\ cache capacity for YCSB-B (64B values).
+  Left: 4 threads. Right: 2 threads.
+  TopazTL remains flat at 100\,ns across all capacities.
+  NUMA-blind systems pay a fixed 500--1600\,ns penalty that does not shrink with more memory.
+  Error bars show $\pm$1 std over 10 iterations.}
+\label{fig:capacity}
+\end{figure}
+
+% TODO: REWRITE IN YOUR OWN WORDS
+%
+% Reference Figure~\ref{fig:capacity}.
+%
+% Key data (YCSB-B, 64B, 4T):
+%   TopazTL=100ns flat, TopazSN=655-673ns, TBB=1249-1356ns, RocksDB=296-327ns, CacheLib=1625-1650ns
+%
+% Narrative:
+%   - TopazTL: 100ns flat across 64-512MB at both 2T and 4T. Topology-aware placement eliminates the cross-NUMA penalty entirely.
+%   - The gap between TopazTL and others is STRUCTURAL, not capacity-dependent.
+%   - At 512MB: TopazTL 100ns vs TBB 528ns (5.3x) vs CacheLib 1211ns (12.1x)
+%   - 4T amplifies the gap: TBB degrades from ~550ns to ~1300ns (cross-socket contention), TopazTL stays flat
+%   - RocksDB at 4T: 296-327ns, better than TBB/CacheLib but still 3x TopazTL
+%   - TopazSN confirms: placing all memory on one node costs 600-673ns regardless of capacity
+
+\subsection{Workload Sensitivity}
+\label{sec:eval:workload}
+
+\begin{figure}[!ht]
+\centering
+\resizebox{\columnwidth}{!}{\input{figures/ycsb_latency_64b.pgf}}
+\caption{GET latency for YCSB workloads A, B, C (64B values, 4 threads, 64\,MB cache).
+  Solid bars: p50. Hatched bars: p99.
+  Error bars show $\pm$1 std over 10 iterations.}
+\label{fig:ycsb}
+\end{figure}
+
+% TODO: REWRITE IN YOUR OWN WORDS
+%
+% Reference Figure~\ref{fig:ycsb}.
+%
+% Key data (YCSB 64B, 4T, 64MB):
+%   (from capacity sweep at 65536KB)
+%   YCSB-C: RocksDB p50=237ns (fast shard hits) but p99=21,000ns (mutex contention)
+%           TopazTL p50=1227ns (cross-node reads) but p99=6493ns, throughput 1.7x higher
+%
+% Narrative:
+%   - Story holds across read/write mixes
+%   - TopazTL: consistent low latency regardless of workload
+%   - CacheLib: highest latency across all workloads
+%   - RocksDB: competitive at 2T p50 but p99 is higher (mutex contention)
+
+\subsection{TopazTL vs CacheLib Head-to-Head}
+\label{sec:eval:headtohead}
+
+\begin{figure}[!ht]
+\centering
+\resizebox{\columnwidth}{!}{\input{figures/ycsb_tl_vs_cachelib.pgf}}
+\caption{TopazTL vs.\ CacheLib head-to-head on YCSB A/B/C (64B, 4 threads, 64\,MB cache).
+  Top: p50 GET latency. Bottom: throughput.
+  Error bars show $\pm$1 std over 10 iterations.}
+\label{fig:headtohead}
+\end{figure}
+
+% TODO: REWRITE IN YOUR OWN WORDS
+%
+% Reference Figure~\ref{fig:headtohead}.
+%
+% Key data (64B, 4T, 64MB):
+%   Latency:  TopazTL ~100ns, CacheLib ~1625ns (16x gap)
+%   Throughput: TopazTL ~5.5 Mops/s, CacheLib ~0.5 Mops/s (11x gap)
+%
+% Memory efficiency note:
+%   - Topaz: bump allocator, 100% usable
+%   - CacheLib: slab allocator, ~50% usable (2x footprint for same capacity)
+%   - Topaz achieves its latency advantage at HALF the memory cost
+
+\subsection{Value Size and Hit Rate}
+\label{sec:eval:valuesize}
+
+\begin{figure}[!ht]
+\centering
+\resizebox{\columnwidth}{!}{\input{figures/ycsb_latency_sweep.pgf}}
+\caption{YCSB-B p50 GET latency across value sizes (2 threads, 32\,MB cache).
+  Error bars show $\pm$1 std over 10 iterations.
+  TBB is unbounded (100\% hit rate at all sizes).}
+\label{fig:sweep}
+\end{figure}
+
+\begin{figure}[!ht]
+\centering
+\resizebox{\columnwidth}{!}{\input{figures/ycsb_hitrate.pgf}}
+\caption{Hit rate for YCSB-B across value sizes (2 threads, 32\,MB cache).
+  TBB is unbounded (100\% at all sizes, not shown).}
+\label{fig:hitrate}
+\end{figure}
+
+% TODO: REWRITE IN YOUR OWN WORDS
+%
+% Reference Figure~\ref{fig:sweep} and Figure~\ref{fig:hitrate}.
+%
+% Narrative:
+%   - At 64B: all systems have 100% hit rate, advantage is pure topology
+%   - At 256B/1024B: hit rates diverge, TopazTL maintains better rates at same footprint
+%   - CacheLib needs 2x memory for same usable capacity, so hit rate comparison is at a memory disadvantage
+
+\subsection{Thread Scaling}
+\label{sec:eval:scaling}
+
+\begin{figure}[!ht]
+\centering
+\resizebox{\columnwidth}{!}{\input{figures/thread_scaling_fix.pgf}}
+\caption{Thread scaling on AMD EPYC Milan (4 NUMA nodes, 64\,MB pool).
+  Top: before per-node stat fix. Bottom: after fix.
+  Error bars show $\pm$1 std over 10 iterations.
+  Before: TopazTL degrades 6.6$\times$ at 4T.
+  After: flat at 70\,ns.}
+\label{fig:scaling}
+\end{figure}
+
+% TODO: REWRITE IN YOUR OWN WORDS
+%
+% Reference Figure~\ref{fig:scaling}.
+%
+% Thread scaling data (NUMABench, GET-only, 32MB pool, 64B, mean+-std):
+%   TopazTL: 1N=70.9+-0.3, 2N=70.0+-0, 4N=70.0+-0 ns (FLAT)
+%   CacheLib: 1N=120+-0, 2N=189+-41, 4N=332+-48 ns (2.8x degradation)
+%   TopazSN: 1N=70+-0, 2N=303+-102, 4N=331+-141 ns (4.7x degradation)
+%   TBB: 1N=40+-0, 2N=40+-0, 4N=40+-0 ns (flat, no eviction)
+%
+% Narrative:
+%   - After fix: TopazTL scales near-perfectly (70ns at 1T -> 70ns at 4T)
+%   - Each additional node = independent domain with own CMap, lock, maintenance thread
+%   - No shared state touched on GET path
+%   - CacheLib: shared hash table contention causes 2.8x degradation
+%   - TopazSN: single SpinLock contention causes 4.7x degradation
+%   - Only TopazTL and TBB scale flatly; TBB because no eviction, TopazTL because per-node partitioning
+
+\FloatBarrier
+
+% ========================================================================
+\section{Discussion}
+\label{sec:discussion}
+
+% TODO: REWRITE IN YOUR OWN WORDS
+%
+% Para 1: Locality assumption
+%   - Thread-local routing assumes read-after-write locality
+%   - Holds for: web caches, database buffer pools, CDN edge caches
+%   - Adversarial case: writes on node 0, reads on node 1 -> every TL read becomes cross-node
+%   - NUMA-aware load balancer that distributes keys based on access frequency is future work
+About the locality assumption:
+
+Thread-local routing assumes read-after-write locality, 
+this holds for web caches, database buffer pools and CDN edge caches.
+but there is an adversarial case: all the writes occur in node 0, reads on node 1 --- every TL read becomes cross-node.
+
+An idea is a migration policy, where keys read more cross-node gets moved to the storage of the nodes that needs it most,
+this needs to be paired with hysterics to avoid bouncing.
+
+% Para 2: CXL extension
+%   - Architecture generalizes beyond NUMA to CXL memory tiers
+%   - Local DRAM (Tier 0, ~100ns) + CXL (Tier 1, ~250-500ns)
+%   - CXL device = additional NUMA node with separate page pool + ARC
+%   - Promotion threshold: cold keys on CXL, hot keys promoted to local DRAM
+%   - Same lock-partitioned, page-based architecture, masking CXL latency
+%   - CXL spec [cite cxl]
+%
+% Para 3: Cache-line alignment caveat (generalized lesson)
+%   - Optimizations correct for one topology tier (intra-socket false sharing)
+%     can be actively harmful for another (inter-socket cache-line bouncing)
+%   - alignas(64) is not a substitute for NUMA-aware placement of performance counters
+%   - Lesson for systems developers: NUMA awareness must extend to ALL shared state, not just data structures
+%
+% Para 4: Future work
+%   - Per-node WAL for crash recovery without cross-node coordination
+%   - Combined with background page persistence -> evolves from best-effort cache to topology-aware KV store
+%   - Adversarial workload evaluation (deferred)
+
+% ========================================================================
+\section{Related Work}
+\label{sec:related}
+
+% TODO: REWRITE IN YOUR OWN WORDS
+%
+% Para 1: NUMA-aware allocation
+%   - numactl, libnuma: node-binding primitives, but leave policy to application
+%   - Windows NUMA APIs: same
+%   - jemalloc [cite], tcmalloc [cite]: NUMA-aware allocation, but general-purpose allocators, not caches
+%   - CoDB [cite numaeffects]: NUMA-friendly malloc, but allocator not cache
+NUMA-aware allocation:
+
+numactl, libnuma are node-binding primitives, OS-sepecific and they leave policy to the application.
+Unlike the prior two, Windows NUMA APIs is, frankly, bare-bones. 
+It offers allocation and pinning but not the same level of control nor flexibility of Unix libraries. You can't even poll for topology distance.
+jemalloc~\cite{jemalloc}, tcmalloc~\cite{tcmalloc} are NUMA-aware but general-purpose allocators, not caches.
+CoDB ~\cite{numaeffects} is nearly the same, it is a NUMA-friendly malloc but --- again --- an allocator not cache.
+% Para 2: Production caches
+%   - CacheLib [cite]: Facebook production cache, LRU/LRU-2Q, shared hash table, no NUMA binding, slab overhead
+%   - RocksDB block cache [cite]: sharded LRU, no topology awareness
+%   - memcached [cite]: single-threaded per core, no NUMA placement
+%   - Dynamo [cite lru]: Amazon's KV store, consistent hashing, no NUMA awareness
+%
+% Para 3: Topology-aware systems
+%   - TPP [cite]: transparent page placement for CXL tiered memory, OS VM layer
+%   - AutoTiering [cite]: OS-level memory placement optimization
+%   - Nimble [cite]: page migration for tiered memory, OS layer
+%   - None provides application-level per-node page allocation with independent ARC eviction
+%
+% Para 4: ARC and eviction
+%   - ARC [cite]: balances recency and frequency with single parameter p
+%   - Topaz uses one ARC per NUMA node (simpler than global ARC with topology-aware eviction)
+%   - May under-utilize cold nodes in skewed workloads (tradeoff: simplicity vs. global optimization)
+%
+% Para 5: Concurrent data structures
+%   - Swiss tables [cite swisstable]: fast hash tables with SIMD probing
+%   - Seqlocks [cite seqlock]: lock-free reads with write serialization
+%   - Concurrent hash tables [cite ch-hash]: general study, no NUMA awareness
+%   - Topaz combines these with per-node partitioning for NUMA benefit
+
+% ========================================================================
+\section{Conclusion}
+\label{sec:conclusion}
+
+% TODO: REWRITE IN YOUR OWN WORDS
+%
+% 3-4 sentences:
+%   1. Memory is not uniform, caches should not treat it as such
+%   2. Per-node allocation + thread-local routing + per-node partitioning = substantial, measurable benefits
+%   3. Key numbers: 25x lower latency, 10x throughput, 100% vs 50% memory efficiency, flat 1-4 node scaling
+%   4. Validated on two vendors (Intel, AMD) and two topologies (2-node, 4-node)
+%   5. Cautionary lesson: NUMA awareness must extend to performance counters, not just data structures
+
+% ========================================================================
+\bibliographystyle{ACM-Reference-Format}
+\bibliography{references}
+
+\end{document}

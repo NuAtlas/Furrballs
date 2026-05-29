@@ -1,0 +1,1050 @@
+{
+  "context": {
+    "date": "2026-05-24T05:12:30+00:00",
+    "host_name": "ip-172-31-46-60",
+    "executable": "./buildrel/Benchmark/YCSBBench",
+    "num_cpus": 192,
+    "mhz_per_cpu": 2650,
+    "cpu_scaling_enabled": false,
+    "aslr_enabled": true,
+    "caches": [
+      {
+        "type": "Data",
+        "level": 1,
+        "size": 32768,
+        "num_sharing": 2
+      },
+      {
+        "type": "Instruction",
+        "level": 1,
+        "size": 32768,
+        "num_sharing": 2
+      },
+      {
+        "type": "Unified",
+        "level": 2,
+        "size": 524288,
+        "num_sharing": 2
+      },
+      {
+        "type": "Unified",
+        "level": 3,
+        "size": 33554432,
+        "num_sharing": 16
+      }
+    ],
+    "load_avg": [0.59375,0.192383,0.0610352],
+    "library_version": "v1.9.5",
+    "library_build_type": "release",
+    "json_schema_version": 1
+  },
+  "benchmarks": [
+2026-05-24 05:12:30 [Info] (ThreadID: 131163057086336) Node 0: 4096 pages, 16777216 bytes
+2026-05-24 05:12:30 [Info] (ThreadID: 131163057086336) Node 1: 4096 pages, 16777216 bytes
+2026-05-24 05:12:30 [Info] (ThreadID: 131163057086336) Node 2: 4096 pages, 16777216 bytes
+2026-05-24 05:12:30 [Info] (ThreadID: 131163057086336) Node 3: 4096 pages, 16777216 bytes
+2026-05-24 05:12:30 [Info] (ThreadID: 131163024770752) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:30 [Info] (ThreadID: 131163049948864) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:30 [Info] (ThreadID: 131163041556160) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:30 [Info] (ThreadID: 131163033163456) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:30 [Info] (ThreadID: 131163024770752) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:30 [Info] (ThreadID: 131163041556160) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:30 [Info] (ThreadID: 131163049948864) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:30 [Info] (ThreadID: 131163033163456) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:30 [Info] (ThreadID: 131163057086336) Maintenance worker started on node 0
+2026-05-24 05:12:30 [Info] (ThreadID: 131163057086336) Maintenance worker started on node 1
+2026-05-24 05:12:30 [Info] (ThreadID: 131163057086336) Maintenance worker started on node 2
+2026-05-24 05:12:30 [Info] (ThreadID: 131163057086336) Maintenance worker started on node 3
+2026-05-24 05:12:30 [Info] (ThreadID: 131163057086336) Node 0: 4096 pages, 16777216 bytes
+2026-05-24 05:12:30 [Info] (ThreadID: 131163057086336) Node 1: 4096 pages, 16777216 bytes
+2026-05-24 05:12:30 [Info] (ThreadID: 131163057086336) Node 2: 4096 pages, 16777216 bytes
+2026-05-24 05:12:30 [Info] (ThreadID: 131163057086336) Node 3: 4096 pages, 16777216 bytes
+2026-05-24 05:12:30 [Info] (ThreadID: 131163049948864) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:30 [Info] (ThreadID: 131163024770752) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:30 [Info] (ThreadID: 131163033163456) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:30 [Info] (ThreadID: 131163041556160) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:30 [Info] (ThreadID: 131163024770752) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:30 [Info] (ThreadID: 131163049948864) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:30 [Info] (ThreadID: 131163041556160) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:30 [Info] (ThreadID: 131163033163456) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:30 [Info] (ThreadID: 131163057086336) Node 0: 4096 pages, 16777216 bytes
+2026-05-24 05:12:30 [Info] (ThreadID: 131163057086336) Node 1: 4096 pages, 16777216 bytes
+2026-05-24 05:12:30 [Info] (ThreadID: 131163057086336) Node 2: 4096 pages, 16777216 bytes
+2026-05-24 05:12:30 [Info] (ThreadID: 131163057086336) Node 3: 4096 pages, 16777216 bytes
+2026-05-24 05:12:30 [Info] (ThreadID: 131163049948864) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:30 [Info] (ThreadID: 131163041556160) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:30 [Info] (ThreadID: 131163033163456) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:30 [Info] (ThreadID: 131163024770752) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:30 [Info] (ThreadID: 131163024770752) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:30 [Info] (ThreadID: 131163041556160) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:30 [Info] (ThreadID: 131163049948864) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:30 [Info] (ThreadID: 131163033163456) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:30 [Info] (ThreadID: 131163057086336) Node 0: 4096 pages, 16777216 bytes
+2026-05-24 05:12:30 [Info] (ThreadID: 131163057086336) Node 1: 4096 pages, 16777216 bytes
+2026-05-24 05:12:30 [Info] (ThreadID: 131163057086336) Node 2: 4096 pages, 16777216 bytes
+2026-05-24 05:12:30 [Info] (ThreadID: 131163057086336) Node 3: 4096 pages, 16777216 bytes
+2026-05-24 05:12:30 [Info] (ThreadID: 131163049948864) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:30 [Info] (ThreadID: 131163041556160) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:30 [Info] (ThreadID: 131163024770752) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:30 [Info] (ThreadID: 131163033163456) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:31 [Info] (ThreadID: 131163024770752) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:31 [Info] (ThreadID: 131163049948864) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:31 [Info] (ThreadID: 131163041556160) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:31 [Info] (ThreadID: 131163033163456) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:31 [Info] (ThreadID: 131163057086336) Node 0: 4096 pages, 16777216 bytes
+2026-05-24 05:12:31 [Info] (ThreadID: 131163057086336) Node 1: 4096 pages, 16777216 bytes
+2026-05-24 05:12:31 [Info] (ThreadID: 131163057086336) Node 2: 4096 pages, 16777216 bytes
+2026-05-24 05:12:31 [Info] (ThreadID: 131163057086336) Node 3: 4096 pages, 16777216 bytes
+2026-05-24 05:12:31 [Info] (ThreadID: 131163049948864) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:31 [Info] (ThreadID: 131163024770752) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:31 [Info] (ThreadID: 131163033163456) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:31 [Info] (ThreadID: 131163041556160) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:31 [Info] (ThreadID: 131163024770752) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:31 [Info] (ThreadID: 131163041556160) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:31 [Info] (ThreadID: 131163049948864) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:31 [Info] (ThreadID: 131163033163456) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:31 [Info] (ThreadID: 131163057086336) Node 0: 4096 pages, 16777216 bytes
+2026-05-24 05:12:31 [Info] (ThreadID: 131163057086336) Node 1: 4096 pages, 16777216 bytes
+2026-05-24 05:12:31 [Info] (ThreadID: 131163057086336) Node 2: 4096 pages, 16777216 bytes
+2026-05-24 05:12:31 [Info] (ThreadID: 131163057086336) Node 3: 4096 pages, 16777216 bytes
+2026-05-24 05:12:31 [Info] (ThreadID: 131163041556160) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:31 [Info] (ThreadID: 131163049948864) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:31 [Info] (ThreadID: 131163024770752) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:31 [Info] (ThreadID: 131163033163456) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:31 [Info] (ThreadID: 131163041556160) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:31 [Info] (ThreadID: 131163024770752) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:31 [Info] (ThreadID: 131163049948864) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:31 [Info] (ThreadID: 131163033163456) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:31 [Info] (ThreadID: 131163057086336) Node 0: 4096 pages, 16777216 bytes
+2026-05-24 05:12:31 [Info] (ThreadID: 131163057086336) Node 1: 4096 pages, 16777216 bytes
+2026-05-24 05:12:31 [Info] (ThreadID: 131163057086336) Node 2: 4096 pages, 16777216 bytes
+2026-05-24 05:12:31 [Info] (ThreadID: 131163057086336) Node 3: 4096 pages, 16777216 bytes
+2026-05-24 05:12:31 [Info] (ThreadID: 131163049948864) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:31 [Info] (ThreadID: 131163033163456) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:31 [Info] (ThreadID: 131163041556160) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:31 [Info] (ThreadID: 131163024770752) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:31 [Info] (ThreadID: 131163024770752) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:31 [Info] (ThreadID: 131163041556160) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:31 [Info] (ThreadID: 131163049948864) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:31 [Info] (ThreadID: 131163033163456) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:31 [Info] (ThreadID: 131163057086336) Node 0: 4096 pages, 16777216 bytes
+2026-05-24 05:12:31 [Info] (ThreadID: 131163057086336) Node 1: 4096 pages, 16777216 bytes
+2026-05-24 05:12:31 [Info] (ThreadID: 131163057086336) Node 2: 4096 pages, 16777216 bytes
+2026-05-24 05:12:31 [Info] (ThreadID: 131163057086336) Node 3: 4096 pages, 16777216 bytes
+2026-05-24 05:12:31 [Info] (ThreadID: 131163049948864) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:31 [Info] (ThreadID: 131163033163456) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:31 [Info] (ThreadID: 131163024770752) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:31 [Info] (ThreadID: 131163041556160) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:32 [Info] (ThreadID: 131163024770752) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:32 [Info] (ThreadID: 131163041556160) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:32 [Info] (ThreadID: 131163033163456) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:32 [Info] (ThreadID: 131163049948864) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:32 [Info] (ThreadID: 131163057086336) Node 0: 4096 pages, 16777216 bytes
+2026-05-24 05:12:32 [Info] (ThreadID: 131163057086336) Node 1: 4096 pages, 16777216 bytes
+2026-05-24 05:12:32 [Info] (ThreadID: 131163057086336) Node 2: 4096 pages, 16777216 bytes
+2026-05-24 05:12:32 [Info] (ThreadID: 131163057086336) Node 3: 4096 pages, 16777216 bytes
+2026-05-24 05:12:32 [Info] (ThreadID: 131163049948864) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:32 [Info] (ThreadID: 131163041556160) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:32 [Info] (ThreadID: 131163033163456) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:32 [Info] (ThreadID: 131163024770752) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:32 [Info] (ThreadID: 131163024770752) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:32 [Info] (ThreadID: 131163041556160) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:32 [Info] (ThreadID: 131163049948864) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:32 [Info] (ThreadID: 131163033163456) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:32 [Info] (ThreadID: 131163057086336) Node 0: 4096 pages, 16777216 bytes
+2026-05-24 05:12:32 [Info] (ThreadID: 131163057086336) Node 1: 4096 pages, 16777216 bytes
+2026-05-24 05:12:32 [Info] (ThreadID: 131163057086336) Node 2: 4096 pages, 16777216 bytes
+2026-05-24 05:12:32 [Info] (ThreadID: 131163057086336) Node 3: 4096 pages, 16777216 bytes
+2026-05-24 05:12:32 [Info] (ThreadID: 131163049948864) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:32 [Info] (ThreadID: 131163033163456) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:32 [Info] (ThreadID: 131163041556160) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:32 [Info] (ThreadID: 131163024770752) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:32 [Info] (ThreadID: 131163041556160) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:32 [Info] (ThreadID: 131163024770752) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:32 [Info] (ThreadID: 131163049948864) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:32 [Info] (ThreadID: 131163033163456) NUMA Node page allocator called WaitGroup::Done().
+    {
+      "name": "YCSB_FurrBallTL/Run/4/65536/10/64/100000/iterations:10",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "YCSB_FurrBallTL/Run/4/65536/10/64/100000/iterations:10",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 10,
+      "real_time": 1.1664982620000615e+05,
+      "cpu_time": 3.7352899999998738e+02,
+      "time_unit": "us",
+      "footprint_mb": 6.4000000000000000e+01,
+      "hit_rate_pct": 9.9995870447168002e+01,
+      "node0_p50_get_ns": 1.9000000000000000e+02,
+      "node1_p50_get_ns": 8.0000000000000000e+01,
+      "node2_p50_get_ns": 8.0000000000000000e+01,
+      "node3_p50_get_ns": 8.0000000000000000e+01,
+      "ops_per_sec": 6.8631915395240663e+06,
+      "ops_per_sec_std": 1.1483371283865362e+05,
+      "p50_get_ns": 8.0000000000000000e+01,
+      "p50_get_ns_std": 0.0000000000000000e+00,
+      "p50_set_ns": 8.0000000000000000e+01,
+      "p50_set_ns_std": 0.0000000000000000e+00,
+      "p90_get_ns": 7.0689999999999998e+02,
+      "p90_get_ns_std": 7.7775317421403045e+00,
+      "p90_set_ns": 6.4589999999999998e+02,
+      "p90_set_ns_std": 9.1263355187062896e+00,
+      "p99_get_ns": 1.8130000000000000e+03,
+      "p99_get_ns_std": 2.2383029285599392e+01,
+      "p99_set_ns": 7.4233000000000002e+03,
+      "p99_set_ns_std": 1.0571381177499939e+02,
+      "runs": 1.0000000000000000e+01
+    }2026-05-24 05:12:32 [Info] (ThreadID: 131163057086336) Node 0: 4096 pages, 16777216 bytes
+2026-05-24 05:12:32 [Info] (ThreadID: 131163057086336) Node 1: 4096 pages, 16777216 bytes
+2026-05-24 05:12:32 [Info] (ThreadID: 131163057086336) Node 2: 4096 pages, 16777216 bytes
+2026-05-24 05:12:32 [Info] (ThreadID: 131163057086336) Node 3: 4096 pages, 16777216 bytes
+2026-05-24 05:12:32 [Info] (ThreadID: 131163041556160) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:32 [Info] (ThreadID: 131163049948864) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:32 [Info] (ThreadID: 131163033163456) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:32 [Info] (ThreadID: 131163024770752) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:32 [Info] (ThreadID: 131163024770752) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:32 [Info] (ThreadID: 131163041556160) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:32 [Info] (ThreadID: 131163049948864) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:32 [Info] (ThreadID: 131163033163456) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:32 [Info] (ThreadID: 131163057086336) Node 0: 4096 pages, 16777216 bytes
+2026-05-24 05:12:32 [Info] (ThreadID: 131163057086336) Node 1: 4096 pages, 16777216 bytes
+2026-05-24 05:12:32 [Info] (ThreadID: 131163057086336) Node 2: 4096 pages, 16777216 bytes
+2026-05-24 05:12:32 [Info] (ThreadID: 131163057086336) Node 3: 4096 pages, 16777216 bytes
+2026-05-24 05:12:32 [Info] (ThreadID: 131163049948864) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:32 [Info] (ThreadID: 131163041556160) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:32 [Info] (ThreadID: 131163033163456) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:32 [Info] (ThreadID: 131163024770752) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:33 [Info] (ThreadID: 131163041556160) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:33 [Info] (ThreadID: 131163024770752) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:33 [Info] (ThreadID: 131163033163456) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:33 [Info] (ThreadID: 131163049948864) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:33 [Info] (ThreadID: 131163057086336) Node 0: 4096 pages, 16777216 bytes
+2026-05-24 05:12:33 [Info] (ThreadID: 131163057086336) Node 1: 4096 pages, 16777216 bytes
+2026-05-24 05:12:33 [Info] (ThreadID: 131163057086336) Node 2: 4096 pages, 16777216 bytes
+2026-05-24 05:12:33 [Info] (ThreadID: 131163057086336) Node 3: 4096 pages, 16777216 bytes
+2026-05-24 05:12:33 [Info] (ThreadID: 131163049948864) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:33 [Info] (ThreadID: 131163041556160) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:33 [Info] (ThreadID: 131163033163456) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:33 [Info] (ThreadID: 131163024770752) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:33 [Info] (ThreadID: 131163041556160) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:33 [Info] (ThreadID: 131163024770752) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:33 [Info] (ThreadID: 131163033163456) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:33 [Info] (ThreadID: 131163049948864) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:33 [Info] (ThreadID: 131163057086336) Node 0: 4096 pages, 16777216 bytes
+2026-05-24 05:12:33 [Info] (ThreadID: 131163057086336) Node 1: 4096 pages, 16777216 bytes
+2026-05-24 05:12:33 [Info] (ThreadID: 131163057086336) Node 2: 4096 pages, 16777216 bytes
+2026-05-24 05:12:33 [Info] (ThreadID: 131163057086336) Node 3: 4096 pages, 16777216 bytes
+2026-05-24 05:12:33 [Info] (ThreadID: 131163049948864) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:33 [Info] (ThreadID: 131163024770752) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:33 [Info] (ThreadID: 131163041556160) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:33 [Info] (ThreadID: 131163033163456) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:33 [Info] (ThreadID: 131163024770752) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:33 [Info] (ThreadID: 131163041556160) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:33 [Info] (ThreadID: 131163049948864) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:33 [Info] (ThreadID: 131163033163456) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:33 [Info] (ThreadID: 131163057086336) Node 0: 4096 pages, 16777216 bytes
+2026-05-24 05:12:33 [Info] (ThreadID: 131163057086336) Node 1: 4096 pages, 16777216 bytes
+2026-05-24 05:12:33 [Info] (ThreadID: 131163057086336) Node 2: 4096 pages, 16777216 bytes
+2026-05-24 05:12:33 [Info] (ThreadID: 131163057086336) Node 3: 4096 pages, 16777216 bytes
+2026-05-24 05:12:33 [Info] (ThreadID: 131163041556160) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:33 [Info] (ThreadID: 131163024770752) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:33 [Info] (ThreadID: 131163049948864) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:33 [Info] (ThreadID: 131163033163456) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:33 [Info] (ThreadID: 131163024770752) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:33 [Info] (ThreadID: 131163041556160) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:33 [Info] (ThreadID: 131163049948864) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:33 [Info] (ThreadID: 131163033163456) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:33 [Info] (ThreadID: 131163057086336) Node 0: 4096 pages, 16777216 bytes
+2026-05-24 05:12:33 [Info] (ThreadID: 131163057086336) Node 1: 4096 pages, 16777216 bytes
+2026-05-24 05:12:33 [Info] (ThreadID: 131163057086336) Node 2: 4096 pages, 16777216 bytes
+2026-05-24 05:12:33 [Info] (ThreadID: 131163057086336) Node 3: 4096 pages, 16777216 bytes
+2026-05-24 05:12:33 [Info] (ThreadID: 131163049948864) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:33 [Info] (ThreadID: 131163041556160) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:33 [Info] (ThreadID: 131163024770752) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:33 [Info] (ThreadID: 131163033163456) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:33 [Info] (ThreadID: 131163041556160) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:33 [Info] (ThreadID: 131163024770752) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:33 [Info] (ThreadID: 131163033163456) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:33 [Info] (ThreadID: 131163049948864) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:34 [Info] (ThreadID: 131163057086336) Node 0: 4096 pages, 16777216 bytes
+2026-05-24 05:12:34 [Info] (ThreadID: 131163057086336) Node 1: 4096 pages, 16777216 bytes
+2026-05-24 05:12:34 [Info] (ThreadID: 131163057086336) Node 2: 4096 pages, 16777216 bytes
+2026-05-24 05:12:34 [Info] (ThreadID: 131163057086336) Node 3: 4096 pages, 16777216 bytes
+2026-05-24 05:12:34 [Info] (ThreadID: 131163049948864) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:34 [Info] (ThreadID: 131163024770752) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:34 [Info] (ThreadID: 131163041556160) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:34 [Info] (ThreadID: 131163033163456) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:34 [Info] (ThreadID: 131163024770752) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:34 [Info] (ThreadID: 131163041556160) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:34 [Info] (ThreadID: 131163049948864) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:34 [Info] (ThreadID: 131163033163456) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:34 [Info] (ThreadID: 131163057086336) Node 0: 4096 pages, 16777216 bytes
+2026-05-24 05:12:34 [Info] (ThreadID: 131163057086336) Node 1: 4096 pages, 16777216 bytes
+2026-05-24 05:12:34 [Info] (ThreadID: 131163057086336) Node 2: 4096 pages, 16777216 bytes
+2026-05-24 05:12:34 [Info] (ThreadID: 131163057086336) Node 3: 4096 pages, 16777216 bytes
+2026-05-24 05:12:34 [Info] (ThreadID: 131163049948864) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:34 [Info] (ThreadID: 131163033163456) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:34 [Info] (ThreadID: 131163024770752) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:34 [Info] (ThreadID: 131163041556160) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:34 [Info] (ThreadID: 131163033163456) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:34 [Info] (ThreadID: 131163041556160) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:34 [Info] (ThreadID: 131163024770752) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:34 [Info] (ThreadID: 131163049948864) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:34 [Info] (ThreadID: 131163057086336) Node 0: 4096 pages, 16777216 bytes
+2026-05-24 05:12:34 [Info] (ThreadID: 131163057086336) Node 1: 4096 pages, 16777216 bytes
+2026-05-24 05:12:34 [Info] (ThreadID: 131163057086336) Node 2: 4096 pages, 16777216 bytes
+2026-05-24 05:12:34 [Info] (ThreadID: 131163057086336) Node 3: 4096 pages, 16777216 bytes
+2026-05-24 05:12:34 [Info] (ThreadID: 131163049948864) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:34 [Info] (ThreadID: 131163041556160) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:34 [Info] (ThreadID: 131163024770752) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:34 [Info] (ThreadID: 131163033163456) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:34 [Info] (ThreadID: 131163041556160) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:34 [Info] (ThreadID: 131163024770752) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:34 [Info] (ThreadID: 131163033163456) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:34 [Info] (ThreadID: 131163049948864) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:34 [Info] (ThreadID: 131163057086336) Node 0: 4096 pages, 16777216 bytes
+2026-05-24 05:12:34 [Info] (ThreadID: 131163057086336) Node 1: 4096 pages, 16777216 bytes
+2026-05-24 05:12:34 [Info] (ThreadID: 131163057086336) Node 2: 4096 pages, 16777216 bytes
+2026-05-24 05:12:34 [Info] (ThreadID: 131163057086336) Node 3: 4096 pages, 16777216 bytes
+2026-05-24 05:12:34 [Info] (ThreadID: 131163049948864) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:34 [Info] (ThreadID: 131163041556160) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:34 [Info] (ThreadID: 131163024770752) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:34 [Info] (ThreadID: 131163033163456) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:34 [Info] (ThreadID: 131163024770752) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:34 [Info] (ThreadID: 131163041556160) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:34 [Info] (ThreadID: 131163033163456) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:34 [Info] (ThreadID: 131163049948864) NUMA Node page allocator called WaitGroup::Done().
+,
+    {
+      "name": "YCSB_FurrBallTL/Run/4/65536/11/64/100000/iterations:10",
+      "family_index": 1,
+      "per_family_instance_index": 0,
+      "run_name": "YCSB_FurrBallTL/Run/4/65536/11/64/100000/iterations:10",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 10,
+      "real_time": 9.4627407700002659e+04,
+      "cpu_time": 3.1324599999996701e+02,
+      "time_unit": "us",
+      "footprint_mb": 6.4000000000000000e+01,
+      "hit_rate_pct": 9.9991838454045222e+01,
+      "node0_p50_get_ns": 8.0000000000000000e+01,
+      "node1_p50_get_ns": 7.0000000000000000e+01,
+      "node2_p50_get_ns": 7.0000000000000000e+01,
+      "node3_p50_get_ns": 7.0000000000000000e+01,
+      "ops_per_sec": 8.4606942281582858e+06,
+      "ops_per_sec_std": 2.0114532912783994e+05,
+      "p50_get_ns": 7.1000000000000000e+01,
+      "p50_get_ns_std": 0.0000000000000000e+00,
+      "p50_set_ns": 8.0000000000000000e+01,
+      "p50_set_ns_std": 0.0000000000000000e+00,
+      "p90_get_ns": 7.1010000000000002e+02,
+      "p90_get_ns_std": 6.3316664473106909e+00,
+      "p90_set_ns": 7.1010000000000002e+02,
+      "p90_set_ns_std": 9.0603531939985640e+00,
+      "p99_get_ns": 1.8390999999999999e+03,
+      "p99_get_ns_std": 3.6101108016236836e+01,
+      "p99_set_ns": 1.2508299999999999e+04,
+      "p99_set_ns_std": 2.1178138279839427e+03,
+      "runs": 1.0000000000000000e+01
+    }2026-05-24 05:12:35 [Info] (ThreadID: 131163057086336) Node 0: 4096 pages, 16777216 bytes
+2026-05-24 05:12:35 [Info] (ThreadID: 131163057086336) Node 1: 4096 pages, 16777216 bytes
+2026-05-24 05:12:35 [Info] (ThreadID: 131163057086336) Node 2: 4096 pages, 16777216 bytes
+2026-05-24 05:12:35 [Info] (ThreadID: 131163057086336) Node 3: 4096 pages, 16777216 bytes
+2026-05-24 05:12:35 [Info] (ThreadID: 131163049948864) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:35 [Info] (ThreadID: 131163041556160) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:35 [Info] (ThreadID: 131163033163456) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:35 [Info] (ThreadID: 131163024770752) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:35 [Info] (ThreadID: 131163041556160) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:35 [Info] (ThreadID: 131163024770752) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:35 [Info] (ThreadID: 131163033163456) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:35 [Info] (ThreadID: 131163049948864) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:35 [Info] (ThreadID: 131163057086336) Node 0: 4096 pages, 16777216 bytes
+2026-05-24 05:12:35 [Info] (ThreadID: 131163057086336) Node 1: 4096 pages, 16777216 bytes
+2026-05-24 05:12:35 [Info] (ThreadID: 131163057086336) Node 2: 4096 pages, 16777216 bytes
+2026-05-24 05:12:35 [Info] (ThreadID: 131163057086336) Node 3: 4096 pages, 16777216 bytes
+2026-05-24 05:12:35 [Info] (ThreadID: 131163033163456) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:35 [Info] (ThreadID: 131163041556160) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:35 [Info] (ThreadID: 131163024770752) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:35 [Info] (ThreadID: 131163049948864) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:35 [Info] (ThreadID: 131163024770752) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:35 [Info] (ThreadID: 131163033163456) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:35 [Info] (ThreadID: 131163041556160) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:35 [Info] (ThreadID: 131163049948864) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:35 [Info] (ThreadID: 131163057086336) Node 0: 4096 pages, 16777216 bytes
+2026-05-24 05:12:35 [Info] (ThreadID: 131163057086336) Node 1: 4096 pages, 16777216 bytes
+2026-05-24 05:12:35 [Info] (ThreadID: 131163057086336) Node 2: 4096 pages, 16777216 bytes
+2026-05-24 05:12:35 [Info] (ThreadID: 131163057086336) Node 3: 4096 pages, 16777216 bytes
+2026-05-24 05:12:35 [Info] (ThreadID: 131163049948864) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:35 [Info] (ThreadID: 131163041556160) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:35 [Info] (ThreadID: 131163033163456) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:35 [Info] (ThreadID: 131163024770752) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:35 [Info] (ThreadID: 131163041556160) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:35 [Info] (ThreadID: 131163024770752) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:35 [Info] (ThreadID: 131163049948864) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:35 [Info] (ThreadID: 131163033163456) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:36 [Info] (ThreadID: 131163057086336) Node 0: 4096 pages, 16777216 bytes
+2026-05-24 05:12:36 [Info] (ThreadID: 131163057086336) Node 1: 4096 pages, 16777216 bytes
+2026-05-24 05:12:36 [Info] (ThreadID: 131163057086336) Node 2: 4096 pages, 16777216 bytes
+2026-05-24 05:12:36 [Info] (ThreadID: 131163057086336) Node 3: 4096 pages, 16777216 bytes
+2026-05-24 05:12:36 [Info] (ThreadID: 131163049948864) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:36 [Info] (ThreadID: 131163033163456) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:36 [Info] (ThreadID: 131163024770752) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:36 [Info] (ThreadID: 131163041556160) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:36 [Info] (ThreadID: 131163024770752) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:36 [Info] (ThreadID: 131163041556160) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:36 [Info] (ThreadID: 131163033163456) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:36 [Info] (ThreadID: 131163049948864) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:36 [Info] (ThreadID: 131163057086336) Node 0: 4096 pages, 16777216 bytes
+2026-05-24 05:12:36 [Info] (ThreadID: 131163057086336) Node 1: 4096 pages, 16777216 bytes
+2026-05-24 05:12:36 [Info] (ThreadID: 131163057086336) Node 2: 4096 pages, 16777216 bytes
+2026-05-24 05:12:36 [Info] (ThreadID: 131163057086336) Node 3: 4096 pages, 16777216 bytes
+2026-05-24 05:12:36 [Info] (ThreadID: 131163049948864) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:36 [Info] (ThreadID: 131163041556160) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:36 [Info] (ThreadID: 131163033163456) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:36 [Info] (ThreadID: 131163024770752) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:36 [Info] (ThreadID: 131163024770752) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:36 [Info] (ThreadID: 131163041556160) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:36 [Info] (ThreadID: 131163033163456) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:36 [Info] (ThreadID: 131163049948864) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:37 [Info] (ThreadID: 131163057086336) Node 0: 4096 pages, 16777216 bytes
+2026-05-24 05:12:37 [Info] (ThreadID: 131163057086336) Node 1: 4096 pages, 16777216 bytes
+2026-05-24 05:12:37 [Info] (ThreadID: 131163057086336) Node 2: 4096 pages, 16777216 bytes
+2026-05-24 05:12:37 [Info] (ThreadID: 131163057086336) Node 3: 4096 pages, 16777216 bytes
+2026-05-24 05:12:37 [Info] (ThreadID: 131163049948864) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:37 [Info] (ThreadID: 131163033163456) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:37 [Info] (ThreadID: 131163024770752) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:37 [Info] (ThreadID: 131163041556160) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:37 [Info] (ThreadID: 131163041556160) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:37 [Info] (ThreadID: 131163024770752) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:37 [Info] (ThreadID: 131163049948864) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:37 [Info] (ThreadID: 131163033163456) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:37 [Info] (ThreadID: 131163057086336) Node 0: 4096 pages, 16777216 bytes
+2026-05-24 05:12:37 [Info] (ThreadID: 131163057086336) Node 1: 4096 pages, 16777216 bytes
+2026-05-24 05:12:37 [Info] (ThreadID: 131163057086336) Node 2: 4096 pages, 16777216 bytes
+2026-05-24 05:12:37 [Info] (ThreadID: 131163057086336) Node 3: 4096 pages, 16777216 bytes
+2026-05-24 05:12:37 [Info] (ThreadID: 131163049948864) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:37 [Info] (ThreadID: 131163041556160) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:37 [Info] (ThreadID: 131163033163456) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:37 [Info] (ThreadID: 131163024770752) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:37 [Info] (ThreadID: 131163024770752) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:37 [Info] (ThreadID: 131163041556160) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:37 [Info] (ThreadID: 131163033163456) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:37 [Info] (ThreadID: 131163049948864) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:37 [Info] (ThreadID: 131163057086336) Node 0: 4096 pages, 16777216 bytes
+2026-05-24 05:12:37 [Info] (ThreadID: 131163057086336) Node 1: 4096 pages, 16777216 bytes
+2026-05-24 05:12:37 [Info] (ThreadID: 131163057086336) Node 2: 4096 pages, 16777216 bytes
+2026-05-24 05:12:37 [Info] (ThreadID: 131163057086336) Node 3: 4096 pages, 16777216 bytes
+2026-05-24 05:12:37 [Info] (ThreadID: 131163049948864) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:37 [Info] (ThreadID: 131163041556160) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:37 [Info] (ThreadID: 131163033163456) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:37 [Info] (ThreadID: 131163024770752) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:38 [Info] (ThreadID: 131163041556160) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:38 [Info] (ThreadID: 131163024770752) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:38 [Info] (ThreadID: 131163033163456) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:38 [Info] (ThreadID: 131163049948864) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:38 [Info] (ThreadID: 131163057086336) Node 0: 4096 pages, 16777216 bytes
+2026-05-24 05:12:38 [Info] (ThreadID: 131163057086336) Node 1: 4096 pages, 16777216 bytes
+2026-05-24 05:12:38 [Info] (ThreadID: 131163057086336) Node 2: 4096 pages, 16777216 bytes
+2026-05-24 05:12:38 [Info] (ThreadID: 131163057086336) Node 3: 4096 pages, 16777216 bytes
+2026-05-24 05:12:38 [Info] (ThreadID: 131163049948864) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:38 [Info] (ThreadID: 131163024770752) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:38 [Info] (ThreadID: 131163033163456) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:38 [Info] (ThreadID: 131163041556160) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:38 [Info] (ThreadID: 131163024770752) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:38 [Info] (ThreadID: 131163041556160) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:38 [Info] (ThreadID: 131163033163456) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:38 [Info] (ThreadID: 131163049948864) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:38 [Info] (ThreadID: 131163057086336) Node 0: 4096 pages, 16777216 bytes
+2026-05-24 05:12:38 [Info] (ThreadID: 131163057086336) Node 1: 4096 pages, 16777216 bytes
+2026-05-24 05:12:38 [Info] (ThreadID: 131163057086336) Node 2: 4096 pages, 16777216 bytes
+2026-05-24 05:12:38 [Info] (ThreadID: 131163057086336) Node 3: 4096 pages, 16777216 bytes
+2026-05-24 05:12:38 [Info] (ThreadID: 131163041556160) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:38 [Info] (ThreadID: 131163049948864) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:38 [Info] (ThreadID: 131163024770752) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:38 [Info] (ThreadID: 131163033163456) Per-node cache will have an inital capacity of 349525 Keys.
+2026-05-24 05:12:38 [Info] (ThreadID: 131163024770752) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:38 [Info] (ThreadID: 131163041556160) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:38 [Info] (ThreadID: 131163033163456) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:38 [Info] (ThreadID: 131163049948864) NUMA Node page allocator called WaitGroup::Done().
+,
+    {
+      "name": "YCSB_FurrBallTL/Run/4/65536/12/64/100000/iterations:10",
+      "family_index": 2,
+      "per_family_instance_index": 0,
+      "run_name": "YCSB_FurrBallTL/Run/4/65536/12/64/100000/iterations:10",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 10,
+      "real_time": 2.6592883169999480e+05,
+      "cpu_time": 3.3357019999991076e+02,
+      "time_unit": "us",
+      "footprint_mb": 6.4000000000000000e+01,
+      "hit_rate_pct": 9.9985625000000013e+01,
+      "node0_p50_get_ns": 1.1200000000000000e+03,
+      "node1_p50_get_ns": 1.1600000000000000e+03,
+      "node2_p50_get_ns": 1.0800000000000000e+03,
+      "node3_p50_get_ns": 1.0900000000000000e+03,
+      "ops_per_sec": 3.0087477450694484e+06,
+      "ops_per_sec_std": 3.1397360354853296e+04,
+      "p50_get_ns": 1.0859000000000001e+03,
+      "p50_get_ns_std": 1.3685393673548454e+01,
+      "p50_set_ns": 0.0000000000000000e+00,
+      "p50_set_ns_std": 0.0000000000000000e+00,
+      "p90_get_ns": 1.5188000000000000e+03,
+      "p90_get_ns_std": 2.2377667438765819e+01,
+      "p90_set_ns": 0.0000000000000000e+00,
+      "p90_set_ns_std": 0.0000000000000000e+00,
+      "p99_get_ns": 5.7071000000000004e+03,
+      "p99_get_ns_std": 1.0831384952996547e+02,
+      "p99_set_ns": 0.0000000000000000e+00,
+      "p99_set_ns_std": 0.0000000000000000e+00,
+      "runs": 1.0000000000000000e+01
+    }2026-05-24 05:12:39 [Info] (ThreadID: 131163057086336) Worker Joined.
+2026-05-24 05:12:39 [Info] (ThreadID: 131163057086336) Worker Joined.
+2026-05-24 05:12:39 [Info] (ThreadID: 131163057086336) Worker Joined.
+2026-05-24 05:12:39 [Info] (ThreadID: 131163057086336) Worker Joined.
+2026-05-24 05:12:39 [Info] (ThreadID: 131163057086336) Node 0: 16384 pages, 67108864 bytes
+2026-05-24 05:12:39 [Info] (ThreadID: 131161782470336) Per-node cache will have an inital capacity of 1398101 Keys.
+2026-05-24 05:12:39 [Info] (ThreadID: 131161782470336) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:39 [Info] (ThreadID: 131163057086336) Maintenance worker started on node 0
+2026-05-24 05:12:39 [Info] (ThreadID: 131163057086336) Worker Joined.
+2026-05-24 05:12:39 [Info] (ThreadID: 131163057086336) Node 0: 16384 pages, 67108864 bytes
+2026-05-24 05:12:39 [Info] (ThreadID: 131162437568192) Per-node cache will have an inital capacity of 1398101 Keys.
+2026-05-24 05:12:39 [Info] (ThreadID: 131162437568192) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:39 [Info] (ThreadID: 131163057086336) Maintenance worker started on node 0
+2026-05-24 05:12:40 [Info] (ThreadID: 131163057086336) Worker Joined.
+2026-05-24 05:12:40 [Info] (ThreadID: 131163057086336) Node 0: 16384 pages, 67108864 bytes
+2026-05-24 05:12:40 [Info] (ThreadID: 131162445960896) Per-node cache will have an inital capacity of 1398101 Keys.
+2026-05-24 05:12:40 [Info] (ThreadID: 131162445960896) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:40 [Info] (ThreadID: 131163057086336) Maintenance worker started on node 0
+2026-05-24 05:12:40 [Info] (ThreadID: 131163057086336) Worker Joined.
+2026-05-24 05:12:40 [Info] (ThreadID: 131163057086336) Node 0: 16384 pages, 67108864 bytes
+2026-05-24 05:12:40 [Info] (ThreadID: 131162412390080) Per-node cache will have an inital capacity of 1398101 Keys.
+2026-05-24 05:12:41 [Info] (ThreadID: 131162412390080) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:41 [Info] (ThreadID: 131163057086336) Maintenance worker started on node 0
+2026-05-24 05:12:41 [Info] (ThreadID: 131163057086336) Worker Joined.
+2026-05-24 05:12:41 [Info] (ThreadID: 131163057086336) Node 0: 16384 pages, 67108864 bytes
+2026-05-24 05:12:41 [Info] (ThreadID: 131162429175488) Per-node cache will have an inital capacity of 1398101 Keys.
+2026-05-24 05:12:41 [Info] (ThreadID: 131162429175488) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:41 [Info] (ThreadID: 131163057086336) Maintenance worker started on node 0
+2026-05-24 05:12:41 [Info] (ThreadID: 131163057086336) Worker Joined.
+2026-05-24 05:12:41 [Info] (ThreadID: 131163057086336) Node 0: 16384 pages, 67108864 bytes
+2026-05-24 05:12:41 [Info] (ThreadID: 131162437568192) Per-node cache will have an inital capacity of 1398101 Keys.
+2026-05-24 05:12:42 [Info] (ThreadID: 131162437568192) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:42 [Info] (ThreadID: 131163057086336) Maintenance worker started on node 0
+2026-05-24 05:12:42 [Info] (ThreadID: 131163057086336) Worker Joined.
+2026-05-24 05:12:42 [Info] (ThreadID: 131163057086336) Node 0: 16384 pages, 67108864 bytes
+2026-05-24 05:12:42 [Info] (ThreadID: 131162420782784) Per-node cache will have an inital capacity of 1398101 Keys.
+2026-05-24 05:12:42 [Info] (ThreadID: 131162420782784) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:42 [Info] (ThreadID: 131163057086336) Maintenance worker started on node 0
+2026-05-24 05:12:43 [Info] (ThreadID: 131163057086336) Worker Joined.
+2026-05-24 05:12:43 [Info] (ThreadID: 131163057086336) Node 0: 16384 pages, 67108864 bytes
+2026-05-24 05:12:43 [Info] (ThreadID: 131162429175488) Per-node cache will have an inital capacity of 1398101 Keys.
+2026-05-24 05:12:43 [Info] (ThreadID: 131162429175488) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:43 [Info] (ThreadID: 131163057086336) Maintenance worker started on node 0
+2026-05-24 05:12:43 [Info] (ThreadID: 131163057086336) Worker Joined.
+2026-05-24 05:12:43 [Info] (ThreadID: 131163057086336) Node 0: 16384 pages, 67108864 bytes
+2026-05-24 05:12:43 [Info] (ThreadID: 131162437568192) Per-node cache will have an inital capacity of 1398101 Keys.
+2026-05-24 05:12:43 [Info] (ThreadID: 131162437568192) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:43 [Info] (ThreadID: 131163057086336) Maintenance worker started on node 0
+2026-05-24 05:12:44 [Info] (ThreadID: 131163057086336) Worker Joined.
+2026-05-24 05:12:44 [Info] (ThreadID: 131163057086336) Node 0: 16384 pages, 67108864 bytes
+2026-05-24 05:12:44 [Info] (ThreadID: 131162420782784) Per-node cache will have an inital capacity of 1398101 Keys.
+2026-05-24 05:12:44 [Info] (ThreadID: 131162420782784) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:44 [Info] (ThreadID: 131163057086336) Maintenance worker started on node 0
+,
+    {
+      "name": "YCSB_FurrBallSN/Run/4/65536/10/64/100000/iterations:10",
+      "family_index": 3,
+      "per_family_instance_index": 0,
+      "run_name": "YCSB_FurrBallSN/Run/4/65536/10/64/100000/iterations:10",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 10,
+      "real_time": 2.0243768859999703e+05,
+      "cpu_time": 3.7217789999997029e+02,
+      "time_unit": "us",
+      "footprint_mb": 6.4000000000000000e+01,
+      "hit_rate_pct": 9.9971293350919396e+01,
+      "node0_p50_get_ns": 2.0000000000000000e+02,
+      "ops_per_sec": 4.2131526167970477e+06,
+      "ops_per_sec_std": 1.1477457096923322e+06,
+      "p50_get_ns": 4.4680000000000001e+02,
+      "p50_get_ns_std": 1.6318075866964216e+02,
+      "p50_set_ns": 5.2200000000000000e+02,
+      "p50_set_ns_std": 1.7537388631150307e+02,
+      "p90_get_ns": 7.5700000000000000e+02,
+      "p90_get_ns_std": 2.3259621665022843e+02,
+      "p90_set_ns": 1.6760000000000000e+03,
+      "p90_set_ns_std": 4.7682701265763041e+02,
+      "p99_get_ns": 1.1830000000000000e+03,
+      "p99_get_ns_std": 2.9010515334960871e+02,
+      "p99_set_ns": 4.3641000000000004e+03,
+      "p99_set_ns_std": 9.3043607518195461e+02,
+      "runs": 1.0000000000000000e+01
+    }2026-05-24 05:12:44 [Info] (ThreadID: 131163057086336) Worker Joined.
+2026-05-24 05:12:44 [Info] (ThreadID: 131163057086336) Node 0: 16384 pages, 67108864 bytes
+2026-05-24 05:12:44 [Info] (ThreadID: 131162429175488) Per-node cache will have an inital capacity of 1398101 Keys.
+2026-05-24 05:12:44 [Info] (ThreadID: 131162429175488) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:44 [Info] (ThreadID: 131163057086336) Maintenance worker started on node 0
+2026-05-24 05:12:45 [Info] (ThreadID: 131163057086336) Worker Joined.
+2026-05-24 05:12:45 [Info] (ThreadID: 131163057086336) Node 0: 16384 pages, 67108864 bytes
+2026-05-24 05:12:45 [Info] (ThreadID: 131162437568192) Per-node cache will have an inital capacity of 1398101 Keys.
+2026-05-24 05:12:45 [Info] (ThreadID: 131162437568192) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:45 [Info] (ThreadID: 131163057086336) Maintenance worker started on node 0
+2026-05-24 05:12:45 [Info] (ThreadID: 131163057086336) Worker Joined.
+2026-05-24 05:12:45 [Info] (ThreadID: 131163057086336) Node 0: 16384 pages, 67108864 bytes
+2026-05-24 05:12:45 [Info] (ThreadID: 131162420782784) Per-node cache will have an inital capacity of 1398101 Keys.
+2026-05-24 05:12:45 [Info] (ThreadID: 131162420782784) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:45 [Info] (ThreadID: 131163057086336) Maintenance worker started on node 0
+2026-05-24 05:12:46 [Info] (ThreadID: 131163057086336) Worker Joined.
+2026-05-24 05:12:46 [Info] (ThreadID: 131163057086336) Node 0: 16384 pages, 67108864 bytes
+2026-05-24 05:12:46 [Info] (ThreadID: 131162429175488) Per-node cache will have an inital capacity of 1398101 Keys.
+2026-05-24 05:12:46 [Info] (ThreadID: 131162429175488) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:46 [Info] (ThreadID: 131163057086336) Maintenance worker started on node 0
+2026-05-24 05:12:46 [Info] (ThreadID: 131163057086336) Worker Joined.
+2026-05-24 05:12:46 [Info] (ThreadID: 131163057086336) Node 0: 16384 pages, 67108864 bytes
+2026-05-24 05:12:46 [Info] (ThreadID: 131162437568192) Per-node cache will have an inital capacity of 1398101 Keys.
+2026-05-24 05:12:46 [Info] (ThreadID: 131162437568192) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:46 [Info] (ThreadID: 131163057086336) Maintenance worker started on node 0
+2026-05-24 05:12:47 [Info] (ThreadID: 131163057086336) Worker Joined.
+2026-05-24 05:12:47 [Info] (ThreadID: 131163057086336) Node 0: 16384 pages, 67108864 bytes
+2026-05-24 05:12:47 [Info] (ThreadID: 131162420782784) Per-node cache will have an inital capacity of 1398101 Keys.
+2026-05-24 05:12:47 [Info] (ThreadID: 131162420782784) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:47 [Info] (ThreadID: 131163057086336) Maintenance worker started on node 0
+2026-05-24 05:12:47 [Info] (ThreadID: 131163057086336) Worker Joined.
+2026-05-24 05:12:47 [Info] (ThreadID: 131163057086336) Node 0: 16384 pages, 67108864 bytes
+2026-05-24 05:12:47 [Info] (ThreadID: 131162429175488) Per-node cache will have an inital capacity of 1398101 Keys.
+2026-05-24 05:12:48 [Info] (ThreadID: 131162429175488) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:48 [Info] (ThreadID: 131163057086336) Maintenance worker started on node 0
+2026-05-24 05:12:48 [Info] (ThreadID: 131163057086336) Worker Joined.
+2026-05-24 05:12:48 [Info] (ThreadID: 131163057086336) Node 0: 16384 pages, 67108864 bytes
+2026-05-24 05:12:48 [Info] (ThreadID: 131162437568192) Per-node cache will have an inital capacity of 1398101 Keys.
+2026-05-24 05:12:48 [Info] (ThreadID: 131162437568192) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:48 [Info] (ThreadID: 131163057086336) Maintenance worker started on node 0
+2026-05-24 05:12:48 [Info] (ThreadID: 131163057086336) Worker Joined.
+2026-05-24 05:12:48 [Info] (ThreadID: 131163057086336) Node 0: 16384 pages, 67108864 bytes
+2026-05-24 05:12:48 [Info] (ThreadID: 131162420782784) Per-node cache will have an inital capacity of 1398101 Keys.
+2026-05-24 05:12:49 [Info] (ThreadID: 131162420782784) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:49 [Info] (ThreadID: 131163057086336) Maintenance worker started on node 0
+2026-05-24 05:12:49 [Info] (ThreadID: 131163057086336) Worker Joined.
+2026-05-24 05:12:49 [Info] (ThreadID: 131163057086336) Node 0: 16384 pages, 67108864 bytes
+2026-05-24 05:12:49 [Info] (ThreadID: 131162429175488) Per-node cache will have an inital capacity of 1398101 Keys.
+2026-05-24 05:12:49 [Info] (ThreadID: 131162429175488) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:49 [Info] (ThreadID: 131163057086336) Maintenance worker started on node 0
+,
+    {
+      "name": "YCSB_FurrBallSN/Run/4/65536/11/64/100000/iterations:10",
+      "family_index": 4,
+      "per_family_instance_index": 0,
+      "run_name": "YCSB_FurrBallSN/Run/4/65536/11/64/100000/iterations:10",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 10,
+      "real_time": 1.8882383189998678e+05,
+      "cpu_time": 3.8073440000010453e+02,
+      "time_unit": "us",
+      "footprint_mb": 6.4000000000000000e+01,
+      "hit_rate_pct": 9.9947700286970502e+01,
+      "node0_p50_get_ns": 4.9000000000000000e+02,
+      "ops_per_sec": 4.4551591731431754e+06,
+      "ops_per_sec_std": 1.1366410296587392e+06,
+      "p50_get_ns": 4.4400000000000000e+02,
+      "p50_get_ns_std": 1.2698031343479981e+02,
+      "p50_set_ns": 4.7500000000000000e+02,
+      "p50_set_ns_std": 1.5350960881977389e+02,
+      "p90_get_ns": 7.0510000000000002e+02,
+      "p90_get_ns_std": 1.6788713470662370e+02,
+      "p90_set_ns": 7.3100000000000000e+02,
+      "p90_set_ns_std": 1.7818249072229293e+02,
+      "p99_get_ns": 3.0771999999999998e+03,
+      "p99_get_ns_std": 6.7978405394654555e+02,
+      "p99_set_ns": 4.2681000000000004e+03,
+      "p99_set_ns_std": 7.0417504215926317e+02,
+      "runs": 1.0000000000000000e+01
+    }2026-05-24 05:12:49 [Info] (ThreadID: 131163057086336) Worker Joined.
+2026-05-24 05:12:49 [Info] (ThreadID: 131163057086336) Node 0: 16384 pages, 67108864 bytes
+2026-05-24 05:12:49 [Info] (ThreadID: 131162437568192) Per-node cache will have an inital capacity of 1398101 Keys.
+2026-05-24 05:12:50 [Info] (ThreadID: 131162437568192) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:50 [Info] (ThreadID: 131163057086336) Maintenance worker started on node 0
+2026-05-24 05:12:50 [Info] (ThreadID: 131163057086336) Worker Joined.
+2026-05-24 05:12:50 [Info] (ThreadID: 131163057086336) Node 0: 16384 pages, 67108864 bytes
+2026-05-24 05:12:50 [Info] (ThreadID: 131162420782784) Per-node cache will have an inital capacity of 1398101 Keys.
+2026-05-24 05:12:50 [Info] (ThreadID: 131162420782784) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:50 [Info] (ThreadID: 131163057086336) Maintenance worker started on node 0
+2026-05-24 05:12:50 [Info] (ThreadID: 131163057086336) Worker Joined.
+2026-05-24 05:12:50 [Info] (ThreadID: 131163057086336) Node 0: 16384 pages, 67108864 bytes
+2026-05-24 05:12:50 [Info] (ThreadID: 131162429175488) Per-node cache will have an inital capacity of 1398101 Keys.
+2026-05-24 05:12:51 [Info] (ThreadID: 131162429175488) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:51 [Info] (ThreadID: 131163057086336) Maintenance worker started on node 0
+2026-05-24 05:12:51 [Info] (ThreadID: 131163057086336) Worker Joined.
+2026-05-24 05:12:51 [Info] (ThreadID: 131163057086336) Node 0: 16384 pages, 67108864 bytes
+2026-05-24 05:12:51 [Info] (ThreadID: 131162437568192) Per-node cache will have an inital capacity of 1398101 Keys.
+2026-05-24 05:12:51 [Info] (ThreadID: 131162437568192) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:51 [Info] (ThreadID: 131163057086336) Maintenance worker started on node 0
+2026-05-24 05:12:51 [Info] (ThreadID: 131163057086336) Worker Joined.
+2026-05-24 05:12:51 [Info] (ThreadID: 131163057086336) Node 0: 16384 pages, 67108864 bytes
+2026-05-24 05:12:51 [Info] (ThreadID: 131162420782784) Per-node cache will have an inital capacity of 1398101 Keys.
+2026-05-24 05:12:52 [Info] (ThreadID: 131162420782784) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:52 [Info] (ThreadID: 131163057086336) Maintenance worker started on node 0
+2026-05-24 05:12:52 [Info] (ThreadID: 131163057086336) Worker Joined.
+2026-05-24 05:12:52 [Info] (ThreadID: 131163057086336) Node 0: 16384 pages, 67108864 bytes
+2026-05-24 05:12:52 [Info] (ThreadID: 131162429175488) Per-node cache will have an inital capacity of 1398101 Keys.
+2026-05-24 05:12:52 [Info] (ThreadID: 131162429175488) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:52 [Info] (ThreadID: 131163057086336) Maintenance worker started on node 0
+2026-05-24 05:12:53 [Info] (ThreadID: 131163057086336) Worker Joined.
+2026-05-24 05:12:53 [Info] (ThreadID: 131163057086336) Node 0: 16384 pages, 67108864 bytes
+2026-05-24 05:12:53 [Info] (ThreadID: 131162437568192) Per-node cache will have an inital capacity of 1398101 Keys.
+2026-05-24 05:12:53 [Info] (ThreadID: 131162437568192) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:53 [Info] (ThreadID: 131163057086336) Maintenance worker started on node 0
+2026-05-24 05:12:53 [Info] (ThreadID: 131163057086336) Worker Joined.
+2026-05-24 05:12:53 [Info] (ThreadID: 131163057086336) Node 0: 16384 pages, 67108864 bytes
+2026-05-24 05:12:53 [Info] (ThreadID: 131162420782784) Per-node cache will have an inital capacity of 1398101 Keys.
+2026-05-24 05:12:53 [Info] (ThreadID: 131162420782784) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:53 [Info] (ThreadID: 131163057086336) Maintenance worker started on node 0
+2026-05-24 05:12:54 [Info] (ThreadID: 131163057086336) Worker Joined.
+2026-05-24 05:12:54 [Info] (ThreadID: 131163057086336) Node 0: 16384 pages, 67108864 bytes
+2026-05-24 05:12:54 [Info] (ThreadID: 131162429175488) Per-node cache will have an inital capacity of 1398101 Keys.
+2026-05-24 05:12:54 [Info] (ThreadID: 131162429175488) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:54 [Info] (ThreadID: 131163057086336) Maintenance worker started on node 0
+2026-05-24 05:12:54 [Info] (ThreadID: 131163057086336) Worker Joined.
+2026-05-24 05:12:54 [Info] (ThreadID: 131163057086336) Node 0: 16384 pages, 67108864 bytes
+2026-05-24 05:12:54 [Info] (ThreadID: 131162437568192) Per-node cache will have an inital capacity of 1398101 Keys.
+2026-05-24 05:12:54 [Info] (ThreadID: 131162437568192) NUMA Node page allocator called WaitGroup::Done().
+2026-05-24 05:12:54 [Info] (ThreadID: 131163057086336) Maintenance worker started on node 0
+,
+    {
+      "name": "YCSB_FurrBallSN/Run/4/65536/12/64/100000/iterations:10",
+      "family_index": 5,
+      "per_family_instance_index": 0,
+      "run_name": "YCSB_FurrBallSN/Run/4/65536/12/64/100000/iterations:10",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 10,
+      "real_time": 1.8206338529998902e+05,
+      "cpu_time": 3.6661989999995370e+02,
+      "time_unit": "us",
+      "footprint_mb": 6.4000000000000000e+01,
+      "hit_rate_pct": 9.9973237499999982e+01,
+      "node0_p50_get_ns": 5.2000000000000000e+02,
+      "ops_per_sec": 4.6469912163419286e+06,
+      "ops_per_sec_std": 1.2840862563685549e+06,
+      "p50_get_ns": 4.6889999999999998e+02,
+      "p50_get_ns_std": 1.3797423672555684e+02,
+      "p50_set_ns": 0.0000000000000000e+00,
+      "p50_set_ns_std": 0.0000000000000000e+00,
+      "p90_get_ns": 6.3610000000000002e+02,
+      "p90_get_ns_std": 1.2738481071148159e+02,
+      "p90_set_ns": 0.0000000000000000e+00,
+      "p90_set_ns_std": 0.0000000000000000e+00,
+      "p99_get_ns": 3.4920000000000000e+03,
+      "p99_get_ns_std": 6.5465716218491036e+02,
+      "p99_set_ns": 0.0000000000000000e+00,
+      "p99_set_ns_std": 0.0000000000000000e+00,
+      "runs": 1.0000000000000000e+01
+    },
+    {
+      "name": "YCSB_TBB/Run/4/65536/10/64/100000/iterations:10",
+      "family_index": 6,
+      "per_family_instance_index": 0,
+      "run_name": "YCSB_TBB/Run/4/65536/10/64/100000/iterations:10",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 10,
+      "real_time": 2.4986297659999650e+05,
+      "cpu_time": 2.3928299999989022e+02,
+      "time_unit": "us",
+      "footprint_mb": 0.0000000000000000e+00,
+      "hit_rate_pct": 1.0000000000000000e+02,
+      "node0_p50_get_ns": 0.0000000000000000e+00,
+      "ops_per_sec": 3.2633051854543192e+06,
+      "ops_per_sec_std": 3.9687695462249883e+05,
+      "p50_get_ns": 4.9500000000000000e+02,
+      "p50_get_ns_std": 5.9591945764507471e+01,
+      "p50_set_ns": 5.5820000000000005e+02,
+      "p50_set_ns_std": 8.7891751603890569e+01,
+      "p90_get_ns": 1.4960000000000000e+03,
+      "p90_get_ns_std": 4.1938526440493831e+02,
+      "p90_set_ns": 3.1201999999999998e+03,
+      "p90_set_ns_std": 6.0906991388509755e+02,
+      "p99_get_ns": 4.3991000000000004e+03,
+      "p99_get_ns_std": 7.4519211616870984e+02,
+      "p99_set_ns": 8.7332999999999993e+03,
+      "p99_set_ns_std": 1.6498143562231480e+03,
+      "runs": 1.0000000000000000e+01
+    },
+    {
+      "name": "YCSB_TBB/Run/4/65536/11/64/100000/iterations:10",
+      "family_index": 7,
+      "per_family_instance_index": 0,
+      "run_name": "YCSB_TBB/Run/4/65536/11/64/100000/iterations:10",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 10,
+      "real_time": 1.8435368639999296e+05,
+      "cpu_time": 2.4026169999986638e+02,
+      "time_unit": "us",
+      "footprint_mb": 0.0000000000000000e+00,
+      "hit_rate_pct": 9.9999986836216209e+01,
+      "node0_p50_get_ns": 0.0000000000000000e+00,
+      "ops_per_sec": 4.4456140254970258e+06,
+      "ops_per_sec_std": 6.0871507274867001e+05,
+      "p50_get_ns": 6.0329999999999995e+02,
+      "p50_get_ns_std": 1.2518550235550441e+02,
+      "p50_set_ns": 1.2232000000000000e+03,
+      "p50_set_ns_std": 3.5042568399020070e+02,
+      "p90_get_ns": 9.9600000000000000e+02,
+      "p90_get_ns_std": 2.3627103080995775e+02,
+      "p90_set_ns": 5.7301999999999998e+03,
+      "p90_set_ns_std": 1.3767883497473385e+03,
+      "p99_get_ns": 1.9690000000000000e+03,
+      "p99_get_ns_std": 6.5588794774717428e+02,
+      "p99_set_ns": 1.3077200000000001e+04,
+      "p99_set_ns_std": 3.2898991413111744e+03,
+      "runs": 1.0000000000000000e+01
+    },
+    {
+      "name": "YCSB_TBB/Run/4/65536/12/64/100000/iterations:10",
+      "family_index": 8,
+      "per_family_instance_index": 0,
+      "run_name": "YCSB_TBB/Run/4/65536/12/64/100000/iterations:10",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 10,
+      "real_time": 1.5976948229999834e+05,
+      "cpu_time": 2.2039809999965240e+02,
+      "time_unit": "us",
+      "footprint_mb": 0.0000000000000000e+00,
+      "hit_rate_pct": 1.0000000000000000e+02,
+      "node0_p50_get_ns": 0.0000000000000000e+00,
+      "ops_per_sec": 5.1088477901880657e+06,
+      "ops_per_sec_std": 6.4163337335286499e+05,
+      "p50_get_ns": 6.3000000000000000e+02,
+      "p50_get_ns_std": 1.1636150566231085e+02,
+      "p50_set_ns": 0.0000000000000000e+00,
+      "p50_set_ns_std": 0.0000000000000000e+00,
+      "p90_get_ns": 9.1210000000000002e+02,
+      "p90_get_ns_std": 2.3098417694725325e+02,
+      "p90_set_ns": 0.0000000000000000e+00,
+      "p90_set_ns_std": 0.0000000000000000e+00,
+      "p99_get_ns": 1.2100000000000000e+03,
+      "p99_get_ns_std": 3.1730111881302906e+02,
+      "p99_set_ns": 0.0000000000000000e+00,
+      "p99_set_ns_std": 0.0000000000000000e+00,
+      "runs": 1.0000000000000000e+01
+    },
+    {
+      "name": "YCSB_RocksDB/Run/4/65536/10/64/100000/iterations:10",
+      "family_index": 9,
+      "per_family_instance_index": 0,
+      "run_name": "YCSB_RocksDB/Run/4/65536/10/64/100000/iterations:10",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 10,
+      "real_time": 5.4131418089998537e+05,
+      "cpu_time": 2.3410399999992393e+02,
+      "time_unit": "us",
+      "footprint_mb": 6.4000000000000000e+01,
+      "hit_rate_pct": 1.0000000000000000e+02,
+      "node0_p50_get_ns": 0.0000000000000000e+00,
+      "ops_per_sec": 1.4887798613642622e+06,
+      "ops_per_sec_std": 1.2308374315883768e+05,
+      "p50_get_ns": 5.0810000000000002e+02,
+      "p50_get_ns_std": 8.1021540345762375e+01,
+      "p50_set_ns": 1.1590999999999999e+03,
+      "p50_set_ns_std": 2.1867667914068937e+02,
+      "p90_get_ns": 6.3271000000000004e+03,
+      "p90_get_ns_std": 9.4505644804953306e+02,
+      "p90_set_ns": 6.9090000000000000e+03,
+      "p90_set_ns_std": 9.8910515113409451e+02,
+      "p99_get_ns": 1.6871200000000001e+04,
+      "p99_get_ns_std": 1.8768805928987599e+03,
+      "p99_set_ns": 1.7233200000000001e+04,
+      "p99_set_ns_std": 1.9646475409090558e+03,
+      "runs": 1.0000000000000000e+01
+    },
+    {
+      "name": "YCSB_RocksDB/Run/4/65536/11/64/100000/iterations:10",
+      "family_index": 10,
+      "per_family_instance_index": 0,
+      "run_name": "YCSB_RocksDB/Run/4/65536/11/64/100000/iterations:10",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 10,
+      "real_time": 3.6480153359999578e+05,
+      "cpu_time": 2.4598380000053766e+02,
+      "time_unit": "us",
+      "footprint_mb": 6.4000000000000000e+01,
+      "hit_rate_pct": 1.0000000000000000e+02,
+      "node0_p50_get_ns": 0.0000000000000000e+00,
+      "ops_per_sec": 2.2147582185013243e+06,
+      "ops_per_sec_std": 1.9515396831904066e+05,
+      "p50_get_ns": 1.8800000000000000e+02,
+      "p50_get_ns_std": 2.1817424229271428e+01,
+      "p50_set_ns": 1.4890000000000000e+03,
+      "p50_set_ns_std": 2.2124420896376023e+02,
+      "p90_get_ns": 4.4111000000000004e+03,
+      "p90_get_ns_std": 7.4990592076606504e+02,
+      "p90_set_ns": 6.2651000000000004e+03,
+      "p90_set_ns_std": 1.3801819046777860e+03,
+      "p99_get_ns": 1.3718200000000001e+04,
+      "p99_get_ns_std": 1.7414588596920687e+03,
+      "p99_set_ns": 1.5320200000000001e+04,
+      "p99_set_ns_std": 2.2092564722095981e+03,
+      "runs": 1.0000000000000000e+01
+    },
+    {
+      "name": "YCSB_RocksDB/Run/4/65536/12/64/100000/iterations:10",
+      "family_index": 11,
+      "per_family_instance_index": 0,
+      "run_name": "YCSB_RocksDB/Run/4/65536/12/64/100000/iterations:10",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 10,
+      "real_time": 2.9872023540000897e+05,
+      "cpu_time": 2.3717399999938493e+02,
+      "time_unit": "us",
+      "footprint_mb": 6.4000000000000000e+01,
+      "hit_rate_pct": 1.0000000000000000e+02,
+      "node0_p50_get_ns": 0.0000000000000000e+00,
+      "ops_per_sec": 2.6813079178065723e+06,
+      "ops_per_sec_std": 9.0325835469919242e+04,
+      "p50_get_ns": 1.7280000000000001e+02,
+      "p50_get_ns_std": 8.6232244549240402e+00,
+      "p50_set_ns": 0.0000000000000000e+00,
+      "p50_set_ns_std": 0.0000000000000000e+00,
+      "p90_get_ns": 3.6879000000000001e+03,
+      "p90_get_ns_std": 1.1651476301310493e+02,
+      "p90_set_ns": 0.0000000000000000e+00,
+      "p90_set_ns_std": 0.0000000000000000e+00,
+      "p99_get_ns": 1.2377200000000001e+04,
+      "p99_get_ns_std": 2.3970890680156214e+02,
+      "p99_set_ns": 0.0000000000000000e+00,
+      "p99_set_ns_std": 0.0000000000000000e+00,
+      "runs": 1.0000000000000000e+01
+    },
+    {
+      "name": "YCSB_CacheLib/Run/4/65536/10/64/100000/iterations:10",
+      "family_index": 12,
+      "per_family_instance_index": 0,
+      "run_name": "YCSB_CacheLib/Run/4/65536/10/64/100000/iterations:10",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 10,
+      "real_time": 1.1583257658000151e+06,
+      "cpu_time": 2.6018479999976307e+02,
+      "time_unit": "us",
+      "footprint_mb": 1.2800000000000000e+02,
+      "hit_rate_pct": 9.9999949944814162e+01,
+      "node0_p50_get_ns": 0.0000000000000000e+00,
+      "ops_per_sec": 6.9720489723297604e+05,
+      "ops_per_sec_std": 6.7935836542732854e+04,
+      "p50_get_ns": 2.9080000000000000e+03,
+      "p50_get_ns_std": 3.4143227732597279e+02,
+      "p50_set_ns": 4.8211999999999998e+03,
+      "p50_set_ns_std": 6.1889478912008951e+02,
+      "p90_get_ns": 6.8808999999999996e+03,
+      "p90_get_ns_std": 7.8420870308866120e+02,
+      "p90_set_ns": 8.9422000000000007e+03,
+      "p90_set_ns_std": 9.9830624559801288e+02,
+      "p99_get_ns": 3.0001500000000000e+04,
+      "p99_get_ns_std": 2.1163001323063795e+03,
+      "p99_set_ns": 2.9139400000000001e+04,
+      "p99_set_ns_std": 2.2385249697066147e+03,
+      "runs": 1.0000000000000000e+01
+    },
+    {
+      "name": "YCSB_CacheLib/Run/4/65536/11/64/100000/iterations:10",
+      "family_index": 13,
+      "per_family_instance_index": 0,
+      "run_name": "YCSB_CacheLib/Run/4/65536/11/64/100000/iterations:10",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 10,
+      "real_time": 4.6314318020001223e+05,
+      "cpu_time": 2.3284820000011308e+02,
+      "time_unit": "us",
+      "footprint_mb": 1.2800000000000000e+02,
+      "hit_rate_pct": 9.9999986836216209e+01,
+      "node0_p50_get_ns": 0.0000000000000000e+00,
+      "ops_per_sec": 1.7307368667873323e+06,
+      "ops_per_sec_std": 7.4891113068489023e+04,
+      "p50_get_ns": 1.2550999999999999e+03,
+      "p50_get_ns_std": 6.6000681814660069e+01,
+      "p50_set_ns": 3.6901999999999998e+03,
+      "p50_set_ns_std": 2.0193602947468290e+02,
+      "p90_get_ns": 3.2470999999999999e+03,
+      "p90_get_ns_std": 1.8469891715979279e+02,
+      "p90_set_ns": 5.2151999999999998e+03,
+      "p90_set_ns_std": 3.7035275076607707e+02,
+      "p99_get_ns": 5.5381000000000004e+03,
+      "p99_get_ns_std": 4.5019383603065916e+02,
+      "p99_set_ns": 9.6330000000000000e+03,
+      "p99_set_ns_std": 5.9245337369281640e+02,
+      "runs": 1.0000000000000000e+01
+    },
+    {
+      "name": "YCSB_CacheLib/Run/4/65536/12/64/100000/iterations:10",
+      "family_index": 14,
+      "per_family_instance_index": 0,
+      "run_name": "YCSB_CacheLib/Run/4/65536/12/64/100000/iterations:10",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 10,
+      "real_time": 3.5433626829999976e+05,
+      "cpu_time": 2.2188899999946443e+02,
+      "time_unit": "us",
+      "footprint_mb": 1.2800000000000000e+02,
+      "hit_rate_pct": 9.9999937500000001e+01,
+      "node0_p50_get_ns": 0.0000000000000000e+00,
+      "ops_per_sec": 2.2886608097920171e+06,
+      "ops_per_sec_std": 2.4891825732269953e+05,
+      "p50_get_ns": 1.0550000000000000e+03,
+      "p50_get_ns_std": 1.5806644172625636e+02,
+      "p50_set_ns": 0.0000000000000000e+00,
+      "p50_set_ns_std": 0.0000000000000000e+00,
+      "p90_get_ns": 1.6452000000000000e+03,
+      "p90_get_ns_std": 2.6000607685206131e+02,
+      "p90_set_ns": 0.0000000000000000e+00,
+      "p90_set_ns_std": 0.0000000000000000e+00,
+      "p99_get_ns": 3.7660000000000000e+03,
+      "p99_get_ns_std": 4.4104875013993632e+02,
+      "p99_set_ns": 0.0000000000000000e+00,
+      "p99_set_ns_std": 0.0000000000000000e+00,
+      "runs": 1.0000000000000000e+01
+    }
+  ]
+}
+2026-05-24 05:13:37 [Info] (ThreadID: 131163057086336) Worker Joined.

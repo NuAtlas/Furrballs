@@ -11,6 +11,7 @@ Use this site to read the current technical whitepaper and follow project progre
 ## Start Here
 
 - [Read the whitepaper](whitepaper.qmd)
+- [Read the REMARC paper](remarc-paper.qmd)
 - [Repository README](../README.md)
 
 ## Build Locally

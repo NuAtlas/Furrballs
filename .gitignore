@@ -75,6 +75,25 @@ dlldata.c
 
 # Benchmark Results
 BenchmarkDotNet.Artifacts/
+BP_P*/
+_bn_*/
+policy-bench*
+Benchmark/PolicyBench
+Benchmark/PolicyBench_fast
+Benchmark/vcpkg_installed/
+vcpkg_installed/
+docs/policybench-2x2-factorial.txt
+
+# Benchmark build artifacts
+Benchmark/CMakeCache.txt
+Benchmark/CMakeFiles/
+Benchmark/Makefile
+Benchmark/cmake_install.cmake
+Benchmark/Benchmark/
+Benchmark/Furrballs/
+Benchmark/FurrballsSM/
+Benchmark/Sandbox/
+Benchmark/numatic/
 
 # .NET Core
 project.lock.json
@@ -380,3 +399,40 @@ MigrationBackup/
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
 BenchDB_TL/
+
+/.quarto/
+**/*.quarto_ipynb
+/_site/
+
+# Build directories
+build*/
+!buildfast/
+buildasan/
+buildevict/
+buildfast/
+buildcheck/
+buildhost/
+buildrel/
+buildrel_test/
+Benchmark/Benchmark/
+EvictBench/
+
+# Runtime artifacts
+texput.log
+vps-ycsb-*
+io_*/
+
+# LaTeX intermediates
+*.aux
+*.bbl
+*.blg
+*.log
+*.out
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+
+# Stale EC2 result directories
+data/ec2-results*/
+
+.quarto-cli/

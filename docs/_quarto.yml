@@ -4,8 +4,12 @@ project:
   render:
     - index.qmd
     - whitepaper.qmd
+    - remarc-paper.qmd
   resources:
     - CNAME
+    - paper/figures/*.png
+  pre-render:
+    - scripts/ensure-figure-pngs.sh
 
 website:
   title: "Furrballs"
@@ -15,6 +19,8 @@ website:
         text: Home
       - href: whitepaper.qmd
         text: Whitepaper
+      - href: remarc-paper.qmd
+        text: REMARC Paper
 
 format:
   html:

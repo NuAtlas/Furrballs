@@ -1,10 +1,12 @@
 {
   "dependencies": [
+    "benchmark",
     "lz4",
     {
       "name": "rocksdb", 
       "features": [ "tbb", "lz4" ]
     },
-    "xxhash"
+    "xxhash",
+    "cachelib"
   ]
 }

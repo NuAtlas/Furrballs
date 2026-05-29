@@ -1,0 +1,86 @@
+{
+  "context": {
+    "date": "2026-05-18T19:24:40+00:00",
+    "host_name": "ip-172-31-41-254",
+    "executable": "buildrel_cl/Benchmark/NUMABench",
+    "num_cpus": 128,
+    "mhz_per_cpu": 800,
+    "cpu_scaling_enabled": false,
+    "caches": [
+      {
+        "type": "Data",
+        "level": 1,
+        "size": 49152,
+        "num_sharing": 2
+      },
+      {
+        "type": "Instruction",
+        "level": 1,
+        "size": 32768,
+        "num_sharing": 2
+      },
+      {
+        "type": "Unified",
+        "level": 2,
+        "size": 1310720,
+        "num_sharing": 2
+      },
+      {
+        "type": "Unified",
+        "level": 3,
+        "size": 56623104,
+        "num_sharing": 64
+      }
+    ],
+    "load_avg": [0.0405273,0.685547,1.52686],
+    "library_build_type": "release"
+  },
+  "benchmarks": [
+    {
+      "name": "NUMABench_CacheLib/Run/2/8192/3/1024/700000/iterations:10",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "NUMABench_CacheLib/Run/2/8192/3/1024/700000/iterations:10",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 10,
+      "real_time": 3.7311716443970001e+08,
+      "cpu_time": 1.6856480999999990e+03,
+      "time_unit": "us",
+      "footprint_mb": 6.4000000000000000e+01,
+      "hit_rate_pct": NaN,
+      "node0_p50_get_ns": 0.0000000000000000e+00,
+      "node0_p99_get_ns": 0.0000000000000000e+00,
+      "ops_per_sec": 1.2146445662735645e+06,
+      "p50_get_ns": 1.4200000000000000e+02,
+      "p50_set_ns": 0.0000000000000000e+00,
+      "p99_get_ns": 6.4200000000000000e+02,
+      "p99_set_ns": 0.0000000000000000e+00
+    },
+    {
+      "name": "NUMABench_CacheLibNuma/Run/2/8192/3/1024/700000/iterations:10",
+      "family_index": 1,
+      "per_family_instance_index": 0,
+      "run_name": "NUMABench_CacheLibNuma/Run/2/8192/3/1024/700000/iterations:10",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 10,
+      "real_time": 3.7321887575980002e+08,
+      "cpu_time": 9.8879649000000045e+03,
+      "time_unit": "us",
+      "footprint_mb": 6.4000000000000000e+01,
+      "hit_rate_pct": NaN,
+      "node0_p50_get_ns": 0.0000000000000000e+00,
+      "node0_p99_get_ns": 0.0000000000000000e+00,
+      "ops_per_sec": 2.2569461156033305e+06,
+      "p50_get_ns": 1.3000000000000000e+02,
+      "p50_set_ns": 0.0000000000000000e+00,
+      "p99_get_ns": 6.4700000000000000e+02,
+      "p99_set_ns": 0.0000000000000000e+00
+    }
+  ]
+}

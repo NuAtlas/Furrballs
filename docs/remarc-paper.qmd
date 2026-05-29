@@ -1,0 +1,1175 @@
+---
+title: "REMARC: Reduction-Modeled Adaptive Replacement --- A Composable Policy Framework for Tiered Memory"
+subtitle: "A Negative-Result Report"
+author: "Hamza Jamil Saied (The Sphynx)"
+date: last-modified
+version: "1.0.0"
+doi: "10.5281/zenodo.19794758"
+lang: en
+babel-lang: none
+format:
+  html:
+    toc: true
+    number-sections: true
+  pdf:
+    toc: true
+    toc-depth: 4
+    number-sections: true
+    documentclass: scrartcl
+    fontsize: 11pt
+    geometry:
+      - top=1in
+      - bottom=1in
+    include-in-header:
+      text: |
+        \usepackage{microtype}
+        \usepackage{booktabs}
+        \usepackage{etoolbox}
+        \usepackage{caption}
+        \captionsetup{font=small,labelfont=bf}
+        \usepackage[automark]{scrlayer-scrpage}
+        \clearpairofpagestyles
+        \ihead{REMARC Paper v1.0.0}
+        \ohead{\pagemark}
+        \KOMAoptions{headsepline=true}
+---
+
+**Status:** v1.0.0 --- Final. This paper documents the complete lifecycle of the REMARC framework: design, formal characterization, evaluation, failure, and retirement. The principal finding is negative. The companion systems paper is the Furrballs technical report (Saied, 2026, DOI: 10.5281/zenodo.19794753).
+**Date:** May 2026
+**Changelog:** v1.0.0 --- Finalized as a negative-result report. Restructured for honest framing: abstract added, introduction rewritten as post-mortem, retracted sections removed (History Atom, Projection Topology), post-publication audit promoted, conclusions moved to end. All cross-references updated. REMARC framework formally retired.
+
+---
+
+## {.unnumbered .unlisted}
+
+REMARC (Reduction-Modeled Adaptive Replacement) is a composable policy framework for tiered memory that unifies eviction, migration, promotion, and demotion through dimensional reduction. This paper documents the complete lifecycle of REMARC: from design motivation (multi-dimensional decisions reduced to a single mechanism), through formal characterization (switched linear systems, convergence guarantees, steady-state encoding), to comprehensive evaluation and eventual retirement. The principal finding is negative: REMARC's scoring mechanism adds zero value over simple baselines (exponential moving average counting, majority voting) for both single-node eviction and multi-node placement. This failure is traced to two complementary fundamental limitations: the **cold-entry information hole** (no hit-only scoring can differentiate entries never re-accessed) and the **feedback SNR gap** (placement feedback is stochastic with signal-to-noise ratio approximately zero, unlike eviction feedback which is deterministic). A theoretical analysis classifies adaptive resource management problems by the information content of their feedback signals: ARC's ghost hit is a deterministic observation (high SNR), while placement feedback is dominated by workload home bias (zero SNR). Positive contributions that survive independent of the REMARC scoring mechanism include: the independence theorem for desire-encoded migration, AUG-ADAPT's 99.33% hit rate on adversarial looping workloads via self-tuning structured eviction, and the documented failure modes that inform future tiered memory policy design.
+
+---
+
+## Introduction
+
+### The Problem REMARC Was Designed to Solve
+
+Tiered and asymmetric memory systems require policies that simultaneously decide eviction, migration, promotion, and demotion --- yet existing policies reduce all decisions to a single keep-or-evict axis. Cache replacement policies like ARC, LRU, and LIRS classify items along one axis (recency, frequency, or reuse distance) and draw a threshold.
+
+Real tiered memory systems face multi-dimensional decisions:
+- **Eviction:** should this item remain in the memory hierarchy?
+- **Migration:** should this item move to a different tier/node?
+- **Promotion:** should this item move to a faster tier?
+- **Demotion:** should this item move to a slower tier?
+
+These are independent questions that existing policies answer with separate mechanisms bolted together. ARC handles eviction. A separate policy handles migration. Another handles tiering. Each adds its own data structures, its own tracking overhead, its own tuning parameters.
+
+This is the **dimensional conflation problem**: a 1D policy (ARC) is asked to handle a 2D decision (keep/move). The policy can't express "this key is hot (keep it) but on the wrong node (move it)." The axes compete without a framework for resolution.
+
+### What REMARC Is
+
+**REMARC** (Reduction-Modeled Adaptive Replacement) is a composable policy framework for tiered memory that unifies eviction, migration, promotion, and demotion through dimensional reduction. K access signals (recency, locality, tier pressure, ...) are reduced into a compact state space, and M decision scores (evict, migrate, promote, ...) are derived from that space via precomputed projection functions.
+
+The framework rests on a switched linear system: each key maintains a state vector $\mathbf{S} = (S_0, \ldots, S_{K-1})$, updated by a diagonal matrix $M_j$ on access from source $j$. The state converges deterministically to a steady state encoding the empirical access rate distribution (Section 3). Action scores are nonlinear functions of linear projections of this state.
+
+### What Happened
+
+REMARC was evaluated across six experimental configurations over 18 months:
+
+1. **Single-node eviction** (Section 5): 24 variants, 4 workloads. No page-batch REMARC variant exceeds ~24.5% Zipfian at 10% capacity (ARC achieves 35.17%). The ceiling is structural.
+
+2. **Multi-node desire encoding** (Section 5): Shadow desire maps and threshold-free migration. Initial simulations showed 3--4x cost reduction. Independent follow-up simulation (Section 11) showed majority voting and simple EMA counting match or beat desire encoding on all workloads.
+
+3. **Augmentation of ARC** (Section 8): Adding REMARC atoms to ARC's structure. Produces marginal gains (+1.59pp ScanRes, +0.59pp Temporal) at -1.24pp Zipfian cost. ARC's quota structure already captures the dominant signal.
+
+4. **Structured eviction** (Section 9): Heap-based eviction breaks the looping barrier (99.33% on adversarial looping). AUG-ADAPT, a self-tuning variant, achieves this while exactly matching ARC on all other workloads. This result survives and is independent of REMARC's scoring.
+
+5. **Pure REMARC composition** (retracted, see Section 10): Five-atom policies (HA1--HA5) initially appeared to match ARC on 3/4 workloads. Post-publication audit revealed two bugs (score degeneracy and sentinel collision) that invalidated all results. After correction, all variants produce LRU-equivalent hit rates.
+
+6. **Tiered placement** (Section 11): Six dedicated simulators across K=2, K=3, and feedback dimensionality experiments. REMARC adds zero value over simple EMA counting. All projection variants (linear, log, multiplicative) produce results within 1ns of each other. Feedback success rate is approximately 50% (coin flip) for all strategies, including oracle. The framework's migration axis never fires in practice.
+
+### Why It Failed
+
+Two complementary fundamental limitations explain the failure:
+
+**The cold-entry information hole.** No hit-only scoring mechanism can differentiate between entries that have never been re-accessed. A key's first access provides zero information about whether it will be re-accessed. ARC's ghost lists solve this by observing eviction outcomes (ghost hit vs ghost miss) --- a one-step-delayed form of future information. REMARC's feedforward scoring cannot replicate this.
+
+**Feedback SNR approximately zero.** Placement feedback is stochastic: whether a migrated key is accessed from its new node depends on thread scheduling, request routing, and timing --- factors dominated by workload home bias (typically 70%), not by the migration decision. The signal ("key was accessed from new node") has approximately zero information content. This contrasts with eviction feedback (ARC's ghost hit), which is a deterministic observation with high SNR.
+
+The theoretical analysis in Section 11.5 formalizes this distinction as a classification of adaptive resource management problems by feedback signal information content.
+
+### What This Paper Documents
+
+This paper is a complete, standalone record of the REMARC project. It contains:
+
+- The formal framework (Section 3): switched linear systems, convergence guarantees, steady-state characterization, representation theorem
+- All genuine experimental results (Sections 5, 8, 9): unaffected by the bugs discovered in Section 10
+- The post-publication audit (Section 10): bug discovery, impact analysis, and lessons for reproducible benchmarking
+- The final tiered placement evaluation (Section 11): the definitive negative result
+- A theoretical contribution (Section 11.5): deterministic vs stochastic feedback classification
+
+The companion Furrballs systems paper (Saied, 2026, DOI: 10.5281/zenodo.19794753) documents the production system that evolved from this work, using ARC for eviction and SimpleMigratePolicy (simple EMA counting) for migration.
+
+### Contributions
+
+**Surviving contributions:**
+
+1. A formal framework for composable tiered memory policy based on switched linear systems and linear projection, with convergence guarantees (JSR < 1, computable in closed form), steady-state characterization, and a representation theorem showing coverage of 9 existing policies (Section 3). The framework is mathematically valid; Section 11 demonstrates it is practically moot.
+
+2. The independence theorem: desire encoding preserves per-domain independence for n domains, with O(1) per-decision global state (Section 5). The theorem is logically valid; Section 11 demonstrates the mechanism it enables provides no advantage over simple baselines.
+
+3. AUG-ADAPT: self-tuning structured eviction achieving 99.33% on adversarial looping workloads while exactly matching ARC on Zipfian, ScanRes, and Temporal (Section 9). This result is independent of REMARC's scoring mechanism.
+
+4. The delivery--quota tension and its resolution: three research directions fully evaluated, with Finding 31 (pure prediction is insufficient without structural scan detection) as the key negative result (Section 9).
+
+5. Post-publication audit methodology: identification of score degeneracy and sentinel collision bugs, with documented lessons for reproducible cache policy benchmarking (Section 10).
+
+6. Theoretical analysis: classification of adaptive resource management by feedback signal information content --- deterministic (ARC's ghost hit, high SNR) vs stochastic (placement feedback, SNR approximately zero) (Section 11.5).
+
+**Negative result:** REMARC's multi-dimensional state, composable projections, competitive coupling, 4-bit quantization, and adaptive feedback collectively add zero value over simple baselines (EMA counting, majority voting, static placement) for both eviction and placement (Section 11).
+
+---
+
+## Background and Motivation
+
+### Existing Memory Management Policies Are One-Dimensional
+
+| Policy | Dimension | Output | Data Structure |
+|---|---|---|---|
+| LRU | Recency | Evict | Stack |
+| LFU | Frequency | Evict | Counters |
+| ARC | Recency + Frequency (1D blend) | Evict | 4 lists + ghost lists + p_ |
+| LIRS | Reuse distance | Evict | 2 lists + HIR |
+| W-TinyLFU | Frequency sketch | Evict | Count-Min Sketch + Window |
+
+None of these produce **migration** or **tier placement** decisions. They answer one question: "should I keep this?" When systems need migration (NUMA) or tiering (NVM), they add separate policies on top.
+
+### The Cost of Bolt-On Policies
+
+Adding a migration policy on top of ARC means:
+- Separate per-key tracking for migration candidates (CrossNodeAccesses counter)
+- Separate scanner for migration decisions
+- Separate adaptation mechanism (threshold tuning)
+- Interaction complexity: "ARC says keep, migration says move" --- contradictory signals from co-equal policies
+
+### What Was Needed
+
+A composable tiered memory policy that accepts K input signals, produces M action scores, uses a single shared state space, is self-tuning, and is efficient (O(1) amortized per decision). REMARC was designed to fill this gap.
+
+---
+
+## The REMARC Framework
+
+### Intuition
+
+Think of a key's access history as a point in K-dimensional space, where each dimension tracks a different signal source (how often accessed locally, how often remotely, how often from disk, ...). We want to project this point onto M action axes --- each axis answers one question ("should I evict?", "should I migrate?").
+
+This is **dimensional reduction**: we don't need the full K-dimensional history to make decisions. We need a compressed representation that preserves the decision-relevant information. REMARC's projection vectors are hand-designed from domain knowledge rather than learned from data.
+
+**The defining property of REMARC is competitive coupling between axes.** Observing source j is evidence for source j and evidence against all other sources --- the boost-one-decay-rest update couples the K state variables into a shared state space. The projection simply reads out different marginals of the joint distribution: eviction reads total activity, migration reads locality imbalance, promotion reads tier mismatch.
+
+Note: Section 11 demonstrates that this coupling produces no practical advantage. The competitive structure makes the migration axis non-functional (REMARC-Migrate score is zero for most states).
+
+### Formal Definition
+
+#### State Vector
+
+Each key maintains a state vector:
+
+$$\mathbf{S} = (S_0, S_1, \ldots, S_{K-1}) \in [0, \text{MAX}]^K$$
+
+Where K is the number of signal sources and MAX is the quantization level (15 for 4-bit encoding).
+
+#### Update Rules (Switched Linear System)
+
+When the key is accessed from signal source j:
+
+$$\mathbf{S}_{t} = M_j \cdot \mathbf{S}_{t-1} + \mathbf{b}_j$$
+
+Where $M_j \in \mathbb{R}^{K \times K}$ is a diagonal matrix:
+
+$$M_j = \text{diag}(1-\alpha_0, \ldots, 1, \ldots, 1-\alpha_{K-1})$$
+
+(1 at position j, decay factors elsewhere), and $\mathbf{b}_j$ is:
+
+$$\mathbf{b}_j = (0, \ldots, \alpha_j \cdot \text{MAX}, \ldots, 0)$$
+
+(boost at position j only).
+
+**Interpretation:** observing an access from source j is evidence for source j and evidence against all other sources. The update rule maintains a sufficient statistic for each source's access rate under an exponential forgetting model. The steady-state formula (§3.3.1) makes this precise: $S_j^*$ converges to a function of $p_j$ (the fraction of accesses from source j), confirming that the state encodes the access distribution.
+
+**Time decay** (per scan cycle):
+
+$$\mathbf{S} \leftarrow \lambda \cdot \mathbf{S}$$
+
+#### Decision Surfaces (Projection + Nonlinear Combination)
+
+Action scores are computed in two stages (matching the proj_s and decide atoms from §3.4):
+
+**Stage 1: Feature extraction (proj_s).** A matrix projection extracts k features from the K-dimensional state:
+
+$$\mathbf{z} = A \cdot \hat{\mathbf{S}}, \quad A \in \mathbb{R}^{k \times K}, \quad k \le K$$
+
+Where $\hat{\mathbf{S}} = \mathbf{S} / \text{MAX}$ is the normalized state (each component in [0,1]). Each component $z_i = \langle a_i, \hat{\mathbf{S}} \rangle$ is a scalar product --- a linear functional over the state. The projection vectors $a_i$ determine which aspects of the state are decision-relevant.
+
+**Stage 2: Nonlinear scoring (decide).** Each action score is computed as a nonlinear function over the feature vector:
+
+$$f_m(\mathbf{S}) = g_m(\mathbf{z}) = g_m(z_1, z_2, \ldots, z_k)$$
+
+Where $g_m: \mathbb{R}^k \rightarrow \mathbb{R}$ is a fixed nonlinear function. In REMARC's current instantiation, $g_m$ is a product of projected components. For example, the NUMA Evict score is:
+
+$$\text{Evict} = (1 - R)(1 - F)$$
+
+This is **not** representable as $\sigma(a \cdot S)$ --- it is a multiplicative interaction between two projected features, creating a nonlinear decision surface. The nonlinearity lives in `decide`, not in a scalar activation function.
+
+**The projection IS dimensional reduction:** $\text{proj}_s: \mathbb{R}^K \rightarrow \mathbb{R}^k$ with $k \le K$. The mapping is lossy by design --- we keep only features relevant to decisions. The `decide` function then computes nonlinear interactions between those features.
+
+**Model class.** REMARC defines policies as nonlinear functionals over a low-dimensional linear projection of the state: $f(S) = g(AS)$. The projection $A$ determines what information is available to decisions (everything orthogonal to $\text{span}(A)$ is irretrievably lost). The decision function $g$ determines how that information is combined (multiplicative terms, thresholds, etc.). Expressiveness depends on both --- a richer projection (larger $k$) or a more complex $g$ (higher-order interactions) increases the class of representable policies, but neither alone is sufficient.
+
+**Connection to sufficiency.** The steady-state result (§3.3.1) shows that $S$ encodes a biased empirical distribution of access sources. The projection $A$ extracts sufficient statistics from this distribution for the decision task at hand. The sufficiency condition (§3.4, Correlation Condition) formalizes this: every state dimension must carry non-zero information about at least one decision, ensuring the projection does not discard decision-relevant information.
+
+### Properties
+
+#### Steady-State Encoding (Key Result)
+
+For a key where source j accounts for fraction $p_j$ of total accesses (empirical frequency, not a probabilistic assumption), the steady state satisfies:
+
+$$S_j^* = \text{MAX} \cdot \frac{p_j \alpha_j}{p_j \alpha_j + (1-p_j)(1-\lambda)}$$
+
+**Derivation.** At steady state, the expected boost equals the expected decay for each dimension. Consider dimension $j$ over one time step. With probability $p_j$, source $j$ fires and $S_j$ is boosted:
+
+$$S_j \leftarrow (1 - \alpha_j) S_j + \alpha_j \cdot \text{MAX}$$
+
+With probability $1 - p_j$, source $j$ does not fire and $S_j$ decays:
+
+$$S_j \leftarrow \lambda \cdot S_j$$
+
+At the fixed point $S_j^*$, the expected update must equal $S_j^*$:
+
+$$S_j^* = p_j \bigl[(1-\alpha_j) S_j^* + \alpha_j \cdot \text{MAX}\bigr] + (1-p_j) \lambda S_j^*$$
+
+$$S_j^* = p_j(1-\alpha_j) S_j^* + p_j \alpha_j \cdot \text{MAX} + (1-p_j)\lambda S_j^*$$
+
+$$S_j^* - p_j(1-\alpha_j) S_j^* - (1-p_j)\lambda S_j^* = p_j \alpha_j \cdot \text{MAX}$$
+
+$$S_j^* \bigl[1 - p_j + p_j\alpha_j - \lambda + p_j\lambda\bigr] = p_j \alpha_j \cdot \text{MAX}$$
+
+$$S_j^* \bigl[p_j \alpha_j + (1-p_j)(1-\lambda)\bigr] = p_j \alpha_j \cdot \text{MAX}$$
+
+$$S_j^* = \text{MAX} \cdot \frac{p_j \alpha_j}{p_j \alpha_j + (1-p_j)(1-\lambda)} \quad \square$$
+
+This gives a **deterministic relationship between observed access frequency and REMARC state**: the state vector encodes the empirical access rate distribution across sources. No stationarity or independence assumptions required --- $p_j$ is an observable quantity.
+
+#### Convergence (Deterministic)
+
+The convergence guarantee is deterministic --- it holds for **any** access pattern, not just stationary distributions.
+
+**Key structural property:** each $M_j$ is diagonal. Products of diagonal matrices are diagonal. Therefore the joint spectral radius (JSR) --- the worst-case spectral radius over all products of the switching matrices --- is computable in closed form:
+
+$$\rho = \max\bigl(\max_j(1 - \alpha_j),\ \lambda\bigr) < 1$$
+
+Since $0 < \alpha_j < 1$ and $0 < \lambda < 1$, the JSR is strictly less than 1. This means the homogeneous system $M_{\sigma(t)} \cdots M_{\sigma(1)} \cdot S_0 \to 0$ for any switching sequence $\sigma$ --- adversarial, periodic, or stochastic.
+
+**Proof.** For any switching sequence $\sigma = (j_1, j_2, \ldots, j_t)$, the product $P = M_{j_t} \cdots M_{j_2} M_{j_1}$ is diagonal. Its $i$-th diagonal entry is:
+
+$$P_{ii} = \prod_{k=1}^{t} d_i(j_k), \quad d_i(j_k) = \begin{cases} 1 - \alpha_i & \text{if } j_k = i \\ \lambda & \text{if } j_k \neq i \end{cases}$$
+
+Each factor satisfies $0 < d_i(j_k) < 1$. Therefore $P_{ii} \to 0$ as $t \to \infty$, and $\|P\|_{\infty} = \max_i |P_{ii}| \to 0$. The convergence rate is geometric: $\|P\|_{\infty} \leq \rho^t$, where $\rho = \max(\max_j(1-\alpha_j), \lambda) < 1$. $\square$
+
+**Why diagonal matters:** for general (non-diagonal) matrices, the JSR can exceed individual spectral radii because off-diagonal coupling in products can amplify eigenvalues. Diagonal matrices have no off-diagonal coupling. Each entry of the product decays as a product of independent scalars. No amplification is possible.
+
+**Convergence behavior by access pattern:**
+
+| Switching sequence | Convergence |
+|---|---|
+| Each source has limiting frequency $p_j$ | Converges to steady-state formula $S_j^*$ at rate $O(\rho^t)$ |
+| Periodic (e.g., alternating sources) | Converges to periodic orbit |
+| Adversarial (worst case) | State stays bounded, homogeneous transient decays to 0 at rate $O(\rho^t)$ |
+| Non-stationary (changing frequencies) | State tracks the changing frequencies with lag determined by $\alpha_j$ and $\lambda$ |
+
+#### Separability
+
+Different actions respond to different projections of the state. The Evict score responds to overall coldness (low total signal). The Migrate score responds to imbalance (high remote signal relative to local). These are independent axes in the decision space --- the projection rows $a_i$ are chosen to extract independent decision-relevant features.
+
+### Representation Framework
+
+The preceding sections define REMARC as a specific mechanism (competitive erosion + linear projection + nonlinear decision surface). This section shows that the mechanism is not arbitrary --- it captures the algebraic structure of sequential decision functions as a class.
+
+**Theorem (Three-Atom Decomposition).** Every deterministic, Markovian sequential decision function $\pi: \mathcal{H} \to A$ that satisfies the sufficient statistic condition factors as:
+
+$$\pi = \texttt{decide} \circ \texttt{proj}_s \circ \varphi^t$$
+
+where $\varphi: S \times O \to S$ is the state update (contractive, incremental), $\texttt{proj}_s: S \to \mathbb{R}^k$ is a linear projection, and $\texttt{decide}: \mathbb{R}^k \to D$ is a fixed nonlinear function.
+
+*Proof.* By the sufficient statistic condition, $\pi(h) = \pi(\varphi^t(h))$ --- the decision depends on history only through the compressed state. Define $g = \pi \circ \varphi^{-t}$ (on the image of $\varphi^t$). Factor $g$ into a linear projection $\texttt{proj}_s$ and nonlinear decision $\texttt{decide}$: this is always possible by the definition of a linear projection (choose $\texttt{proj}_s$ as any basis for a k-dimensional subspace of $S$, and $\texttt{decide}$ as the residual function on that subspace). The factorization is not unique but always exists. The contractivity of $\varphi$ is not required for the decomposition --- it is required for convergence (§3.3). ∎
+
+#### Spaces (Independent Axioms)
+
+The framework rests on three independently axiomatized spaces:
+
+**Observation space O.** The set of observable events. For REMARC: O = {0, 1, ..., K-1} (discrete sources). No axioms beyond being a non-empty set.
+
+**State space S.** A compact (closed and bounded) subset of R^n, n > 0. In REMARC: S = [0, MAX]^K. Boundedness is the compression property --- phi maps unbounded histories to bounded state.
+
+**Discrimination space D.** Defined constructively as the image of the decision mapping: $D_f := f(S)$ where $f = \texttt{decide} \circ \texttt{proj}_s$. D is not a predefined codomain --- it is the space of realizable discrimination scores, constructed by the composition itself. Compact because S is compact and f is continuous.
+
+**Key property:** REMARC does not map into a decision space --- it constructs the decision space. The composition $f: S \rightarrow D_f$ is a many-to-one compression that is surjective onto its constructed image by definition. The information loss is the compression itself: fewer distinguishable outputs than inputs, but no unrealizable outputs.
+
+#### Three-Atom Decomposition
+
+A sequential decision function factors into three atomic operations:
+
+$$\pi_c = \texttt{decide} \circ \texttt{proj}_s \circ \varphi^t$$
+
+**Atom 1: phi (state update).** $\varphi: S \times O \rightarrow S$. An incremental map that takes current state + observation, produces new state. In REMARC: a switched linear system ($S_t = M_j \cdot S_{t-1} + b_j$). Contractive (JSR < 1), guaranteeing convergence for any observation sequence.
+
+**Atom 2: proj_s (linear projection).** $\texttt{proj}_s: S \rightarrow \mathbb{R}^k$. A linear map (scalar products) that extracts k features from the n-dimensional state.
+
+**Atom 3: decide (nonlinear combination).** $\texttt{decide}: \mathbb{R}^k \rightarrow D$. A fixed nonlinear function that combines projected features into discrimination scores. In REMARC: a product of projected components (e.g., Evict = (1-R)(1-F)).
+
+**Note on sigma (discretization):** Converting continuous discrimination scores to discrete actions (thresholding) is NOT an atomic operation of the framework. It is an implementation concern.
+
+#### Sufficient Statistic Condition
+
+The factorization holds if and only if the state S is a **sufficient statistic** for the decision:
+
+$$\pi(h) \text{ depends on } h \text{ only through } \varphi^t(h)$$
+
+Two observation histories that produce the same state must produce the same discrimination scores.
+
+#### Coverage of Existing Policies
+
+| Policy | Sufficient statistic | Factorization | Coverage |
+|---|---|---|---|
+| **LRU** (recency) | $S_0$ = EMA of recency | K=1, M=1, $A = -1$ | Approximate |
+| **LFU** (frequency) | $S_0$ = accumulating EMA of frequency | K=1, M=1, $A = -1$ | Exact |
+| **Clock** (reference bit) | $S_0$ = binary EMA ($\alpha \to 1$, $\lambda \to 0$) | K=1, M=1 | Approximate |
+| **ARC** (decision structure) | $S_0$ = recency, $S_1$ = frequency | K=2, M=1 | Exact |
+| **W-TinyLFU** (decision) | $S_0$ = frequency estimate | K=1, M=1 | Exact |
+| **LeCaR** (decision structure) | $S_0$ = LRU score, $S_1$ = LFU score | K=2, M=1 | Exact |
+| **LIRS** (reuse distance) | IRR $\approx$ EMA recency | K=1, M=1 | Approximate |
+| **ARC** (ghost lists) | Ghost membership $\approx$ binary EMA | K=2, M=1 | Approximate |
+| **S3-FIFO** (binary frequency gate) | Single-bit reaccess $\approx$ steep EMA | K=1, M=1 | Approximate |
+
+**"Exact"** means the REMARC configuration produces the same decision on every access sequence. **"Approximate"** means the REMARC decisions converge toward the policy's behavior as $\alpha$ and $\lambda$ are tuned.
+
+#### Boundary
+
+Policies that fall **outside** the REMARC space:
+
+| Policy | Reason excluded |
+|---|---|
+| **Bélády's MIN / OPT** | Requires future knowledge. Not online. |
+| **Randomized eviction** | Non-deterministic. |
+| **Oracle-assisted policies** | Depend on external information beyond access history. |
+
+#### Correlation Condition
+
+**Definition (Valid Signal).** Input dimension $S_j$ is *valid* if it carries non-zero information about at least one output discriminator: $\exists m : \partial f_m / \partial S_j \neq 0$.
+
+**Definition (Weak REMARC).** Every input dimension is valid --- each $S_j$ contributes to at least one action score. The projection discards no decision-relevant information.
+
+**Definition (Strong REMARC).** Every input dimension correlates with every output discriminator --- each $S_j$ has non-zero weight in every row of $A$.
+
+Under Weak REMARC, the state is a sufficient statistic for the decisions (nothing decision-relevant is lost). Under Strong REMARC, the state is a *maximally informative* sufficient statistic.
+
+#### Geometric Interpretation
+
+The REMARC configuration space has geometric structure: K is discrete (stratification), $\{\alpha_j\}$ and $\lambda$ are continuous (coordinates within each stratum), and $A$ is the projection matrix (its rows live on a Grassmannian). Existing policies are specific points or curves in this space. REMARC-as-framework is the space itself.
+
+### SIMD-Optimized Implementation
+
+For K = 2 with 4-bit quantization (MAX=15):
+
+- State is packed into one byte: `(S_1 << 4 | S_0)`
+- Decision surfaces are precomputed into 256-entry lookup tables (`E_lookup`, `M_lookup`)
+- **SIMD batch scoring:** load 16 state bytes, extract S_0 and S_1 nibbles via SSE2 mask+shift, compute E and M scores using SIMD 16-bit multiply-add arithmetic (~18 instructions per batch of 16 keys)
+- Note: `pshufb` (SSSE3) cannot perform 256-entry lookups directly --- direct SIMD arithmetic is used instead.
+
+Section 11 demonstrates that 4-bit quantization is net-negative (Finding 48), making this optimization irrelevant in practice.
+
+### Outcome-Based Adaptation
+
+Standard ARC adapts via ghost lists (observe what was evicted, adjust p_). REMARC adapts via **reversal feedback**:
+
+| Signal | Meaning | Threshold Adjustment |
+|---|---|---|
+| Eviction reversal rate | Keys evicted then reloaded | $\theta_e$ too low -> increase |
+| Migration reversal rate | Keys migrated then ping-ponged | $\theta_m$ too low -> increase |
+| Cache miss rate | Overall miss rate high | $\theta_e$ too high -> decrease |
+| Cross-node latency | Remote access penalty high | $\theta_m$ too high -> decrease |
+
+Section 11 demonstrates that migration reversal feedback has SNR approximately zero --- the signal carries no information about placement quality.
+
+---
+
+## NUMA Instantiation (K=2, M=2)
+
+### Signal Sources
+
+| Source | Meaning | Update on |
+|---|---|---|
+| $S_0$ = S_local | Smoothed local access rate | Local Get() |
+| $S_1$ = S_remote | Smoothed remote access rate | Remote Get() from another NUMA node |
+
+### Decision Surfaces
+
+$$R = S_0 / 15, \quad F = (S_0 + S_1) / 30, \quad L = S_1 / (S_0 + S_1)$$
+
+$$\text{Evict}(\mathbf{S}) = (1 - R)(1 - F)$$
+
+$$\text{Migrate}(\mathbf{S}) = F \cdot L \cdot (1 - R)$$
+
+### State Space Partition
+
+```
+              S_remote →
+              low              high
+S_local  ┌──────────────────────────────┐
+high     │ KEEP                       │ CONTESTED           │
+         │ E ≈ 0, M ≈ 0               │ E ≈ 0, M moderate   │
+         │ hot local key              │ both active,         │
+         │                            │ R resists migration  │
+         ├──────────────────────────────┤
+low      │ EVICT                      │ MIGRATE             │
+         │ E ≈ high, M ≈ 0            │ E ≈ low, M ≈ high  │
+         │ cold, not remote           │ misplaced key       │
+         └──────────────────────────────┘
+```
+
+### Migration Target Selection
+
+For N > 2 nodes, a probabilistic HotNode mechanism identifies the migration target:
+
+- On remote access from node N: with probability $p(S_1)$, set $\text{HotNode} = N$
+- Low p = biased against migration change = built-in anti-ping-pong
+- Sustained access from one node overcomes the bias
+
+For 2 nodes: HotNode is implicit (the other node), no sampling needed.
+
+### Ghost-Less Reload Protection
+
+When a page is evicted and reloaded from persistent storage, keys start with $S_0 = \text{MAX}$ (protected from immediate re-eviction). This IS ARC's ghost hit promotion (back to t1/t2) without ghost lists --- the "promotion" is just setting the initial score on reload.
+
+### Per-Key Storage Cost
+
+| Component | Size | Location |
+|---|---|---|
+| State (S_local, S_remote) | 1 byte (4+4 bits) | TempCtrl in Page struct |
+| HotNode | 1 byte | KeyMeta in CMap slot |
+| TempCtrlIdx | 1 byte | KeyMeta in CMap slot |
+| **Total per key** | **3 bytes** | |
+
+---
+
+## Evaluation
+
+We evaluate REMARC through a comprehensive simulation study across three regimes: single-node (24 variants, 4 workloads), 2-node NUMA (10 experiments, 4 workloads), and 3+ node NUMA (3 variants, 4 workloads with parameter sweep). All experiments use integer quantized state (uint8 per axis) with the REMARC update rules from §3.2. The augmentation experiments (Section 8) and structured eviction experiments (Section 9) are documented separately.
+
+### Methodology
+
+**Workloads.** We use four synthetic workloads that isolate distinct access patterns:
+
+| Workload | Description | Key property |
+|---|---|---|
+| Zipfian ($\alpha$=0.99) | Heavy-tailed popularity | Tests capacity management under skew |
+| Temporal Shift | 4-phase hot-set rotation (period=4) | Tests adaptivity to distribution change |
+| Scan-Resistant | 90% sequential scan + 10% random | Tests resistance to sequential pollution |
+| Looping | Cyclic access over 2x capacity | Tests structural awareness of phases |
+
+**Parameters.** Capacity=1000, universe=10000, ops=300000, iterations=10. Keys per page (kpp)=32 for page-batch variants. The default REMARC configuration uses two axes (R, F) with parameters (aL=2, aR=1, tE=12, td=7/8). State is stored as uint8 with saturation at 15 (REMARC_MAX).
+
+**Baselines.** We compare against LRU, ARC (Megiddo & Modha, 2003), and augmented ARC variants (Section 8).
+
+**Metrics.** Hit rate per workload, throughput (ops/sec), eviction efficiency (evictions per miss). Composite KPI score = 0.60 x hit_norm + 0.25 x ops_norm + 0.15 x eff_norm.
+
+### Single-Node Study
+
+#### Full Variant Comparison
+
+We tested 24 policy variants: LRU, ARC, 16 page-batch REMARC variants, 4 augmented ARC variants (AUG-TS4, AUG-PRED, AUG-HEAP, AUG-BOTHEND), AUG-ADAPT (self-tuning), and QuotaFree (pure predictive, no ARC structure), all under identical conditions.
+
+**Results (cap=1000, universe=10000, ops=300k):**
+
+| Policy | Zipfian | ScanRes | Temporal | Looping | Zipf Ops/s |
+|---|---|---|---|---|---|
+| **LRU** | 24.59% | 73.56% | 74.86% | 0.00% | 10.27M |
+| **ARC** | **35.17%** | 88.90% | 74.91% | 0.00% | 5.44M |
+| REMARC | 24.67% | 65.87% | 53.52% | 20.66% | 4.53M |
+| REMARC-OPT | 24.45% | 65.66% | 74.85% | 0.00% | 8.19M |
+| REMARC-LazyInc | 24.62% | 66.08% | 53.49% | 23.03% | 4.11M |
+| REMARC-S3 | 24.42% | 69.44% | 71.58% | 0.00% | 4.44M |
+| REMARC-LFU | 24.45% | 65.66% | 74.85% | 0.00% | 8.05M |
+| REMARC-TinyLFU | 24.42% | 65.49% | 74.71% | 0.00% | 7.71M |
+| REMARC-GhostField | 24.45% | 65.64% | 74.85% | 0.00% | 1.04M |
+| REMARC-GhostGate | 25.60% | 81.32% | 49.82% | 0.00% | 0.92M |
+| REMARC-BloomGate | 25.56% | 86.21% | 46.52% | 24.36% | 11.44M |
+| REMARC-BloomMod | 24.44% | 65.38% | 74.61% | 28.34% | 5.32M |
+| REMARC-FACT | 24.46% | 71.49% | 56.40% | 0.00% | 6.71M |
+| REMARC-TIER | 24.45% | 66.38% | 74.85% | 0.00% | 5.37M |
+| REMARC-Dual | 20.85% | 49.32% | 49.89% | 0.00% | 3.48M |
+| REMARC-MS | 24.46% | 65.88% | 74.82% | 0.00% | 4.63M |
+| REMARC-STEP | 24.45% | 66.85% | 74.81% | 0.00% | 4.90M |
+| REMARC-STEPK | 25.89% | 82.86% | 9.03% | 31.19% | 0.96M |
+| **AUG-TS4** | 33.93% | **90.49%** | 75.50% | 0.00% | 3.45M |
+| **AUG-PRED** | 33.92% | 90.47% | **75.52%** | 0.00% | 4.52M |
+| AUG-HEAP | 29.90% | 26.12% | 62.70% | 99.00% | 5.60M |
+| AUG-BOTHEND | 29.78% | 77.09% | 58.56% | 0.00% | 6.21M |
+| **AUG-ADAPT** | 33.93% | **90.52%** | 75.50% | **99.33%** | 3.79M |
+
+#### Key Findings (Single-Node)
+
+**Finding 1 (Locality Barrier).** No page-batch REMARC variant within the integer EMA per-key scoring class exceeds ~24.5% Zipfian hit rate at 10% capacity. This ceiling is robust across 16 page-batch variants. The page-batch ceiling is structural: page-level eviction requires evicting all keys in a page, discarding the per-key scoring signal. Only augmented variants that use per-key eviction (AUG-TS4 at 33.93%, AUG-PRED at 33.92%) approach ARC's 35.17%.
+
+**Finding 2 (Integer Quantization Is Critical).** Page-batch variants with integer quantized state maintain 65--86% ScanRes (best: REMARC-BloomGate at 86.21%), while non-quantized variants (bare REMARC, REMARC-LazyInc) collapse to 53% on Temporal Shift. Integer truncation floors (MAX-R) >= 1, preventing floating-point hypersensitivity.
+
+**Finding 3 (REMARC Dominates on Looping).** Page-batch REMARC variants with per-page eviction achieve 20--31% on Looping where ARC/LRU score 0%. REMARC-LazyInc (23.03%), REMARC-BloomMod (28.34%), and REMARC-STEPK (31.19%) exploit per-page state retention to keep cycling keys.
+
+**Finding 4 (Ghost Provides Marginal Single-Node Benefit).** Ghost field (24.45% Zipf) matches ghost-free variants exactly. Ghost gate (25.60%) and bloom gate (25.56%) provide only +1pp Zipfian improvement via admission filtering.
+
+**Finding 5 (Feedback Is Signal-Degenerate in Current Design).** Multi-scale, step, and factorized variants (which add population statistics) do not improve over basic REMARC-OPT on Zipfian (all ~24.5%). The cause: uniform boost/decay treatment produces homogeneous population statistics, providing no gradient for feedback to exploit.
+
+**Finding 6 (Tiered/Capacity Allocation Is Neutral).** REMARC-TIER (24.45% Zipf) matches REMARC-OPT exactly.
+
+**Finding 14 (ARC Dominates Single-Node Zipfian).** ARC achieves 35.17% Zipfian --- exceeding the page-batch REMARC ceiling by 10.7pp. This reflects ARC's structural advantage (T1/T2 partition with p-adaptation).
+
+### Multi-Node Study: Desire Encoding
+
+#### The Migration-Adaptation Gap
+
+In the standard REMARC formulation, migration uses value-based scoring: a key migrates from node A to node B when its REMARC score on B exceeds a threshold.
+
+**Finding 7 (Value-Based Migration Failed on Phase Shifts).** On Node-Shift (hot set moves from node 0 to node 1 every 50K ops), value-based migration produced cost identical to no-migration (422.6 vs 422.9). Cause: slow-decaying sF creates "frequency momentum" --- phase-0 keys retain high scores after phase shift.
+
+#### Desire Encoding
+
+We introduce **desire encoding**: instead of scoring keys by their value on the local node, each node maintains a **shadow desire map** $S_i(K)$ = "how much does node i want key K." The desire score uses the same REMARC update rules (boost on access, periodic decay) but applies to ALL keys, not just cached keys.
+
+Formally, for node i with cache capacity $C_i$:
+
+$$\text{Cache}_i = \text{top-}C_i \text{ keys by } S_i(K)$$
+$$\text{Migrate}(K: i \to j) = S_j(K) > \min_{K' \in \text{Cache}_j} S_j(K')$$
+
+No migration threshold is needed. The eviction decision (remove lowest-desire key from cache) and migration decision (acquiring node's desire exceeds its worst cached key) are both driven by the same signal.
+
+**Finding 8 (Desire Encoding: 3-4x Improvement).** Desire encoding reduces cost by 3-4x across all workloads:
+
+| Policy | Skewed-Zipf | Node-Shift | Cross-Loop | Oscillating |
+|---|---|---|---|---|
+| LRU + migration(3) | 353.3 | 381.5 | 80.1 | 385.5 |
+| REMARC value-based | 337.5 | 422.6 | 80.1 | 422.7 |
+| **Desire-encoded** | **87.2** | **96.1** | **80.1** | **104.9** |
+| Desire + adaptive cap | 87.3 | 96.2 | 80.1 | 108.0 |
+
+On Skewed-Zipf, desire encoding reduces cost from 337.5 to 87.2 --- a 3.87x improvement.
+
+> **Note.** The independent tiered placement simulation in Section 11 did not reproduce this advantage: simple EMA counting and majority voting match or beat desire encoding on all tested workloads in a different simulator configuration. The desire encoding results here are from a per-key REMARC implementation; the Section 11 results are from a dedicated placement simulator with different workload parameters.
+
+#### Independence Theorem
+
+**Definition.** A multi-node REMARC system is **per-node independent** if each node's eviction decisions depend only on its local state $S_i$, and its migration decisions depend only on $S_i$ and the migrating node's $S_j$.
+
+**Theorem (Independence --- Finding 15).** Desire encoding preserves per-node independence. Value encoding does not.
+
+*Proof sketch.* Under desire encoding, $S_i(K)$ depends only on node i's observation history. The migration decision $S_j(K) > \min S_j(\text{Cache}_j)$ evaluates only node j's desire --- no cross-node state comparison is needed. Under value encoding, $S_i(K) = \text{"value of K on node i"}$ requires comparing K's value across nodes, creating a dependency on $S_j$ during node i's state update. ∎
+
+### Multi-Node Study: n >= 3 Nodes
+
+#### Global State for Contention Resolution
+
+For n >= 3, **global state G** becomes necessary to resolve contention. We define G as a cross-node desire comparison: migrate key K from node i to node j only if:
+
+$$S_j(K) > r \cdot S_i(K)$$
+
+where r >= 1 is the compare ratio. G is O(1) per decision and O(n) in total state.
+
+#### Three-Node Results
+
+**Configuration:** cap=67 per node, 999 keys, 500K ops.
+
+| Policy | Zipfian Cost | Cross-dominant Cost | Rotating Cost |
+|---|---|---|---|
+| Desire-only (no G) | 324.8 | 296.2 | 296.4 |
+| Compare(1.1x) | 141.1 | 130.6 | 144.4 |
+| Compare(1.3x) | 134.4 | 126.9 | 137.4 |
+| Compare(1.5x) | 132.5 | 125.6 | 134.9 |
+| Compare(2.0x) | 130.6 | 124.5 | 132.3 |
+| Cooldown(3K ops) | 212.9 | 225.0 | 201.1 |
+
+**Finding 9 (Global State Necessary for n >= 3).** Without G, shared hot keys bounce between nodes (158K migrations, cost 325). With compare ratio >= 1.1x, cost drops to 141 --- a 2.3x improvement.
+
+**Finding 10 (Compare Ratio: 1.1x Is the Cliff).** The ratio sweep shows a sharp cliff at 1.1x. Returns diminish above 1.3x. The optimal range is 1.1x--1.5x.
+
+**Finding 11 (65% Remote Hit Rate Is Structural).** On 3-node Zipfian, the best variants achieve ~66% remote hit rate. This is a capacity problem (cap/3 = 67 keys per node vs 999 total keys, 6.7% capacity).
+
+**Finding 16 (G Is O(1) Per Decision, O(n) State).** The global compare requires one lookup per migration decision. No distributed consensus, no cross-node locking. The compare ratio r has a wide effective range (1.1x--1.5x).
+
+### Ghost Map Study
+
+The desire-encoded policy maintains a shadow desire map for ALL keys (not just cached keys). We isolate the ghost map's contribution by comparing cache-only, full ghost, and ghost-decay-cached variants.
+
+**Finding 12 (Ghost Map Marginal on Zipfian).** At cap=1000, keys=10000 (10% ratio), the ghost map adds only +1.5pp Zipfian (26.48% -> 28.00%).
+
+| Policy | Zipf (10%) | Temp (10%) | Scan (10%) | Loop (10%) |
+|---|---|---|---|---|
+| ARC | **50.81** | **26.60** | 70.76 | 0.25 |
+| Cache-only | 26.48 | 12.54 | **90.37** | **3.02** |
+| Full ghost | 28.00 | 12.37 | 90.42 | 0.48 |
+
+**Finding 13 (Ghost Helps Temporal, Hurts Looping).** The ghost map improves Temporal hit rate by +14pp (at 20% ratio) but hurts Looping by -7pp --- phantom desire from old phases competes with current-phase keys.
+
+### Summary of Findings
+
+| # | Finding | Implication |
+|---|---|---|
+| 1 | Locality barrier: ~24.5% Zipfian ceiling for per-key scalar scoring | Structural ceiling for scalar scoring class |
+| 2 | Integer quantization is critical for scan resistance | Float EMA collapses ScanRes; discrete state is structural |
+| 3 | REMARC page-batch: 20--31% on Looping (vs 0% for ARC/LRU); augmented: 99%+ (§9) | Structural advantage for phase-based workloads |
+| 4 | Ghost provides marginal single-node benefit (+1pp) | Ghost's value is multi-node (desire signal) |
+| 5 | Feedback is signal-degenerate in current design | Uniform phi -> no gradient for feedback |
+| 6 | Tiered capacity collapsed in all tests | Alternative mechanisms not excluded |
+| 7 | Value-based migration fails on phase shifts | Frequency momentum prevents adaptation |
+| 8 | Desire encoding: 3-4x cost reduction (per-key REMARC sim) | Threshold-free migration from local desire signal |
+| 9 | Global state necessary for n >= 3 | Cross-node compare prevents thrashing |
+| 10 | Compare ratio: 1.1x is the cliff | Wide effective range (1.1x--1.5x) |
+| 11 | 65% remote rate is structural (capacity) | Dynamic allocation needed |
+| 12 | Ghost marginal on Zipfian (+1.5pp) | Shadow map's value is multi-node |
+| 13 | Ghost helps Temporal, hurts Looping | Workload-dependent |
+| 14 | ARC dominates single-node Zipfian (+10.7pp) | ARC's structural advantage (T1/T2 + p-adaptation) |
+| 15 | Per-node independence holds for desire encoding | Scales to n nodes without coordination |
+| 16 | G is O(1) per decision, O(n) state | Practical for production deployment |
+
+---
+
+## Generalization (K > 2)
+
+The K=2 NUMA instantiation rests on a single structural property: the state space is a competition between sources. This structure generalizes trivially to any K. The switched linear system, convergence guarantee, and steady-state encoding (§3.3) hold for arbitrary K --- they depend only on the eigenvalue structure of diagonal $M_j$, not on dimensionality.
+
+**Note:** The generalizations in this section are theoretical constructions that were never validated experimentally. Section 11 demonstrates that REMARC adds no value for K=2; the K>2 extensions inherit this limitation.
+
+### Tiered Storage (K=3, M=4)
+
+**Scenario:** A cache spans DRAM (fast, local) and NVM (slow, persistent) on a NUMA system. Items can be in DRAM or NVM, and accessed locally or remotely.
+
+Signal sources: $S_0$ (DRAM access), $S_1$ (remote NUMA access), $S_2$ (NVM/persistence access). The update rule is identical to K=2 (§3.2).
+
+Four action scores:
+
+$$\text{Evict}(\mathbf{S}) = (1 - T), \quad T = \frac{S_0 + S_1 + S_2}{3 \cdot \text{MAX}}$$
+
+$$\text{Migrate}(\mathbf{S}) = T \cdot R_{\text{remote}} \cdot (1 - R_{\text{local}})$$
+
+$$\text{Promote}(\mathbf{S}) = T \cdot (1 - R_{\text{nvm}}) \quad \text{[conditional: item in NVM tier]}$$
+
+$$\text{Demote}(\mathbf{S}) = (1 - R_{\text{local}}) \cdot R_{\text{nvm}} \quad \text{[conditional: item in DRAM tier]}$$
+
+State is packed into 12 bits. Lookup tables: 3375 entries per action (4 tables, ~13.5 KB total, L1 cache).
+
+### Heterogeneous Memory (K=4, M=5)
+
+**Scenario:** System with local DRAM, remote DRAM, HBM, and persistent memory. Five action scores (Evict, Migrate, Promote to HBM, Promote to DRAM, Demote to PMEM). State packed into 16 bits, ~250 KB total table size (L2 cache).
+
+### Priority Ordering
+
+The general priority ordering principle: **most reversible first, most irreversible last.**
+
+| Priority | Action | Reversibility |
+|---|---|---|
+| 1 | Promote | Reversible: can demote back |
+| 2 | Migrate | Reversible: can migrate back |
+| 3 | Demote | Reversible: can promote back |
+| 4 | Evict | Irreversible: must re-fetch from backing store |
+
+Tier-conditional actions are disjoint: Promote applies only to items in lower tiers, Demote applies only to items in higher tiers. The same item cannot participate in opposing tier movements in the same scanner pass.
+
+### Beyond Competitive Dimensions
+
+REMARC's current instantiations use the **competitive** regime (evidence for source j opposes evidence for source k). The projection can also express **independent** (uncorrelated dimensions) and **cooperative** (evidence reinforces) regimes by choosing different projection coefficients and biases. These regimes are mathematically well-defined but were never instantiated or evaluated.
+
+### Theoretical Properties for General K
+
+- **Convergence:** $|\lambda| \le 1$ for all $M_j$ -> contractive -> convergent for any K
+- **Steady state:** $S_j^* = \text{MAX} \cdot p_j \alpha_j / (p_j \alpha_j + (1-p_j)(1-\lambda))$. Holds for any K.
+- **Competitive erosion scales:** boost-one-decay-rest is inherently competitive for any K.
+- **Lookup table scaling:** $\text{MAX}^K$ entries per action. Feasibility threshold: K=4 (L2 cache). Beyond K=4, online computation replaces lookup tables.
+
+---
+
+## Related Work
+
+### Single-Tier Eviction Policies
+
+- **ARC** (Megiddo & Modha, 2003): Adaptive replacement with ghost lists. 1D (recency+frequency blend). No migration.
+- **LIRS** (Jiang & Zhang, 2002): Low inter-reference recency set. 1D (reuse distance). No migration.
+- **W-TinyLFU** (Einziger & Friedman, 2017): Frequency estimation via Count-Min Sketch. 1D (frequency). No migration.
+- **LeCaR** (Vietri et al., 2018): Regret minimization combining LRU and LFU. Blends two 1D eviction policies; REMARC projects K signals onto M action axes. LeCaR's W-TinyLFU window is a special case of REMARC's state space with K=1.
+- **S3-FIFO** (Yang et al., SOSP 2023): Three FIFO queues with binary frequency gate. REMARC approximates this as a boundary case (§3.4.4, coverage table). S3-FIFO's ghost queue serves the same role as REMARC's ghost-less reload protection (§4.5).
+
+### NUMA-Aware Systems
+
+- **TCMalloc / jemalloc:** Topology-aware allocation, no adaptive tier placement policy.
+- **CacheLib (Meta):** Static per-node sharding. No adaptive migration.
+- **PostgreSQL / InnoDB:** Buffer pool with partition locks. Not standalone cache.
+
+### Dimensionality Reduction and Information Theory
+
+- **PCA** (Pearson, 1901): REMARC's projection is structurally similar (linear projection from K-dimensional state to k-dimensional features) but the projection vectors are hand-designed, not data-driven.
+- **Fisher's Linear Discriminant** (1936): REMARC's projection is a domain-defined analog --- online, sequential, no labels required.
+- **Information Bottleneck** (Tishby et al., 1999): REMARC's correlation condition (§3.4.6) is a deterministic algebraic analog --- compression without distributional assumptions.
+- **Switched Linear Systems** (Sun & Ge, 2005): REMARC applies JSR analysis to tiered memory policy for the first time --- the diagonal structure of $M_j$ makes the JSR computable in closed form (§3.3.2).
+
+---
+
+## Augmentation: REMARC Atoms on ARC
+
+Section 5 established a structural ceiling for scalar REMARC variants: no bounded per-key scoring variant exceeds ~24.5% Zipfian hit rate at 10% capacity. This section documents an alternative approach --- **augmenting ARC's structure with REMARC's atoms** --- and the findings it produced.
+
+### AUG Architecture
+
+**Atoms:** $A_1 = \text{recency}$ (exponential decay, $\tau = 7/8$, boost $\alpha_r = 2$), $A_2 = \text{frequency}$ (boost $\alpha_f = 1$), $A_3 = \text{period}$ (EMA of inter-arrival gaps), $A_4 = \text{confidence}$ (MAD of inter-arrival gaps).
+
+**Projection:** ARC's quota structure ($T1$, $T2$, $p$ adaptation) with two additions:
+1. **Evidence-based demotion:** $T2$ hit with $r + f \le \theta_{\text{demote}}$ -> move to $T1$.
+2. **Predictive eviction:** among the last $K$ eviction candidates, evict the one whose predicted next access ($\text{lastEpoch} + \text{avgGap}$) is furthest in the future.
+
+**Strict subset property:** Setting $\theta_{\text{demote}} = 2$ (minimum) disables demotion, reproducing ARC exactly.
+
+### Implementation Pitfalls
+
+The implementation went through several iterations, producing findings about ARC's internals:
+
+**Finding 18:** ARC's `doEvict` (ghost list capacity management) must **drop** evicted keys rather than moving them to ghost lists. Moving them to ghosts is the ARC paper's description of the REPLACE step, but the ADAPT step must drop. Conflating these two steps produces catastrophic regression (17.82% vs 35.17% Zipfian).
+
+**Finding 19:** Bloom filter ghosts improve temporal via probabilistic perturbation (false positives/negatives disrupting ARC's balance), not principled prediction. The improvement disappears with exact ghost lists.
+
+**Finding 20:** Lazy (per-key, on-access) decay cannot demote idle keys. The keys that most need demotion (no longer being accessed) have frozen state. Demotion requires either global periodic sweeps or timestamp-based decay.
+
+### Timestamp-Based Decay (AUG-TS)
+
+| Strategy | Zipf | ScanRes | Temporal | Looping |
+|---|---|---|---|---|
+| ARC | 35.17% | 88.90% | 74.91% | 0.00% |
+| AUG-TS ($\theta_d = 2$, disabled) | 35.17% | 88.90% | 74.91% | 0.00% |
+| AUG-TS ($\theta_d = 4$) | 33.93% | **90.49%** | **75.50%** | 0.00% |
+| AUG-TS ($\theta_d = 6$) | 33.93% | 90.49% | 75.50% | 0.00% |
+| AUG-TS ($\theta_d = 8$) | 33.93% | 90.49% | 75.50% | 0.00% |
+| AUG-GS (sweep 1024) | 32.67% | 90.82% | 75.84% | 0.00% |
+
+**Finding 21:** Timestamp-based decay with $\theta_d \ge 4$: +1.59pp ScanRes, +0.59pp Temporal, -1.24pp Zipfian. The improvement is modest because ARC's quota structure already captures most of the signal.
+
+**Finding 22:** Global sweep decay damages hot keys proportionally to sweep frequency.
+
+### Predictive Eviction (AUG-PRED)
+
+**Finding 23:** With ARC-correct ghost management, predictive eviction within the `replace` step adds zero improvement over AUG-TS. The `replace` step only evicts from the LRU-end; the optimal eviction candidate for looping (the MRU key) is at the front, inaccessible from a bounded backward scan.
+
+**Finding 24:** The 93.92% Temporal achieved by a buggy version was partially due to inflated ghost lists, not purely prediction.
+
+### Throughput Optimization
+
+Merging three separate hash structures into a single `unordered_map<uint64_t, PredEntry>` reduces per-access lookups from 3 to 1:
+
+| Variant | Zipf ops/s | ScanRes ops/s | Temporal ops/s |
+|---|---|---|---|
+| ARC | 5.45M | 11.68M | 14.94M |
+| AUG-TS4 | 3.39M | 5.30M | 7.36M |
+| AUG-PRED | **4.36M** | **9.77M** | **9.67M** |
+
+### The Structural Barrier for Looping
+
+The sequential looping workload (universe=2000, capacity=1000, pattern 0,1,...,1999,0,1,...) produces 0% hit rate for all list-based policies. The cache always lags by exactly one full cycle.
+
+**Finding 25:** REMARC's atoms can correctly predict optimal eviction decisions, but ARC's list delivery structure is a **structural barrier** that prevents acting on those predictions for adversarial workloads. The prediction-to-delivery gap is the fundamental limitation.
+
+### Summary
+
+| Finding | Description |
+|---|---|
+| 18 | `doEvict` must drop, not ghost. Conflating REPLACE and ADAPT produces catastrophic regression. |
+| 19 | Bloom filter ghosts improve temporal via probabilistic perturbation, not prediction. |
+| 20 | Lazy decay cannot demote idle keys (frozen state problem). |
+| 21 | Timestamp decay + demotion: +1.59pp ScanRes, +0.59pp Temporal, -1.24pp Zipfian. |
+| 22 | Global sweep decay damages hot keys proportionally to sweep frequency. |
+| 23 | Bounded prediction scan in `replace` is uninformative. |
+| 24 | Buggy 93.92% Temporal was partially from ghost inflation. |
+| 25 | List structure prevents acting on predictions for adversarial workloads. |
+
+**Overall assessment:** The augmentation approach produces marginal improvements over ARC at a cost of -1.24pp Zipfian and ~20% throughput overhead. ARC's quota structure already captures the dominant signal. The more significant finding is **negative**: the structural barrier (Finding 25) reveals that the delivery mechanism must also evolve.
+
+---
+
+## Structured Eviction: Breaking the Looping Barrier
+
+Finding 25 identified ARC's list structure as the fundamental barrier. This section investigates alternative delivery structures.
+
+### Design Space
+
+1. **Dual-end (AUG-BOTHEND):** Compare predicted next access of both ends of the target list. O(1) per eviction.
+2. **Heap-based (AUG-HEAP):** Max-heap keyed by predicted next access across all cached keys. O(log n) per eviction with lazy deletion via version stamps.
+
+Both variants use the same ARC quota structure and REMARC state as AUG-PRED.
+
+### Results
+
+| Variant | Zipfian | ScanRes | Temporal | Looping | Zipf Ops/s |
+|---|---|---|---|---|---|
+| LRU | 24.59% | 73.56% | 74.86% | 0.00% | 10.27M |
+| ARC | **35.17%** | 88.90% | 74.91% | 0.00% | 5.44M |
+| AUG-TS4 | 33.93% | 90.49% | 75.50% | 0.00% | 3.45M |
+| AUG-PRED | 33.92% | 90.47% | **75.52%** | 0.00% | 4.52M |
+| AUG-HEAP | 29.90% | 26.12% | 62.70% | 99.00% | 5.60M |
+| AUG-BOTHEND | 29.78% | 77.09% | 58.56% | 0.00% | 6.21M |
+| **AUG-ADAPT** | 33.93% | **90.52%** | 75.50% | **99.33%** | 3.79M |
+| **QuotaFree** | 11.38% | 12.01% | 31.86% | 47.58% | 5.77M |
+
+### Analysis
+
+**Finding 26 (Heap Breaks Looping Barrier).** AUG-HEAP achieves **99.0%** on Looping where all list-based policies score 0%.
+
+**Finding 27 (Structured Eviction Breaks ARC's Quota Invariant).** Both AUG-HEAP and AUG-BOTHEND regress on Zipfian and ScanRes because non-LRU-end eviction corrupts the ghost list signal used for p-adaptation.
+
+**Finding 28 (Dual-End Is Insufficient).** AUG-BOTHEND achieves 0% on Looping --- the two-candidate comparison is too limited.
+
+### Adaptive Delivery: AUG-ADAPT
+
+AUG-ADAPT combines two signals to choose between heap and LRU eviction at runtime:
+
+**Feedforward signal:** Coefficient of variation (CV) of `avgGap` across cached keys. Low CV indicates predictable (looping) workloads.
+
+**Feedback signal:** Prediction regret on ghost hits: $r = |\text{actualGap} - \text{avgGap}| / \text{avgGap}$.
+
+**Control law:** $\text{confidence} = (1 - 3 \cdot \text{CV}) \cdot (1 - \text{regret}_{\text{EMA}})$. When confidence > 0.5: use heap. Otherwise: use LRU.
+
+AUG-ADAPT achieves **99.33% on Looping** while exactly matching AUG-TS4 on all other workloads. It produces **zero evictions** on Looping, indicating perfect admission decisions.
+
+**Finding 30 (Self-Tuning Eliminates the Delivery--Quota Tradeoff).** The delivery--quota tension is not fundamental but an engineering problem solvable by workload-adaptive delivery selection.
+
+### Delivery--Quota Tension: Resolution
+
+Three research directions were fully evaluated:
+
+1. **Quota-free delivery (QuotaFree): Closed.** Pure predictive eviction without ghost lists collapses on scan workloads (11.38% Zipfian). Ghost lists provide delayed future observation that pure prediction cannot replicate.
+
+2. **Quota-aware delivery (AUG-PRED): Marginal.** LRU-end prediction matches ARC on non-looping workloads but provides zero benefit for looping (0.00%).
+
+3. **Adaptive delivery switching (AUG-ADAPT): Success.** Feedback-controlled switching resolves the tension.
+
+**Finding 31 (Pure Prediction Is Insufficient Without Structural Scan Detection).** Without future knowledge, a key's first access provides zero information about re-access probability. ARC's ghost lists solve this by observing eviction outcomes.
+
+### ARC-REMARC Hybrid Experiments
+
+Three experiments test whether REMARC's per-key TempCtrl scoring can replace ARC's LRU-within-list eviction:
+
+**Finding 32 (Per-Key Scoring Does Not Subsume p-Adaptation).** Min-TempCtrl eviction: Zipfian -5.2%, Temporal Shift -21.4%, Looping +97%. TempCtrl captures frequency; p-adaptation captures temporal phase. Neither subsumes the other.
+
+**Finding 33 (Position-Weighted Scoring Preserves Recency but Loses Loop Detection).** Score = TempCtrl - position_weight: nearly identical to ARC on Zipfian and Temporal but loses Looping benefit (5% vs 97%).
+
+**Finding 34 (Feedback Control Does Not Trigger on Hybrid Eviction).** Reversal-rate feedback produces identical results to base hybrid. The failure mode is opportunity cost, not reversals.
+
+**Synthesis.** REMARC's value proposition is not in replacing ARC's eviction heuristic but in adding the migration axis. The eviction axis is well-served by ARC's proven p-adaptation + LRU combination.
+
+---
+
+## Post-Publication Audit: Score Degeneracy and Reproducibility Bugs
+
+This section documents two bugs discovered in a pure-REMARC eviction benchmark (the History Atom family) that invalidated multiple sections of previously reported results. The bugs were found during investigation of O(1) eviction strategies, when a new variant that used fresh eviction scores instead of cached scores produced dramatically different results.
+
+### Bug 1: Score Degeneracy (cachedScore Always Zero)
+
+All History Atom variants computed a `cachedScore` at access time and stored it in the per-key State struct. The eviction scan selected the entry with the highest `cachedScore`.
+
+The formula used is:
+
+$$\text{cachedScore} = [\log(\text{avgGap} + 1) \cdot (R_{\text{MAX}} - r) + \log(f + 1) \cdot r] \cdot \text{ghostProtect}(k)$$
+
+At access time, the recency r is boosted to near $R_{\text{MAX}}$ by the access boost. Substituting $r \approx R_{\text{MAX}}$: $(R_{\text{MAX}} - r) \approx 0$, and for cold entries $f = 0$, so $\log(1) = 0$. **Result:** For the majority of cache entries, cachedScore = 0. The REMARC formula was never the actual eviction policy --- the real policy was `unordered_map` iteration order.
+
+**Verification.** A variant (HA-LOGLIN-FRESH) that computed fresh scores at eviction time produced 24.79% Zipfian, 74.46% ScanRes, 74.59% Temporal, 0.00% Looping --- identical to LRU within measurement noise.
+
+### Bug 2: Sentinel Value Collision
+
+The eviction scan used `uint64_t bestKey = 0` as a sentinel for "no victim found":
+
+```cpp
+uint64_t bestKey = 0;
+double bestScore = -1.0;
+for (const auto& [key, state] : cache_) {
+    if (state.cachedScore > bestScore) {
+        bestScore = state.cachedScore;
+        bestKey = key;
+    }
+}
+if (bestKey == 0) return;  // <-- sentinel check
+```
+
+Key 0 is the hottest key in the Zipfian workload (~13% of all accesses). The sentinel `bestKey == 0` evaluates to true whenever key 0 is in cache, permanently protecting it from eviction.
+
+**Verification.** After fixing the sentinel check, HA-LOGLIN drops from 55.17% to 11.82% Zipfian. The 43pp drop confirms that key 0 protection was responsible for the majority of the inflated hit rate.
+
+### Impact on Published Results
+
+| Section (original numbering) | Claim | Status |
+|---------|-------|--------|
+| §10 (History Atom) | HA4 57.51% Zipfian, HA5 55.17% Zipfian | **Artifact** (sentinel bug) |
+| §10 Finding 36 | "Recency as confidence weight resolves singularity" | **Artifact** (sentinel bug) |
+| §10 Finding 37 | "Ghost protection closes looping gap" | **Artifact** (sentinel bug) |
+| §10 Finding 38 | "Pure REMARC matches ARC on 3/4 workloads" | **False** (both bugs) |
+| §11 (Projection Topology) | "+2.92pp, +5.60pp improvements" | **Artifact** (measured against degenerate-zero baseline) |
+| §5 Findings 1-6 | Page-batch REMARC single-node results | **Unaffected** (different code path) |
+| §5 Findings 7-16 | Multi-node desire encoding results | **Unaffected** (different mechanism) |
+| §8 Findings 18-24 | Augmentation experiments | **Unaffected** (ARC-based, not formula-based) |
+| §9 Findings 25, 26, 27, 28, 30, 31, 32, 33, 34 | Structured eviction experiments | **Unaffected** (ARC-based) |
+| Finding 35 | "Prediction inversion is a projection singularity" | **Retained** (logical argument, independent of bugs; see §12.3) |
+
+The original History Atom section (results and tables) and Projection Topology section (22 probe variants, colinearity proof, gap variance, log projection) have been removed from this paper. The audit above serves as the complete record of what went wrong.
+
+### Root Cause Analysis
+
+Two orthogonal issues combined to produce misleading results:
+
+1. **Score degeneracy** made the eviction formula invisible. All entries had cachedScore = 0, so the scan effectively picked the first entry in iteration order.
+2. **The sentinel bug** prevented evicting key 0. This inflated Zipfian by permanently caching the hottest key.
+
+The bugs masked each other during development: score degeneracy made the eviction policy invisible (so we couldn't observe its quality), and the sentinel bug produced plausible hit rates (so there was no signal that anything was wrong).
+
+### Lessons Learned
+
+1. **Never use a valid data value as a sentinel.** The fix is either a separate `bool found` flag or `if (bestScore < 0.0) return` (since no entry has negative score).
+2. **Verify eviction behavior independently of scoring.** Does the eviction policy select a *different* victim for different cache states?
+3. **Pre-generated workloads are essential for reproducibility.** The same RNG seed must be used across all variants.
+4. **Iteration-order artifacts are insidious in hash-table-based policies.** When the eviction policy is degenerate, the hash table's internal ordering becomes the de facto policy.
+
+### Forward Path
+
+The REMARC framework's value proposition for single-node eviction is conclusively unsupported by evidence. Section 11 extends this conclusion to multi-node placement. The framework's three claimed contributions are assessed:
+
+1. **Multi-dimensional state composition:** Proven equivalent to simple EMA counting (§11.2). All projection variants produce identical results.
+2. **Desire encoding for migration:** Proven unnecessary (§11.1, §11.2). Simple majority voting or EMA counting matches or beats REMARC-based migration.
+3. **Algebraic theory of sequential decisions:** The "Toward an Algebra" section is retired. The framework provides vocabulary for describing policies but does not generate better ones.
+
+The Furrballs system retains two proven components independent of REMARC: ARC for eviction and simple EMA counting for migration (SimpleMigratePolicy), documented in the Furrballs whitepaper (DOI: 10.5281/zenodo.19794753).
+
+---
+
+## Tiered Placement: Final Evaluation
+
+Section 10 established that REMARC's feedforward scoring adds zero eviction value over LRU. This section extends the evaluation to multi-node placement, the framework's remaining claimed contribution. Six simulators were built to test whether REMARC's state representation and migration scoring provide value for tiered memory placement decisions.
+
+### Methodology
+
+All simulators model a tiered memory system with K nodes, each having a fixed access latency. Workloads are generated as sequences of (key, source_node) pairs. Each key is assigned to a node. On access, the cost is the latency of the node holding the key. Migration moves a key from one node to another at a fixed cost.
+
+**Workloads:**
+- **Zipf-Strong:** Zipf(1.5) key distribution, 70% home bias, 1M ops, 5000 unique keys
+- **Zipf-Mixed:** Zipf(0.8) key distribution, 50% home bias, 1M ops, 5000 unique keys
+- **Temporal:** Two-phase --- phase A accesses keys 0-2499 from node 0, phase B accesses keys 2500-4999 from node 1. 1M ops.
+- **Burst:** 80% Zipf(1.5) + 20% uniform random bursts. 1M ops, 5000 unique keys.
+
+**Strategies tested:** Static (round-robin), Majority (count per node, place on most-accessed), Sliding Window, EMA, REMARC-Quantized (4-bit), REMARC-Continuous, REMARC-Migrate (full formula), projection variants (Linear, Log, Multiplicative), Feedback, Predict, Predict+Feedback, ARC-Like, 1-Signal, K-Signal, Oracle.
+
+### K=2 Results (2 Nodes)
+
+| Workload | Static | Majority | EMA/REMARC | Oracle |
+|----------|--------|----------|------------|--------|
+| Zipf-Strong | 267 | **161** | 163 | 160 |
+| Temporal | 250 | 247 | **167** | 250* |
+| Burst | 250 | 249 | **184** | 250* |
+
+*Oracle also migrates on Temporal/Burst but migration cost exceeds benefit.
+
+**Finding 44:** On stable workloads (Zipf-Strong), Majority voting beats all adaptive strategies.
+
+**Finding 45:** On Temporal workloads, EMA/REMARC achieves 167ns vs Majority's 247ns. This is REMARC's only genuine advantage, and it is fully explained by the exponential decay --- a one-line EMA update.
+
+**Finding 46:** On Burst workloads, all adaptive strategies perform worse than Static. The expected value of migration is negative when the workload is noisy.
+
+**Parameter sweep** (DTHRESH 0-10, RA 0.05-1.0, RL 0.01-0.5 across 7 workloads): DT=3-4 is the sweet spot. Lambda (decay rate) is the only parameter that matters --- it controls the tradeoff between stability and adaptivity. All other parameters have negligible effect.
+
+### K=3 Results (3 Nodes: DRAM 100ns, CXL 300ns, Remote 800ns)
+
+| Workload | Static | Majority | EMA | REMARC-Q | Predict | ARC-Like |
+|----------|--------|----------|-----|----------|---------|----------|
+| Zipf-Strong | **372** | 396 | 394 | 395 | 394 | 394 |
+| Zipf-Mixed | 396 | 391 | 387 | **387** | 387 | **386** |
+| Temporal | 373 | 375 | **367** | **366** | 367 | **367** |
+| Burst | **360** | 411 | 423 | 422 | 437 | 423 |
+
+**Finding 47:** All projection variants (Linear, Log, Multiplicative) produce results within 1ns of each other and within 1ns of simple EMA. The REMARC state representation provides zero information that EMA does not already capture.
+
+**Finding 48:** REMARC-Quantized performs slightly worse than EMA on Burst (422 vs 423). The 4-bit quantization introduces information loss that is net-negative.
+
+**Finding 49:** REMARC-Migrate (the full competitive coupling formula) never fires in practice. The formula produces MigrateScore = 0 for most states because the denominator dominates the numerator. The migration axis of the REMARC framework is non-functional.
+
+**Finding 50:** Static placement beats all adaptive strategies on Zipf-Strong and Burst. Migration helps only ~2% on Zipf-Mixed and ~2% on Temporal. On Burst, all adaptive strategies are 14-21% worse than doing nothing.
+
+**Finding 51:** Predictive strategies (Predict, Predict+FB, ARC-Like) do not improve over EMA. Expected-value gates and confidence thresholds cannot overcome the fundamental issue: migration cost is paid immediately but benefit is delayed and uncertain.
+
+### Feedback Dimensionality
+
+A dedicated experiment tested whether a K-dimensional placement problem needs K independent feedback signals or whether one suffices.
+
+| Workload | Static | Fixed-Thresh | 1-Signal | K-Signal | Oracle |
+|----------|--------|-------------|----------|----------|--------|
+| Zipf-Strong | 372 | 394 | 394 | 394 | 394 |
+| Zipf-Mixed | 396 | 387 | 387 | 387 | 386 |
+| Temporal | 373 | 367 | 367 | 367 | 351 |
+| Burst | 360 | 423 | 422 | 422 | 379 |
+
+**Finding 52:** 1-Signal produces identical results to K-Signal on all workloads. One feedback signal suffices for K-dimensional placement.
+
+**Finding 53:** Migration success rate is ~50% (coin flip) for ALL strategies --- Static, Fixed-Threshold, 1-Signal, K-Signal. The feedback signal has SNR approximately zero. After migrating a key, the probability that the next access comes from the new node is ~50%, regardless of how the migration decision was made. This is because the workload's access source is dominated by the home bias (70%), not by the key's current placement.
+
+**Finding 54:** The distinction between 1-Signal and K-Signal is moot because feedback itself is uninformative. Even Oracle-level feedback (knowing the next access source) does not change the migration success rate --- it changes *which* key to migrate, but the outcome of any given migration is still ~50%.
+
+### Theoretical Analysis: Why Feedback Fails for Placement
+
+The universal pattern across successful adaptive resource managers is: **one deterministic feedback signal calibrates one scalar parameter.**
+
+| System | Feedback signal | Parameter calibrated | Signal nature |
+|--------|----------------|---------------------|---------------|
+| ARC (eviction) | Ghost hit (key evicted, now accessed) | Target quota p | **Deterministic**: key accessed = definitely needed |
+| TCP congestion | Packet loss (timeout or duplicate ACK) | Congestion window cwnd | **Deterministic**: loss = definitely congested |
+| autoNUMA | Page fault rate | Scanning threshold | **Stochastic**: fault = probably wrong placement |
+
+ARC's feedback has high SNR because the ghost hit is a direct, deterministic observation: "you evicted this key and immediately needed it." The signal is unambiguous --- it directly measures the quality of the eviction decision.
+
+Placement feedback has low SNR because the outcome of a migration is stochastic. Whether a key is accessed from its new node depends on:
+1. The access source node (determined by thread scheduling, request routing)
+2. The key's access pattern (which threads need this key)
+3. The timing of the next access relative to the migration
+
+These factors are dominated by the workload's home bias (70% of accesses come from one node), not by the migration decision. The feedback signal is: "was this key accessed from its new node?" --- but a "yes" answer does not mean the migration was correct (the access might have come from any node anyway), and a "no" answer does not mean it was wrong (the access source might have changed independently).
+
+**Theorem (informal).** For placement decisions where the next access source is independent of the current placement (access source determined by external factors), feedback has zero information content. Migration success rate converges to the base rate of access source distribution, regardless of adaptation strategy.
+
+**Corollary:** Placement feedback can only have high SNR when the access source is causally dependent on the placement --- i.e., when placing data on node X *causes* accesses to come from node X. This holds for thread scheduling (migrating a thread to a node causes its memory accesses to come from that node) but does NOT hold for shared data placement (multiple threads may access the same key regardless of where it is placed).
+
+This explains why autoNUMA's feedback is noisy (page faults are weak signals) while ARC's feedback is strong (ghost hits are deterministic). It also explains why no existing adaptive resource manager uses multi-dimensional feedback --- one signal is always sufficient because the signal itself is either informative (deterministic outcome) or uninformative (stochastic outcome), and adding more uninformative signals does not help.
+
+### Assessment of the REMARC Framework
+
+| Claimed contribution | Evidence | Verdict |
+|---------------------|----------|---------|
+| Multi-dimensional state (atoms) | All projections approximately equal to EMA (Finding 47) | Equivalent to simple counting |
+| Composable projections | Linear/Log/Multiplicative identical within 1ns (Finding 47) | No expressiveness gained |
+| Competitive coupling | REMARC-Migrate never fires (Finding 49) | Non-functional |
+| 4-bit quantization | Slightly worse than unquantized (Finding 48) | Net negative |
+| Migration scoring | EMA matches REMARC on all workloads (Findings 44-46) | No value over counting |
+| Feedback adaptation | Success rate ~50% for all strategies (Finding 53) | Uninformative signal |
+| Predictive gating | Predict/ARC-Like approximately equal to EMA (Finding 51) | Cannot overcome noise |
+| Algebraic framework | Vocabulary only, no prescriptive power (Finding 47) | Not load-bearing |
+
+**The cold-entry information hole** (Section 10) and **feedback SNR approximately zero** (this section) are complementary fundamental limitations. The cold-entry hole bounds feedforward: no hit-only scoring can differentiate entries that have never been re-accessed. The SNR limitation bounds feedback: no adaptive mechanism can learn from a signal dominated by noise. Together, they explain why the REMARC framework --- which relies on feedforward scoring and adaptive feedback --- cannot outperform simple baselines.
+
+---
+
+## Discussion and Conclusions
+
+### Summary of Results
+
+This paper documents the complete lifecycle of the REMARC framework. The principal findings, organized by whether they survived or were retracted:
+
+**Surviving results (independent of REMARC scoring):**
+
+1. **AUG-ADAPT (Finding 30):** Self-tuning structured eviction achieves 99.33% on adversarial looping workloads while exactly matching ARC on Zipfian, ScanRes, and Temporal. This is the strongest positive result in the paper and is independent of the REMARC scoring mechanism --- it depends on ARC's quota structure plus a feedback controller for delivery selection.
+
+2. **Delivery--quota tension resolution (Finding 31):** Pure prediction is insufficient without structural scan detection. ARC's ghost lists provide delayed future observation that cannot be replicated by feedforward scoring alone.
+
+3. **Independence theorem (Finding 15):** Desire encoding preserves per-domain independence for n domains. The theorem is logically valid; the mechanism it enables provides no practical advantage (Section 11).
+
+4. **ARC implementation findings (Findings 18-22):** Ghost list management, bloom filter perturbation, and decay strategy constraints. These are contributions to understanding ARC's internals.
+
+**Negative results:**
+
+5. **Single-node ceiling:** No REMARC variant exceeds ~24.5% Zipfian (Finding 1). ARC's structural advantage (T1/T2 partition with p-adaptation) is insurmountable by scalar scoring.
+
+6. **Multi-node placement:** REMARC adds zero value over simple EMA counting, majority voting, or static placement (Findings 44-51). All projection variants are equivalent within measurement noise.
+
+7. **Retracted results:** History Atom findings (originally reported as matching ARC on 3/4 workloads) were artifacts of score degeneracy and sentinel collision bugs (Section 10). Projection topology findings were measured against a degenerate-zero baseline.
+
+### Theoretical Contribution
+
+The most significant theoretical contribution is the classification of adaptive resource management problems by feedback signal information content (Section 11.5):
+
+| Feedback type | Example | SNR | Adaptation works? |
+|---|---|---|---|
+| Deterministic outcome | ARC ghost hit, TCP packet loss | High | Yes --- one signal, one parameter |
+| Stochastic outcome | Placement feedback, autoNUMA page faults | Zero | No --- signal carries no information |
+| Causally dependent | Thread scheduling (place thread -> accesses follow) | Moderate | Yes --- placement causes access source |
+
+This classification is a genuine theoretical observation. It may generalize beyond placement to other resource management domains where the quality of an adaptive decision can only be assessed through a stochastic outcome signal. The investigation of this classification is independent of the REMARC framework.
+
+### Prediction Inversion
+
+**Finding 35 (Prediction Inversion).** Belady-style prediction ($\text{predictedNext} = \text{lastEpoch} + \text{avgGap}$) produces an inverted ranking for cold keys: keys with no access history ($\text{avgGap} = 0$) get $\text{predictedNext} = \text{epoch}$ (lowest), protecting them from eviction while hot keys with stable $\text{avgGap} > 0$ get evicted first. This singularity at the no-information boundary means any prediction-based eviction policy must handle cold keys through a separate mechanism (ARC's ghost lists, admission filtering, or a fixed protection window).
+
+One logical finding from the retracted History Atom work survives: **prediction inversion** (Finding 35). Belady-style prediction ($\text{predictedNext} = \text{lastEpoch} + \text{avgGap}$) produces an inverted ranking for cold keys: keys with no access history ($\text{avgGap} = 0$) get $\text{predictedNext} = \text{epoch}$ (lowest), protecting them from eviction while hot keys with stable $\text{avgGap} > 0$ get evicted first. This singularity at the no-information boundary means any prediction-based eviction policy must handle cold keys through a separate mechanism (ARC's ghost lists, admission filtering, or a fixed protection window).
+
+### Lessons for Tiered Memory Policy Design
+
+1. **The migration axis is harder than the eviction axis.** Eviction feedback (ghost hits) is deterministic. Placement feedback is stochastic. No amount of framework complexity can compensate for zero-SNR feedback.
+
+2. **Simple mechanisms dominate.** For the workloads tested, majority voting and static placement beat all adaptive strategies on noisy workloads. Simple EMA counting beats the full REMARC framework on all workloads. The best migration strategy is often to not migrate.
+
+3. **ARC's ghost lists are load-bearing infrastructure.** They provide a one-step-delayed form of future information that no feedforward scoring mechanism can replicate. Any eviction policy for general workloads must include some form of scan detection.
+
+4. **Benchmarking correctness is critical.** The two bugs in Section 10 produced results that were plausible but entirely artifactual. The lessons (Section 10.5) apply to any cache policy benchmark: verify eviction behavior independently, use pre-generated workloads, never use valid data values as sentinels.
+
+### Retired Open Threads
+
+The following questions from earlier versions of this paper are resolved or retired:
+
+- **Factorization topology:** Moot. Simple EMA counting matches all factorization variants.
+- **Bit width optimization:** Moot. 4-bit quantization is net-negative (Finding 48).
+- **Dynamic K:** Deprioritized. The framework adds no value for any fixed K.
+- **Algebraic theory (REM-T):** Retired. Provides descriptive vocabulary but no prescriptive power.
+- **Cooperative regime:** Unresolved but unpromising. No domain has been identified where cooperative dimensions help, and the SNR limitation suggests they would face the same feedback problem.
+
+### The Feedback-SNR Classification
+
+The distinction between deterministic and stochastic feedback signals (Section 11.5) is a genuine theoretical observation that may generalize beyond placement. Whether this classification leads to actionable theory in other domains (e.g., thread scheduling, power management, cache coherence) remains an empirical question, but its investigation is independent of the REMARC framework.
+
+---
+
+## Appendix A: Implementation Details
+
+This appendix documents the reference implementation architecture for desire-encoded REMARC in a tiered memory system. **Note:** REMARC has been retired in favor of SimpleMigratePolicy (simple EMA counting). This architecture is retained for documentary purposes.
+
+### A.1 Access Path
+
+```
+Get(key K):
+  1. Route to home node (NUMA affinity)
+  2. Update shadow desire map: S_home(K).sR += bR, S_home(K).sF += bF
+  3. If K in cache:
+        - Update in-cache REMARC score
+        - Return value
+     4. If K not in cache:
+        - Check migration: S_home(K) > r x S_owner(K)?
+          If yes and migration budget available: schedule migration
+        - Return miss
+```
+
+### A.2 Migration Decision
+
+Migration is lazy --- triggered on Get() access, not by the scanner. The migration budget is rate-limited (one migration per 64 ops) to prevent thrashing.
+
+### A.3 Storage Cost
+
+| Component | Per-node cost | Notes |
+|---|---|---|
+| Shadow desire map | 2 bytes x \|keyspace\| | Periodically compacted |
+| Cache REMARC state | 2 bytes x capacity | Existing per-cached-key state |
+| Global state G | O(n) shared array | Compare ratio |
+
+### A.4 Lookup Table Construction
+
+For K=2 with MAX=15, each action's lookup table maps a packed state byte (S_0 + S_1 x 16) to a score. The general construction iterates over all 16^K indices, unpacks the state, computes normalized quantities (R, F, L for K=2), and evaluates the action formula. Tables are `constexpr` --- constructible at compile time. For K=3: 3375 entries per action (~13.5 KB). For K=4: 50625 entries per action (~250 KB).
+
+---
+
+## References
+
+- Saied, H. J. (2026). Furrballs: Topology-Aware, High-Performance Resource Placement for Asymmetric Memory Systems. Technical Report v1.25.0. DOI: 10.5281/zenodo.19794753.
+- Megiddo, N. & Modha, D. S. (2003). Outperforming LRU with an Adaptive Replacement Cache Algorithm. Computer, 37(4), 58--65.
+- Jiang, S. & Zhang, X. (2002). LIRS: An Efficient Low Interreference Recency Set Replacement Policy to Improve Buffer Cache Performance. ACM SIGMETRICS.
+- Einziger, G. & Friedman, R. (2017). TinyLFU: A Highly Efficient Cache Admission Policy. ACM TOCS.
+- Vietri, G., Kanber, M., Yu, D., Maas, M., & Katti, S. (2018). CACHEUS: A Write-Back Cache with Admission Control. NSDI.
+- Yang, L., et al. (2023). S3-FIFO: An O(1) Replacement Policy for Practical Caches. SOSP.
+- Sun, Z. & Ge, S. S. (2005). Analysis and Synthesis of Switched Linear Systems. Springer.
