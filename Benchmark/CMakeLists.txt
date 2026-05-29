@@ -1,6 +1,33 @@
-find_package(benchmark CONFIG REQUIRED)
-find_package(RocksDB CONFIG REQUIRED)
-find_package(TBB CONFIG REQUIRED)
+find_package(benchmark CONFIG QUIET)
+if(NOT benchmark_FOUND)
+    find_library(BENCHMARK_LIBRARY NAMES benchmark)
+    find_path(BENCHMARK_INCLUDE_DIR NAMES benchmark/benchmark.h)
+    add_library(benchmark::benchmark STATIC IMPORTED)
+    set_target_properties(benchmark::benchmark PROPERTIES
+        IMPORTED_LOCATION "${BENCHMARK_LIBRARY}"
+        INTERFACE_INCLUDE_DIRECTORIES "${BENCHMARK_INCLUDE_DIR}")
+endif()
+
+find_package(RocksDB CONFIG QUIET)
+if(NOT RocksDB_FOUND)
+    find_library(ROCKSDB_LIBRARY NAMES rocksdb)
+    find_path(ROCKSDB_INCLUDE_DIR NAMES rocksdb/db.h)
+    add_library(RocksDB::rocksdb STATIC IMPORTED)
+    set_target_properties(RocksDB::rocksdb PROPERTIES
+        IMPORTED_LOCATION "${ROCKSDB_LIBRARY}"
+        INTERFACE_INCLUDE_DIRECTORIES "${ROCKSDB_INCLUDE_DIR}")
+endif()
+
+find_package(TBB CONFIG QUIET)
+if(NOT TBB_FOUND)
+    find_library(TBB_LIBRARY NAMES tbb)
+    find_path(TBB_INCLUDE_DIR NAMES tbb/tbb.h)
+    add_library(TBB::tbb STATIC IMPORTED)
+    set_target_properties(TBB::tbb PROPERTIES
+        IMPORTED_LOCATION "${TBB_LIBRARY}"
+        INTERFACE_INCLUDE_DIRECTORIES "${TBB_INCLUDE_DIR}")
+endif()
+
 find_package(Threads REQUIRED)
 
 add_executable(YCSBBench "YCSBBench.cpp")
