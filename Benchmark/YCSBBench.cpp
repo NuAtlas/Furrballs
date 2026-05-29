@@ -1334,6 +1334,7 @@ void RunYCSBBench(benchmark::State& state) {
     YCSBWorkload wl = static_cast<YCSBWorkload>(state.range(2));
     size_t valueSize = state.range(3);
     uint64_t recordCount = state.range(4);
+    int numaNodeCount = state.range(5) > 0 ? state.range(5) : numThreads;
 
     std::vector<IterStats> iterStats;
 
@@ -1341,7 +1342,7 @@ void RunYCSBBench(benchmark::State& state) {
         state.PauseTiming();
 
         System sys;
-        sys.create(numThreads, totalCapacityKB);
+        sys.create(numaNodeCount, totalCapacityKB);
 
         std::vector<std::thread> threads;
         std::vector<ThreadResult> results(numThreads);
@@ -2168,6 +2169,31 @@ BENCHMARK_REGISTER_F(YCSB_FurrBallShared, Run)
     ->Args({2, 32768, 11, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
 BENCHMARK_REGISTER_F(YCSB_FurrBallShared, Run)
     ->Args({2, 32768, 12, 64, 100000})->Iterations(10)->Unit(benchmark::kMicrosecond);
+
+// ============================================================================
+//  Scale tests: N threads on 4 NUMA nodes, YCSB-A (50R/50W), 64B
+//  Args: {threads, totalCapKB, ratio, valSize, recordCount, numaNodes}
+// ============================================================================
+
+// 8T / 4 nodes (2 threads per ARC)
+BENCHMARK_REGISTER_F(YCSB_FurrBallTLAnnex, Run)
+    ->Args({8, 65536, 10, 64, 100000, 4})
+    ->Iterations(10)->Unit(benchmark::kMicrosecond);
+
+// 16T / 4 nodes (4 threads per ARC)
+BENCHMARK_REGISTER_F(YCSB_FurrBallTLAnnex, Run)
+    ->Args({16, 65536, 10, 64, 100000, 4})
+    ->Iterations(10)->Unit(benchmark::kMicrosecond);
+
+// 32T / 4 nodes (8 threads per ARC)
+BENCHMARK_REGISTER_F(YCSB_FurrBallTLAnnex, Run)
+    ->Args({32, 65536, 10, 64, 100000, 4})
+    ->Iterations(10)->Unit(benchmark::kMicrosecond);
+
+// 64T / 4 nodes (16 threads per ARC)
+BENCHMARK_REGISTER_F(YCSB_FurrBallTLAnnex, Run)
+    ->Args({64, 65536, 10, 64, 100000, 4})
+    ->Iterations(10)->Unit(benchmark::kMicrosecond);
 
 int main(int argc, char** argv) {
     benchmark::Initialize(&argc, argv);
