@@ -210,7 +210,9 @@ struct AnnexDrainBuf {
     std::atomic<size_t> writePos_{0};
     size_t readPos_{0};
 
-    AnnexDrainBuf() : slots_(new Slot[kCapacity]{}) {}
+    AnnexDrainBuf() = default;
+
+    void init() { if (!slots_) slots_.reset(new Slot[kCapacity]{}); }
 
     void enqueue(uint64_t h2, FatAnnexEntry entry) noexcept {
         size_t pos = writePos_.fetch_add(1, std::memory_order_relaxed) % kCapacity;
@@ -433,15 +435,8 @@ struct PerNodeDetails{
         return result;
     }
 
-    alignas(64) std::atomic<uint64_t> VersionCounter{0};
-
-    uint64_t NextVersion(int nodeId) noexcept {
-        uint64_t seq = VersionCounter.fetch_add(1, std::memory_order_relaxed);
-        return (static_cast<uint64_t>(nodeId) << 48) | (seq & 0xFFFFFFFFFFFF);
-    }
-
     PerNodeDetails(size_t arcCap, CMapAllocFn af = CMapDefaultAlloc, CMapFreeFn ff = CMapDefaultFree, bool useAnnex = false, size_t annexCap = 0)
-        : NodePages(&nodeMR), KeyStore(arcCap, af, ff), annexIdx(annexCap > 0 ? annexCap : 1), annexEnabled(useAnnex) { ShadowDesire.init(arcCap * 2); }
+         : NodePages(&nodeMR), KeyStore(arcCap, af, ff), annexIdx(annexCap > 0 ? annexCap : 1), annexEnabled(useAnnex) { if constexpr (Policy::HasDesire && Policy::HasPerKeyState) ShadowDesire.init(arcCap * 2); }
 };
 
 template<typename Policy>
@@ -1036,7 +1031,7 @@ void NuAtlas::FurrBall<Policy>::BackgroundEvict(int nodeID) noexcept {
                     memcpy(dst, src, sz);
                     uint8_t initTC = Policy::InitialState();
                     details->NodePages[dstIdx].AddKeyEntry(hash, initTC);
-                    meta.PageIndex = dstIdx;
+                     meta.PageIndex = static_cast<uint32_t>(dstIdx);
                     meta.DataOffset = dst;
                     meta.PageGeneration = details->NodePages[dstIdx].Generation;
                     meta.TempCtrlIdx = static_cast<uint8_t>(
@@ -1450,7 +1445,7 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
 
     auto updateFn = [&data, &size, this, targetNode, &details](KeyMeta& meta){
         memcpy(meta.DataOffset, data, size);
-        meta.DataSize = size;
+        meta.DataSize = static_cast<uint32_t>(size);
         if constexpr (Policy::HasPerKeyState) {
             if(meta.PageIndex < details->NodePages.size()) {
                 Page& page = details->NodePages[meta.PageIndex];
@@ -1646,16 +1641,15 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
                 uint8_t initTC = Policy::InitialState();
                 page.AddKeyEntry(hp, initTC);
 
-                KeyMeta metadata;
-                metadata.DataSize = size;
-                metadata.PageIndex = pageIdx;
-                metadata.DataOffset = Loc;
+                 KeyMeta metadata;
+                 metadata.DataSize = static_cast<uint32_t>(size);
+                 metadata.PageIndex = static_cast<uint32_t>(pageIdx);
+                 metadata.DataOffset = Loc;
                 metadata.PageGeneration = page.Generation;
-                metadata.KeyHash = hp;
-                metadata.TempCtrlIdx = static_cast<uint8_t>(page.TempCtrl.size() - 1);
-                metadata.Version = details->NextVersion(targetNode);
+                 metadata.KeyHash = hp;
+                 metadata.TempCtrlIdx = static_cast<uint8_t>(page.TempCtrl.size() - 1);
 
-                Error err = details->KeyStore.Set(key, metadata);
+                 Error err = details->KeyStore.Set(key, metadata);
                 if (err == NO_ERR) {
                     details->NodeBytesWritten.fetch_add(size, std::memory_order_relaxed);
                     if (nodeCount > 1 && !StrictCoherence && !HashRouted) {
@@ -1714,10 +1708,10 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
     uint8_t initTC = Policy::InitialState();
     page.AddKeyEntry(hp, initTC);
 
-    KeyMeta metadata;
-    metadata.DataSize = size;
-    metadata.PageIndex = pageIdx;
-    metadata.DataOffset = Loc;
+     KeyMeta metadata;
+     metadata.DataSize = static_cast<uint32_t>(size);
+     metadata.PageIndex = static_cast<uint32_t>(pageIdx);
+     metadata.DataOffset = Loc;
     metadata.PageGeneration = page.Generation;
     metadata.KeyHash = hp;
     metadata.TempCtrlIdx = static_cast<uint8_t>(page.TempCtrl.size() - 1);
@@ -1740,7 +1734,7 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
             details->ShadowDesire.set(hp.h2, desire);
         }
         if (UseAnnex && nodeCount > 1) {
-            FatAnnexEntry fatEntry{static_cast<uint32_t>(targetNode), metadata.DataOffset, static_cast<uint32_t>(metadata.DataSize)};
+            FatAnnexEntry fatEntry{static_cast<uint32_t>(targetNode), metadata.DataOffset, metadata.DataSize};
             int callingNode = Numatic::GetCurrentNode();
             auto* localDetails = DataMembers->privateNumaState->NodeDetails[callingNode];
             for (int n = 0; n < nodeCount; n++) {
@@ -1890,7 +1884,10 @@ FurrBall<Policy> *FurrBall<Policy>::CreateBall(const std::string &DBpath, const 
                 void* auxD = (void*)Numatic::AllocateLocal(sizeof(PerNodeDetails<Policy>));
                 Logger::getInstance().info(std::string("Per-node cache will have an inital capacity of ") + std::to_string(nodeArcCap) + " Keys." );
                 auto* details = new(auxD) PerNodeDetails<Policy>(nodeArcCap, Numatic::AllocateLocal, Numatic::FreeNUMA, config.EnableAnnex, config.EnableAnnex ? nodeArcCap : 0);
-                if (config.EnableAnnex) details->annexOutBatchCount = Detail::globalNumaState.NumaNodeCount;
+                if (config.EnableAnnex) {
+                    details->annexDrainBuf.init();
+                    details->annexOutBatchCount = Detail::globalNumaState.NumaNodeCount;
+                }
                 details->InitDedupRing();
                 if (config.EnableBloomFilter && config.BloomFilterBytes >= 64) {
                     details->KeyBloom.Init(config.BloomFilterBytes);

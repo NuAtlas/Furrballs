@@ -61,12 +61,12 @@ namespace NuAtlas {
     // --- Per-key metadata (policy-independent) ---
 
     struct KeyMeta {
-        size_t PageIndex, DataSize;
-        void* DataOffset;
-        uint8_t TempCtrlIdx;
+        uint32_t PageIndex = 0;
+        uint32_t DataSize = 0;
+        void* DataOffset = nullptr;
         uint32_t PageGeneration = 0;
+        uint8_t TempCtrlIdx = 0;
         HashPair KeyHash{};
-        uint64_t Version = 0;
     };
 
     // --- Statistics (policy-independent) ---
