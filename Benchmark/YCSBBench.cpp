@@ -1334,7 +1334,8 @@ void RunYCSBBench(benchmark::State& state) {
     YCSBWorkload wl = static_cast<YCSBWorkload>(state.range(2));
     size_t valueSize = state.range(3);
     uint64_t recordCount = state.range(4);
-    int numaNodeCount = state.range(5) > 0 ? state.range(5) : numThreads;
+    int numaNodeCount = numThreads;
+    if (numaNodeCount > 4) numaNodeCount = 4;
 
     std::vector<IterStats> iterStats;
 
@@ -2177,22 +2178,22 @@ BENCHMARK_REGISTER_F(YCSB_FurrBallShared, Run)
 
 // 8T / 4 nodes (2 threads per ARC)
 BENCHMARK_REGISTER_F(YCSB_FurrBallTLAnnex, Run)
-    ->Args({8, 65536, 10, 64, 100000, 4})
+    ->Args({8, 65536, 10, 64, 100000})
     ->Iterations(10)->Unit(benchmark::kMicrosecond);
 
 // 16T / 4 nodes (4 threads per ARC)
 BENCHMARK_REGISTER_F(YCSB_FurrBallTLAnnex, Run)
-    ->Args({16, 65536, 10, 64, 100000, 4})
+    ->Args({16, 65536, 10, 64, 100000})
     ->Iterations(10)->Unit(benchmark::kMicrosecond);
 
 // 32T / 4 nodes (8 threads per ARC)
 BENCHMARK_REGISTER_F(YCSB_FurrBallTLAnnex, Run)
-    ->Args({32, 65536, 10, 64, 100000, 4})
+    ->Args({32, 65536, 10, 64, 100000})
     ->Iterations(10)->Unit(benchmark::kMicrosecond);
 
 // 64T / 4 nodes (16 threads per ARC)
 BENCHMARK_REGISTER_F(YCSB_FurrBallTLAnnex, Run)
-    ->Args({64, 65536, 10, 64, 100000, 4})
+    ->Args({64, 65536, 10, 64, 100000})
     ->Iterations(10)->Unit(benchmark::kMicrosecond);
 
 int main(int argc, char** argv) {
