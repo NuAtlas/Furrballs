@@ -217,6 +217,7 @@ struct PerNodeDetails{
     OpenIdx<FatAnnexEntry> annexIdx;
     SpinLock annexLock;
     AnnexDrainBuf annexDrainBuf;
+    SpinLock annexOutLock;
     static constexpr int kMaxAnnexNodes = 8;
     AnnexOutBatch annexOutBatches[kMaxAnnexNodes];
     int annexOutBatchCount = 0;
@@ -1259,12 +1260,15 @@ Error NuAtlas::FurrBall<Policy>::Get(const std::string &key, void* outBuf, size_
         }
         if (UseAnnex) {
             auto* localDetails = DataMembers->privateNumaState->NodeDetails[local];
-            for (int n = 0; n < nodeCount; n++) {
-                if (n == local) continue;
-                auto& batch = localDetails->annexOutBatches[n];
-                if (batch.count > 0) {
-                    DataMembers->privateNumaState->NodeDetails[n]->annexDrainBuf.enqueueBatch(batch.h2s, batch.entries, batch.count);
-                    batch.count = 0;
+            {
+                std::lock_guard<SpinLock> lk(localDetails->annexOutLock);
+                for (int n = 0; n < nodeCount; n++) {
+                    if (n == local) continue;
+                    auto& batch = localDetails->annexOutBatches[n];
+                    if (batch.count > 0) {
+                        DataMembers->privateNumaState->NodeDetails[n]->annexDrainBuf.enqueueBatch(batch.h2s, batch.entries, batch.count);
+                        batch.count = 0;
+                    }
                 }
             }
             FatAnnexEntry fatEntry{};
@@ -1643,6 +1647,7 @@ Error NuAtlas::FurrBall<Policy>::Set(const std::string &key, void *data, size_t 
             FatAnnexEntry fatEntry{static_cast<uint32_t>(targetNode), metadata.DataOffset, metadata.DataSize};
             int callingNode = Numatic::GetCurrentNode();
             auto* localDetails = DataMembers->privateNumaState->NodeDetails[callingNode];
+            std::lock_guard<SpinLock> lk(localDetails->annexOutLock);
             for (int n = 0; n < nodeCount; n++) {
                 if (n == targetNode) continue;
                 auto& batch = localDetails->annexOutBatches[n];
