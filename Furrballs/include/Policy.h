@@ -1,28 +1,11 @@
 #pragma once
-#include "Remarc.h"
 #include <type_traits>
 
 namespace NuAtlas {
 
     template<typename Value>
         requires std::is_move_constructible_v<Value> && std::is_trivially_copyable_v<Value>
-    class RawCMapStore;
-
-    template<typename Value>
-        requires std::is_move_constructible_v<Value> && std::is_trivially_copyable_v<Value>
     class ConcurrentARC;
-
-    template<typename Value>
-        requires std::is_move_constructible_v<Value> && std::is_trivially_copyable_v<Value>
-    class AugAdaptStore;
-
-    template<typename Value>
-        requires std::is_move_constructible_v<Value> && std::is_trivially_copyable_v<Value>
-    class NativeRemarcStore;
-
-    template<typename Value>
-        requires std::is_move_constructible_v<Value> && std::is_trivially_copyable_v<Value>
-    class ConcurrentLRU;
 
     // --- Policy Concept ---
     //
@@ -33,7 +16,7 @@ namespace NuAtlas {
     // Required interface:
     //   template<typename Value> using Store = ...;
     //   using Config       = ...;
-    //   static Config MakeConfig(const RemarcConfig&);
+    //   static Config MakeConfig();
     //   static uint8_t InitialState();
     //
     // Optional (constexpr false = disabled):
@@ -41,8 +24,7 @@ namespace NuAtlas {
     //   static constexpr bool HasMigration;
     //   static constexpr bool HasScanner;
     //   static constexpr bool HasDesire;
-    //   static constexpr bool HasStoreEviction; // store handles eviction internally
-    //   static uint8_t OnLocalAccess/OnRemoteAccess/EvictScore/etc.
+    //   static constexpr bool HasStoreEviction;
 
     // --- ARC Policy: standard ARC with no per-key state ---
 
@@ -57,212 +39,7 @@ namespace NuAtlas {
         static constexpr bool HasStoreEviction = true;
         static constexpr bool HasRemarcConfig   = false;
 
-        static Config MakeConfig(const RemarcConfig&) noexcept { return {}; }
-        static uint8_t InitialState() noexcept { return 0; }
-    };
-
-    // --- REMARC Policy: E = P(A, B) ---
-    // Concurrent ARC key store + REMARC per-key scoring + SIMD scanning.
-
-    template<typename AtomA, typename AtomB>
-    struct RemarcPolicy {
-        template<typename Value> using Store = RawCMapStore<Value>;
-        using Config = RemarcConfig;
-
-        static constexpr bool HasPerKeyState = true;
-        static constexpr bool HasMigration   = true;
-        static constexpr bool HasScanner     = true;
-        static constexpr bool HasDesire      = true;
-        static constexpr bool HasStoreEviction = false;
-        static constexpr bool HasRemarcConfig   = true;
-
-        static Config MakeConfig(const RemarcConfig& rc) noexcept { return rc; }
-
-        static uint8_t InitialState() noexcept {
-            return PackTempCtrl(AtomA::Initial, AtomB::Initial);
-        }
-
-        static uint8_t OnLocalAccess(uint8_t tc, const Config& cfg) noexcept {
-            uint8_t a = AtomA::Promote(UnpackSLocal(tc), cfg.AlphaLocal);
-            uint8_t b = AtomB::Demote(UnpackSRemote(tc), cfg.AlphaLocal);
-            return PackTempCtrl(a, b);
-        }
-
-        static uint8_t OnRemoteAccess(uint8_t tc, const Config& cfg) noexcept {
-            uint8_t a = AtomA::Demote(UnpackSLocal(tc), cfg.AlphaRemote);
-            uint8_t b = AtomB::Promote(UnpackSRemote(tc), cfg.AlphaRemote);
-            return PackTempCtrl(a, b);
-        }
-
-        static void TimeDecayKey(uint8_t& tc, const Config& cfg) noexcept {
-            uint8_t a = AtomA::TimeDecay(UnpackSLocal(tc), cfg.TimeDecayNum, cfg.TimeDecayDen);
-            uint8_t b = AtomB::TimeDecay(UnpackSRemote(tc), cfg.TimeDecayNum, cfg.TimeDecayDen);
-            tc = PackTempCtrl(a, b);
-        }
-
-        static uint8_t EvictScore(uint8_t tc) noexcept { return EvictLookup[tc]; }
-        static uint8_t MigrateScore(uint8_t tc) noexcept { return MigrateLookup[tc]; }
-        static bool ShouldHotNode(uint8_t tc, const Config& cfg) noexcept {
-            return UnpackSRemote(tc) >= cfg.HotNodeProb;
-        }
-
-        static RemarcScanResult ScanBatch(const uint8_t* d, size_t o, size_t n,
-                                          const Config& c) noexcept {
-            return RemarcScanBatch(d, o, n, c);
-        }
-        static float EPage(uint32_t sum, size_t n) noexcept {
-            return RemarcComputeEPage(sum, n);
-        }
-    };
-
-    // --- SimpleMigrate: ARC eviction + counting migration ---
-    //
-    // Per-key state is two 4-bit saturating counters: local (lo) and remote (hi).
-    // OnLocalAccess: boost local, decay remote.
-    // OnRemoteAccess: boost remote, decay local.
-    // EvictScore = remote count (high = cold = evictable).
-    // ShouldHotNode = remote count >= threshold.
-    //
-    // No SIMD scanner. Migration swap driven by EvictScore cold mask.
-
-    struct SimpleMigratePolicy {
-        template<typename Value> using Store = ConcurrentARC<Value>;
-
-        struct Config {
-            uint8_t MigrateThreshold = 10;
-        };
-
-        static constexpr bool HasPerKeyState   = true;
-        static constexpr bool HasMigration     = true;
-        static constexpr bool HasScanner       = false;
-        static constexpr bool HasDesire        = true;
-        static constexpr bool HasStoreEviction = false;
-        static constexpr bool HasRemarcConfig  = false;
-
-        static Config MakeConfig(const RemarcConfig&) noexcept { return {}; }
-
-        static uint8_t InitialState() noexcept {
-            return PackTempCtrl(15, 0);
-        }
-
-        static uint8_t OnLocalAccess(uint8_t tc, const Config&) noexcept {
-            uint8_t loc = std::min<uint8_t>(UnpackSLocal(tc) + 2, 15);
-            uint8_t rem = UnpackSRemote(tc) > 0 ? UnpackSRemote(tc) - 1 : 0;
-            return PackTempCtrl(loc, rem);
-        }
-
-        static uint8_t OnRemoteAccess(uint8_t tc, const Config&) noexcept {
-            uint8_t rem = std::min<uint8_t>(UnpackSRemote(tc) + 2, 15);
-            uint8_t loc = UnpackSLocal(tc) > 0 ? UnpackSLocal(tc) - 1 : 0;
-            return PackTempCtrl(loc, rem);
-        }
-
-        static void TimeDecayKey(uint8_t& tc, const Config&) noexcept {
-            uint8_t loc = UnpackSLocal(tc) / 2;
-            uint8_t rem = UnpackSRemote(tc) / 2;
-            tc = PackTempCtrl(loc, rem);
-        }
-
-        static uint8_t EvictScore(uint8_t tc) noexcept {
-            return UnpackSRemote(tc);
-        }
-
-        static bool ShouldHotNode(uint8_t tc, const Config& cfg) noexcept {
-            return UnpackSRemote(tc) >= cfg.MigrateThreshold;
-        }
-    };
-
-    // --- LRU Policy: simple LRU with no per-key state ---
-    // Uses ConcurrentLRU store: single flat list, evict tail on pressure.
-    // No ghost lists, no adaptive threshold, no desire tracking.
-
-    struct LruPolicy {
-        template<typename Value> using Store = ConcurrentLRU<Value>;
-        using Config = struct {};
-
-        static constexpr bool HasPerKeyState = false;
-        static constexpr bool HasMigration   = false;
-        static constexpr bool HasScanner     = false;
-        static constexpr bool HasDesire      = false;
-        static constexpr bool HasStoreEviction = true;
-        static constexpr bool HasRemarcConfig   = false;
-
-        static Config MakeConfig(const RemarcConfig&) noexcept { return {}; }
-        static uint8_t InitialState() noexcept { return 0; }
-    };
-
-    // --- Standard 2-node REMARC: s_local (recency) + s_remote (frequency) ---
-
-    using StandardRemarc = RemarcPolicy<AtomSLocal, AtomSRemote>;
-
-    // --- AUG-ADAPT: raw CMap + adaptive heap eviction + REMARC scoring ---
-
-    struct AugAdaptPolicy {
-        template<typename Value> using Store = RawCMapStore<Value>;
-        using Config = RemarcConfig;
-
-        static constexpr bool HasPerKeyState = true;
-        static constexpr bool HasMigration   = true;
-        static constexpr bool HasScanner     = true;
-        static constexpr bool HasDesire      = true;
-        static constexpr bool HasStoreEviction = false;
-        static constexpr bool HasRemarcConfig   = true;
-
-        static Config MakeConfig(const RemarcConfig& rc) noexcept { return rc; }
-
-        static uint8_t InitialState() noexcept {
-            return PackTempCtrl(AtomSLocal::Initial, AtomSRemote::Initial);
-        }
-
-        static uint8_t OnLocalAccess(uint8_t tc, const Config& cfg) noexcept {
-            uint8_t a = AtomSLocal::Promote(UnpackSLocal(tc), cfg.AlphaLocal);
-            uint8_t b = AtomSRemote::Demote(UnpackSRemote(tc), cfg.AlphaLocal);
-            return PackTempCtrl(a, b);
-        }
-
-        static uint8_t OnRemoteAccess(uint8_t tc, const Config& cfg) noexcept {
-            uint8_t a = AtomSLocal::Demote(UnpackSLocal(tc), cfg.AlphaRemote);
-            uint8_t b = AtomSRemote::Promote(UnpackSRemote(tc), cfg.AlphaRemote);
-            return PackTempCtrl(a, b);
-        }
-
-        static void TimeDecayKey(uint8_t& tc, const Config& cfg) noexcept {
-            uint8_t a = AtomSLocal::TimeDecay(UnpackSLocal(tc), cfg.TimeDecayNum, cfg.TimeDecayDen);
-            uint8_t b = AtomSRemote::TimeDecay(UnpackSRemote(tc), cfg.TimeDecayNum, cfg.TimeDecayDen);
-            tc = PackTempCtrl(a, b);
-        }
-
-        static uint8_t EvictScore(uint8_t tc) noexcept { return EvictLookup[tc]; }
-        static uint8_t MigrateScore(uint8_t tc) noexcept { return MigrateLookup[tc]; }
-        static bool ShouldHotNode(uint8_t tc, const Config& cfg) noexcept {
-            return UnpackSRemote(tc) >= cfg.HotNodeProb;
-        }
-
-        static RemarcScanResult ScanBatch(const uint8_t* d, size_t o, size_t n,
-                                          const Config& c) noexcept {
-            return RemarcScanBatch(d, o, n, c);
-        }
-        static float EPage(uint32_t sum, size_t n) noexcept {
-            return RemarcComputeEPage(sum, n);
-        }
-    };
-
-    // --- NATIVE-REMARc: scorer IS the cache, no ARC structure ---
-    // Direct eviction by desire score. No T1/T2/B1/B2, no ghost lists,
-    // no p-adaptation. Min-heap drives eviction order.
-
-    struct NativeRemarcPolicy {
-        template<typename Value> using Store = NativeRemarcStore<Value>;
-        using Config = RemarcConfig;
-
-        static constexpr bool HasPerKeyState = false;
-        static constexpr bool HasMigration   = false;
-        static constexpr bool HasScanner     = false;
-        static constexpr bool HasDesire      = true;
-        static constexpr bool HasStoreEviction = true;
-        static constexpr bool HasRemarcConfig   = false;
-
-        static Config MakeConfig(const RemarcConfig& rc) noexcept { return rc; }
+        static Config MakeConfig() noexcept { return {}; }
         static uint8_t InitialState() noexcept { return 0; }
     };
 

@@ -15,6 +15,7 @@
 #include "Numatic.h"
 #include "WaitGroup.h"
 #include "SeqLock.h"
+#include "Remarc.h"
 #include "Policy.h"
 #include <memory>
 #include <string>
@@ -315,7 +316,7 @@ namespace NuAtlas {
     // Policy controls: per-key state, eviction scoring, migration, scanning.
     // E = P(A₁, ..., Aₙ) at the code level.
 
-    template<typename Policy = StandardRemarc>
+    template<typename Policy = ArcPolicy>
     class FurrBall {
     private:
         struct ImplDetail;
@@ -375,8 +376,6 @@ namespace NuAtlas {
         };
 
         PageManageResult ManagePages(int nodeID, bool simulateIO = true) noexcept;
-
-        void UpdateMinDesire(int nodeID) noexcept;
 
         void BackgroundEvict(int nodeID) noexcept;
         void DrainPromotes(int nodeID) noexcept;

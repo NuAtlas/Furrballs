@@ -13,8 +13,6 @@
 #include <algorithm>
 #include <functional>
 #include <unordered_map>
-#include <queue>
-#include <cmath>
 
 namespace NuAtlas {
 
@@ -46,6 +44,16 @@ namespace NuAtlas {
         }
 
         V* find(uint64_t key) noexcept {
+            size_t idx = key & mask_;
+            for (size_t i = 0; i <= mask_; i++) {
+                if (keys_[idx] == key) return &vals_[idx];
+                if (keys_[idx] == kEmpty) return nullptr;
+                idx = (idx + 1) & mask_;
+            }
+            return nullptr;
+        }
+
+        const V* find(uint64_t key) const noexcept {
             size_t idx = key & mask_;
             for (size_t i = 0; i <= mask_; i++) {
                 if (keys_[idx] == key) return &vals_[idx];
@@ -196,6 +204,195 @@ namespace NuAtlas {
         bool empty() const { return count_ == 0; }
     };
 
+    class ArcLists {
+        static constexpr uint32_t NIL = UINT32_MAX;
+        static constexpr uint8_t kT1 = 0, kT2 = 1, kB1 = 2, kB2 = 3;
+
+        struct Slot {
+            HashPair hashes;
+            uint32_t prev;
+            uint32_t next;
+        };
+
+        struct ListHead {
+            uint32_t head = NIL;
+            uint32_t tail = NIL;
+            size_t count = 0;
+        };
+
+        std::vector<Slot> slots_;
+        ListHead heads_[4];
+        uint32_t freeHead_ = NIL;
+        OpenIdx<uint32_t> idx_;
+
+        static uint32_t packEntry(uint8_t listId, uint32_t slot) {
+            return (static_cast<uint32_t>(listId) << 30) | slot;
+        }
+        static uint8_t unpackListId(uint32_t packed) { return packed >> 30; }
+        static uint32_t unpackSlot(uint32_t packed) { return packed & 0x3FFFFFFF; }
+
+        uint32_t allocSlot() {
+            uint32_t s = freeHead_;
+            freeHead_ = slots_[s].next;
+            return s;
+        }
+
+        void freeSlot(uint32_t s) {
+            slots_[s].hashes = {};
+            slots_[s].prev = NIL;
+            slots_[s].next = freeHead_;
+            freeHead_ = s;
+        }
+
+        void doPushFront(uint8_t lid, HashPair hashes) {
+            uint32_t s = allocSlot();
+            slots_[s].hashes = hashes;
+            slots_[s].prev = NIL;
+            slots_[s].next = heads_[lid].head;
+            if (heads_[lid].head != NIL) slots_[heads_[lid].head].prev = s;
+            else heads_[lid].tail = s;
+            heads_[lid].head = s;
+            idx_.insert(hashes.h2, packEntry(lid, s));
+            heads_[lid].count++;
+        }
+
+        void doPopBack(uint8_t lid) {
+            if (heads_[lid].tail == NIL) return;
+            uint32_t s = heads_[lid].tail;
+            idx_.erase(slots_[s].hashes.h2);
+            uint32_t p = slots_[s].prev;
+            if (p != NIL) slots_[p].next = NIL;
+            else heads_[lid].head = NIL;
+            heads_[lid].tail = p;
+            freeSlot(s);
+            heads_[lid].count--;
+        }
+
+        void doErase(uint8_t lid, uint32_t s) {
+            uint32_t p = slots_[s].prev, n = slots_[s].next;
+            if (p != NIL) slots_[p].next = n;
+            else heads_[lid].head = n;
+            if (n != NIL) slots_[n].prev = p;
+            else heads_[lid].tail = p;
+            freeSlot(s);
+            heads_[lid].count--;
+        }
+
+        void doSpliceFront(uint8_t lid, uint32_t s) {
+            if (s == heads_[lid].head) return;
+            uint32_t p = slots_[s].prev, n = slots_[s].next;
+            if (p != NIL) slots_[p].next = n;
+            if (n != NIL) slots_[n].prev = p;
+            else heads_[lid].tail = p;
+            slots_[s].prev = NIL;
+            slots_[s].next = heads_[lid].head;
+            if (heads_[lid].head != NIL) slots_[heads_[lid].head].prev = s;
+            heads_[lid].head = s;
+        }
+
+        bool findEntry(uint64_t h2, uint8_t& outList, uint32_t& outSlot) const {
+            const uint32_t* v = idx_.find(h2);
+            if (!v) return false;
+            outList = unpackListId(*v);
+            outSlot = unpackSlot(*v);
+            return true;
+        }
+
+    public:
+        explicit ArcLists(size_t capPerList)
+            : idx_(capPerList * 2)
+        {
+            size_t totalSlots = capPerList * 2;
+            slots_.resize(totalSlots);
+            for (size_t i = 0; i < totalSlots; i++) {
+                slots_[i] = {{}, NIL, static_cast<uint32_t>(i + 1)};
+            }
+            slots_[totalSlots - 1].next = NIL;
+            freeHead_ = 0;
+        }
+
+        bool containsT1orT2(uint64_t h2) const noexcept {
+            uint8_t lid; uint32_t s;
+            return findEntry(h2, lid, s) && (lid == kT1 || lid == kT2);
+        }
+
+        bool containsB1(uint64_t h2) const noexcept {
+            uint8_t lid; uint32_t s;
+            return findEntry(h2, lid, s) && lid == kB1;
+        }
+
+        bool containsB2(uint64_t h2) const noexcept {
+            uint8_t lid; uint32_t s;
+            return findEntry(h2, lid, s) && lid == kB2;
+        }
+
+        void erase(uint64_t h2) noexcept {
+            const uint32_t* v = idx_.find(h2);
+            if (!v) return;
+            doErase(unpackListId(*v), unpackSlot(*v));
+            idx_.erase(h2);
+        }
+
+        void pushT1(HashPair hashes) { doPushFront(kT1, hashes); }
+        void pushT2(HashPair hashes) { doPushFront(kT2, hashes); }
+        void pushB1(HashPair hashes) { doPushFront(kB1, hashes); }
+        void pushB2(HashPair hashes) { doPushFront(kB2, hashes); }
+
+        void popBackT1() { doPopBack(kT1); }
+        void popBackT2() { doPopBack(kT2); }
+        void popBackB1() { doPopBack(kB1); }
+        void popBackB2() { doPopBack(kB2); }
+
+        HashPair backT1() const { return slots_[heads_[kT1].tail].hashes; }
+        HashPair backT2() const { return slots_[heads_[kT2].tail].hashes; }
+        HashPair backB1() const { return slots_[heads_[kB1].tail].hashes; }
+        HashPair backB2() const { return slots_[heads_[kB2].tail].hashes; }
+
+        size_t sizeT1() const { return heads_[kT1].count; }
+        size_t sizeT2() const { return heads_[kT2].count; }
+        size_t sizeB1() const { return heads_[kB1].count; }
+        size_t sizeB2() const { return heads_[kB2].count; }
+        bool emptyT1() const { return heads_[kT1].count == 0; }
+        bool emptyT2() const { return heads_[kT2].count == 0; }
+        bool emptyB1() const { return heads_[kB1].count == 0; }
+        bool emptyB2() const { return heads_[kB2].count == 0; }
+
+        void promoteT1toT2(HashPair hashes) {
+            const uint32_t* v = idx_.find(hashes.h2);
+            if (!v || unpackListId(*v) != kT1) return;
+            doErase(kT1, unpackSlot(*v));
+            idx_.erase(hashes.h2);
+            doPushFront(kT2, hashes);
+        }
+
+        void promoteB1toT2(HashPair hashes) {
+            const uint32_t* v = idx_.find(hashes.h2);
+            if (!v || unpackListId(*v) != kB1) return;
+            doErase(kB1, unpackSlot(*v));
+            idx_.erase(hashes.h2);
+            doPushFront(kT2, hashes);
+        }
+
+        void promoteB2toT2(HashPair hashes) {
+            const uint32_t* v = idx_.find(hashes.h2);
+            if (!v || unpackListId(*v) != kB2) return;
+            doErase(kB2, unpackSlot(*v));
+            idx_.erase(hashes.h2);
+            doPushFront(kT2, hashes);
+        }
+
+        void spliceFrontT2(uint64_t h2) {
+            const uint32_t* v = idx_.find(h2);
+            if (!v || unpackListId(*v) != kT2) return;
+            doSpliceFront(kT2, unpackSlot(*v));
+        }
+
+        uint8_t whichList(uint64_t h2) const {
+            const uint32_t* v = idx_.find(h2);
+            return v ? unpackListId(*v) : 0xFF;
+        }
+    };
+
     class PromoteBuf {
         static constexpr size_t kCapacity = 4096;
         static constexpr size_t kThreshold = 1024;
@@ -232,33 +429,14 @@ namespace NuAtlas {
             return true;
         }
 
-        void drain(FlatList& t1, FlatList& t2) {
+        template <typename Fn>
+        void drainWith(Fn&& fn) {
             size_t head = writeHead_.load(std::memory_order_acquire);
             while (drainTail_ < head) {
                 size_t idx = drainTail_ % kCapacity;
                 if (!slots_[idx].ready.load(std::memory_order_acquire)) break;
                 slots_[idx].ready.store(false, std::memory_order_relaxed);
-                uint64_t h2 = slots_[idx].hashes.h2;
-                if (t1.contains(h2)) {
-                    t1.erase(h2);
-                    t2.push_front(slots_[idx].hashes);
-                } else if (t2.contains(h2)) {
-                    t2.splice_front(h2);
-                }
-                ++drainTail_;
-            }
-        }
-
-        void drainSingle(FlatList& lru) {
-            size_t head = writeHead_.load(std::memory_order_acquire);
-            while (drainTail_ < head) {
-                size_t idx = drainTail_ % kCapacity;
-                if (!slots_[idx].ready.load(std::memory_order_acquire)) break;
-                slots_[idx].ready.store(false, std::memory_order_relaxed);
-                uint64_t h2 = slots_[idx].hashes.h2;
-                if (lru.contains(h2)) {
-                    lru.splice_front(h2);
-                }
+                fn(slots_[idx].hashes);
                 ++drainTail_;
             }
         }
@@ -608,30 +786,41 @@ namespace NuAtlas {
 
     private:
         CMap<Value> store_;
-        FlatList t1_, t2_, b1_, b2_;
+        ArcLists lists_;
         SpinLock arcLock_;
         PromoteBuf promoteBuf_;
         size_t capacity_;
         size_t p_;
         EvictionCallback evictionCallback_ = [](const Value&) {};
 
+        void drainPromoteBuf() {
+            promoteBuf_.drainWith([&](HashPair hashes) {
+                uint8_t lid = lists_.whichList(hashes.h2);
+                if (lid == 0) {
+                    lists_.promoteT1toT2(hashes);
+                } else if (lid == 1) {
+                    lists_.spliceFrontT2(hashes.h2);
+                }
+            });
+        }
+
         bool replaceLocked(uint64_t h2) {
-            if (!t1_.empty() && (t1_.size() > p_ ||
-                (b2_.contains(h2) && t1_.size() == p_))) {
-                HashPair old = t1_.back();
+            if (!lists_.emptyT1() && (lists_.sizeT1() > p_ ||
+                (lists_.containsB2(h2) && lists_.sizeT1() == p_))) {
+                HashPair old = lists_.backT1();
                 auto result = store_.FindAndEraseByHash(old);
                 if (result.err != NO_ERR) return false;
-                t1_.pop_back();
-                b1_.push_front(old);
+                lists_.popBackT1();
+                lists_.pushB1(old);
                 if (result.value) evictionCallback_(*result.value);
                 return true;
             }
-            if (!t2_.empty()) {
-                HashPair old = t2_.back();
+            if (!lists_.emptyT2()) {
+                HashPair old = lists_.backT2();
                 auto result = store_.FindAndEraseByHash(old);
                 if (result.err != NO_ERR) return false;
-                t2_.pop_back();
-                b2_.push_front(old);
+                lists_.popBackT2();
+                lists_.pushB2(old);
                 if (result.value) evictionCallback_(*result.value);
                 return true;
             }
@@ -639,25 +828,25 @@ namespace NuAtlas {
         }
 
         bool evictLocked() {
-            if (t1_.size() + b1_.size() >= capacity_) {
-                if (t1_.size() < capacity_ && !b1_.empty()) {
-                    b1_.pop_back();
-                } else if (!t1_.empty()) {
-                    HashPair hashes = t1_.back();
+            if (lists_.sizeT1() + lists_.sizeB1() >= capacity_) {
+                if (lists_.sizeT1() < capacity_ && !lists_.emptyB1()) {
+                    lists_.popBackB1();
+                } else if (!lists_.emptyT1()) {
+                    HashPair hashes = lists_.backT1();
                     auto result = store_.FindAndEraseByHash(hashes);
                     if (result.err != NO_ERR) return false;
-                    t1_.pop_back();
+                    lists_.popBackT1();
                     if (result.value) evictionCallback_(*result.value);
                 }
             }
-            if (t1_.size() + t2_.size() + b1_.size() + b2_.size() >= 2 * capacity_) {
-                if (t2_.size() + b2_.size() > capacity_ && !b2_.empty()) {
-                    b2_.pop_back();
-                } else if (!t2_.empty()) {
-                    HashPair hashes = t2_.back();
+            if (lists_.sizeT1() + lists_.sizeT2() + lists_.sizeB1() + lists_.sizeB2() >= 2 * capacity_) {
+                if (lists_.sizeT2() + lists_.sizeB2() > capacity_ && !lists_.emptyB2()) {
+                    lists_.popBackB2();
+                } else if (!lists_.emptyT2()) {
+                    HashPair hashes = lists_.backT2();
                     auto result = store_.FindAndEraseByHash(hashes);
                     if (result.err != NO_ERR) return false;
-                    t2_.pop_back();
+                    lists_.popBackT2();
                     if (result.value) evictionCallback_(*result.value);
                 }
             }
@@ -666,36 +855,36 @@ namespace NuAtlas {
 
     public:
         ConcurrentARC(size_t cap, CMapAllocFn af = CMapDefaultAlloc, CMapFreeFn ff = CMapDefaultFree)
-            : store_(cap, af, ff), t1_(cap), t2_(cap), b1_(cap), b2_(cap),
+            : store_(cap, af, ff), lists_(cap),
               capacity_(cap), p_(0) {}
 
         void setWakeCallback(std::function<void()> cb) { promoteBuf_.setWakeCallback(std::move(cb)); }
 
         void drainPromotes() {
             std::lock_guard<SpinLock> guard(arcLock_);
-            promoteBuf_.drain(t1_, t2_);
+            drainPromoteBuf();
         }
 
         void SetEvictionCallback(EvictionCallback cb) { evictionCallback_ = cb; }
 
         bool ForceEvictOne() {
             std::lock_guard<SpinLock> guard(arcLock_);
-            promoteBuf_.drain(t1_, t2_);
-            if (!t1_.empty() && (t1_.size() > p_ || t2_.empty())) {
-                HashPair old = t1_.back();
+            drainPromoteBuf();
+            if (!lists_.emptyT1() && (lists_.sizeT1() > p_ || lists_.emptyT2())) {
+                HashPair old = lists_.backT1();
                 auto result = store_.FindAndEraseByHash(old);
                 if (result.err != NO_ERR) return false;
-                t1_.pop_back();
-                b1_.push_front(old);
+                lists_.popBackT1();
+                lists_.pushB1(old);
                 if (result.value) evictionCallback_(*result.value);
                 return true;
             }
-            if (!t2_.empty()) {
-                HashPair old = t2_.back();
+            if (!lists_.emptyT2()) {
+                HashPair old = lists_.backT2();
                 auto result = store_.FindAndEraseByHash(old);
                 if (result.err != NO_ERR) return false;
-                t2_.pop_back();
-                b2_.push_front(old);
+                lists_.popBackT2();
+                lists_.pushB2(old);
                 if (result.value) evictionCallback_(*result.value);
                 return true;
             }
@@ -734,41 +923,29 @@ namespace NuAtlas {
 
         typename CMap<Value>::FindAndEraseResult Erase(const std::string& key) {
             std::lock_guard<SpinLock> guard(arcLock_);
-            promoteBuf_.drain(t1_, t2_);
+            drainPromoteBuf();
             HashPair hashes = HashKey(key);
-            uint64_t h2 = hashes.h2;
-            t1_.erase(h2);
-            t2_.erase(h2);
-            b1_.erase(h2);
-            b2_.erase(h2);
+            lists_.erase(hashes.h2);
             return store_.FindAndErase(key);
         }
 
         typename CMap<Value>::FindAndEraseResult EraseByHash(const HashPair& hashes) {
             std::lock_guard<SpinLock> guard(arcLock_);
-            promoteBuf_.drain(t1_, t2_);
-            uint64_t h2 = hashes.h2;
-            t1_.erase(h2);
-            t2_.erase(h2);
-            b1_.erase(h2);
-            b2_.erase(h2);
+            drainPromoteBuf();
+            lists_.erase(hashes.h2);
             return store_.FindAndEraseByHash(hashes);
         }
 
         bool MigrateAndLeaveSentinel(const HashPair& hashes, int destNode) {
             std::lock_guard<SpinLock> guard(arcLock_);
-            promoteBuf_.drain(t1_, t2_);
-            uint64_t h2 = hashes.h2;
-            t1_.erase(h2);
-            t2_.erase(h2);
-            b1_.erase(h2);
-            b2_.erase(h2);
+            drainPromoteBuf();
+            lists_.erase(hashes.h2);
             return store_.FindAndEraseByHash(hashes);
         }
 
         Error Set(const std::string& key, const Value& val) {
             std::lock_guard<SpinLock> guard(arcLock_);
-            promoteBuf_.drain(t1_, t2_);
+            drainPromoteBuf();
 
             HashPair hashes = HashKey(key);
             uint64_t h2 = hashes.h2;
@@ -776,60 +953,58 @@ namespace NuAtlas {
             if (result.err != NO_ERR) return result.err;
 
             if (!result.inserted) {
-                if (t1_.contains(h2)) {
-                    t1_.erase(h2);
-                    t2_.push_front(hashes);
-                } else if (t2_.contains(h2)) {
-                    t2_.splice_front(h2);
+                uint8_t lid = lists_.whichList(h2);
+                if (lid == 0) {
+                    lists_.promoteT1toT2(hashes);
+                } else if (lid == 1) {
+                    lists_.spliceFrontT2(h2);
                 }
                 return NO_ERR;
             }
 
-            if (b1_.contains(h2)) {
-                size_t delta1 = b1_.size() > 0 ? b2_.size() / b1_.size() : 1;
+            if (lists_.containsB1(h2)) {
+                size_t delta1 = lists_.sizeB1() > 0 ? lists_.sizeB2() / lists_.sizeB1() : 1;
                 p_ = std::min(capacity_, p_ + std::max(delta1, (size_t)1));
                 if (!replaceLocked(h2)) return ABANDONED_SET;
-                b1_.erase(h2);
-                t2_.push_front(hashes);
+                lists_.promoteB1toT2(hashes);
                 return NO_ERR;
             }
 
-            if (b2_.contains(h2)) {
-                size_t delta2 = b2_.size() > 0 ? b1_.size() / b2_.size() : 1;
+            if (lists_.containsB2(h2)) {
+                size_t delta2 = lists_.sizeB2() > 0 ? lists_.sizeB1() / lists_.sizeB2() : 1;
                 size_t dec = std::max(delta2, (size_t)1);
                 p_ = (p_ >= dec) ? p_ - dec : 0;
                 if (!replaceLocked(h2)) return ABANDONED_SET;
-                b2_.erase(h2);
-                t2_.push_front(hashes);
+                lists_.promoteB2toT2(hashes);
                 return NO_ERR;
             }
 
             if (!evictLocked()) return ABANDONED_SET;
-            t1_.push_front(hashes);
+            lists_.pushT1(hashes);
             return NO_ERR;
         }
 
         Error EvictAndSet(const std::string& key, const Value& val) {
             std::lock_guard<SpinLock> guard(arcLock_);
-            promoteBuf_.drain(t1_, t2_);
+            drainPromoteBuf();
 
             bool evicted = false;
-            if (!t1_.empty() && (t1_.size() > p_ || t2_.empty())) {
-                HashPair old = t1_.back();
+            if (!lists_.emptyT1() && (lists_.sizeT1() > p_ || lists_.emptyT2())) {
+                HashPair old = lists_.backT1();
                 auto result = store_.FindAndEraseByHash(old);
                 if (result.err == NO_ERR) {
-                    t1_.pop_back();
-                    b1_.push_front(old);
+                    lists_.popBackT1();
+                    lists_.pushB1(old);
                     if (result.value) evictionCallback_(*result.value);
                     evicted = true;
                 }
             }
-            if (!evicted && !t2_.empty()) {
-                HashPair old = t2_.back();
+            if (!evicted && !lists_.emptyT2()) {
+                HashPair old = lists_.backT2();
                 auto result = store_.FindAndEraseByHash(old);
                 if (result.err == NO_ERR) {
-                    t2_.pop_back();
-                    b2_.push_front(old);
+                    lists_.popBackT2();
+                    lists_.pushB2(old);
                     if (result.value) evictionCallback_(*result.value);
                     evicted = true;
                 }
@@ -842,682 +1017,35 @@ namespace NuAtlas {
             if (result.err != NO_ERR) return result.err;
 
             if (!result.inserted) {
-                if (t1_.contains(h2)) {
-                    t1_.erase(h2);
-                    t2_.push_front(hashes);
-                } else if (t2_.contains(h2)) {
-                    t2_.splice_front(h2);
+                uint8_t lid = lists_.whichList(h2);
+                if (lid == 0) {
+                    lists_.promoteT1toT2(hashes);
+                } else if (lid == 1) {
+                    lists_.spliceFrontT2(h2);
                 }
                 return NO_ERR;
             }
 
-            if (b1_.contains(h2)) {
-                size_t delta1 = b1_.size() > 0 ? b2_.size() / b1_.size() : 1;
+            if (lists_.containsB1(h2)) {
+                size_t delta1 = lists_.sizeB1() > 0 ? lists_.sizeB2() / lists_.sizeB1() : 1;
                 p_ = std::min(capacity_, p_ + std::max(delta1, (size_t)1));
                 if (!replaceLocked(h2)) return ABANDONED_SET;
-                b1_.erase(h2);
-                t2_.push_front(hashes);
+                lists_.promoteB1toT2(hashes);
                 return NO_ERR;
             }
 
-            if (b2_.contains(h2)) {
-                size_t delta2 = b2_.size() > 0 ? b1_.size() / b2_.size() : 1;
+            if (lists_.containsB2(h2)) {
+                size_t delta2 = lists_.sizeB2() > 0 ? lists_.sizeB1() / lists_.sizeB2() : 1;
                 size_t dec = std::max(delta2, (size_t)1);
                 p_ = (p_ >= dec) ? p_ - dec : 0;
                 if (!replaceLocked(h2)) return ABANDONED_SET;
-                b2_.erase(h2);
-                t2_.push_front(hashes);
+                lists_.promoteB2toT2(hashes);
                 return NO_ERR;
             }
 
             if (!evictLocked()) return ABANDONED_SET;
-            t1_.push_front(hashes);
+            lists_.pushT1(hashes);
             return NO_ERR;
-        }
-    };
-
-    static constexpr uint8_t AUG_REMARC_MAX = 15;
-    static constexpr uint8_t AUG_DECAY_NUM = 7;
-    static constexpr uint8_t AUG_DECAY_DEN = 8;
-
-    static inline uint8_t augDecayR(uint8_t r) {
-        return (uint8_t)((uint16_t)r * AUG_DECAY_NUM / AUG_DECAY_DEN);
-    }
-    static inline uint8_t augBoostR(uint8_t r) {
-        uint16_t boosted = (uint16_t)r + (uint16_t)(AUG_REMARC_MAX - r) * 2 / 15;
-        return boosted < AUG_REMARC_MAX ? (uint8_t)boosted : AUG_REMARC_MAX;
-    }
-    static inline uint8_t augBoostF(uint8_t f) {
-        uint16_t boosted = (uint16_t)f + (uint16_t)(AUG_REMARC_MAX - f) * 1 / 15;
-        return boosted < AUG_REMARC_MAX ? (uint8_t)boosted : AUG_REMARC_MAX;
-    }
-    static inline uint8_t augGetR(uint8_t s) { return s & 0xF; }
-    static inline uint8_t augGetF(uint8_t s) { return (s >> 4) & 0xF; }
-    static inline uint8_t augPack(uint8_t r, uint8_t f) { return (f << 4) | r; }
-
-    // =================================================================
-    //  AugAdaptScorer: value-agnostic prediction + adaptive switching
-    // =================================================================
-    //
-    //  Tracks per-key prediction state (epoch, avgGap, r/f state) and
-    //  provides eviction victim selection via adaptive heap/LRU switching.
-    //  Operates purely on uint64_t h2 + HashPair — no Value dependency.
-    //
-    //  The cache calls:
-    //    touchKey()      — on every access (hit or miss)
-    //    selectVictim()  — during eviction, returns HashPair of best victim
-    //    setTier()       — when moving keys between ARC lists
-    //    onGhostHit()    — when a key is found in a ghost list
-    //    eraseKey()      — permanent removal
-
-    class AugAdaptScorer {
-        static constexpr uint64_t TOMBSTONE = UINT64_MAX;
-        static constexpr double STATS_ALPHA = 0.002;
-        static constexpr double REGRET_ALPHA = 0.001;
-
-        struct Slot {
-            uint64_t h2 = 0;
-            HashPair hashes;
-            uint32_t lastEpoch = 0;
-            uint32_t avgGap = 0;
-            uint8_t state = 0;
-            uint8_t tier = 0;
-            uint64_t version = 0;
-        };
-
-        struct HeapEntry {
-            uint64_t predictedNext;
-            uint64_t h2;
-            uint64_t version;
-            bool operator<(const HeapEntry& o) const {
-                if (predictedNext != o.predictedNext) return predictedNext < o.predictedNext;
-                return version < o.version;
-            }
-        };
-
-        std::vector<Slot> slots_;
-        size_t mask_;
-        std::priority_queue<HeapEntry> heap_;
-        uint32_t epoch_ = 0;
-        double popMeanGap_ = 0.0;
-        double popM2Gap_ = 0.0;
-        double regretEMA_ = 0.5;
-        bool adaptive_ = false;
-
-        Slot* probe(uint64_t h2) {
-            size_t idx = h2 & mask_;
-            while (true) {
-                Slot& s = slots_[idx];
-                if (s.h2 == h2) return &s;
-                if (s.h2 == 0) return nullptr;
-                idx = (idx + 1) & mask_;
-            }
-        }
-
-        Slot* probeOrInsert(uint64_t h2) {
-            size_t idx = h2 & mask_;
-            size_t tomb = SIZE_MAX;
-            while (true) {
-                Slot& s = slots_[idx];
-                if (s.h2 == h2) return &s;
-                if (s.h2 == TOMBSTONE && tomb == SIZE_MAX) tomb = idx;
-                if (s.h2 == 0) {
-                    if (tomb != SIZE_MAX) idx = tomb;
-                    slots_[idx] = {};
-                    slots_[idx].h2 = h2;
-                    return &slots_[idx];
-                }
-                idx = (idx + 1) & mask_;
-            }
-        }
-
-        void pushToHeap(uint64_t h2) {
-            if (!adaptive_) return;
-            Slot* s = probe(h2);
-            if (!s) return;
-            s->version++;
-            uint64_t pred = (s->avgGap > 0)
-                ? (uint64_t)s->lastEpoch + s->avgGap
-                : (uint64_t)epoch_;
-            heap_.push({pred, h2, s->version});
-        }
-
-        void updateAdaptiveFlag() {
-            double cv = (popMeanGap_ > 1.0)
-                ? std::sqrt(std::max(0.0, popM2Gap_)) / popMeanGap_
-                : 1.0;
-            adaptive_ = (std::max(0.0, 1.0 - cv * 3.0) *
-                         std::max(0.0, 1.0 - regretEMA_)) > 0.5;
-        }
-
-    public:
-        AugAdaptScorer(size_t capacity) {
-            size_t sz = 1;
-            while (sz < capacity * 2) sz <<= 1;
-            slots_.resize(sz);
-            mask_ = sz - 1;
-        }
-
-        void touchKey(uint64_t h2, HashPair hp, uint8_t tier) {
-            Slot* s = probeOrInsert(h2);
-            s->hashes = hp;
-            uint32_t gap = epoch_ - s->lastEpoch;
-            s->lastEpoch = epoch_;
-            if (gap > 0) s->avgGap = s->avgGap * 3 / 4 + gap / 4;
-
-            uint8_t r = augGetR(s->state), f = augGetF(s->state);
-            for (uint32_t i = 0; i < gap && r > 0; i++) r = augDecayR(r);
-            r = augBoostR(r);
-            f = augBoostF(f);
-            s->state = augPack(r, f);
-
-            if (tier <= 2) {
-                double g = (double)s->avgGap;
-                double delta = g - popMeanGap_;
-                popMeanGap_ += STATS_ALPHA * delta;
-                popM2Gap_ += STATS_ALPHA * delta * (g - popMeanGap_);
-                updateAdaptiveFlag();
-            }
-            pushToHeap(h2);
-        }
-
-        HashPair selectVictim(uint8_t targetTier) {
-            if (adaptive_) {
-                HashPair bestHashes{};
-                uint64_t bestPred = 0;
-                size_t attempts = 0;
-                while (!heap_.empty() && attempts < 64) {
-                    attempts++;
-                    HeapEntry top = heap_.top();
-                    Slot* s = probe(top.h2);
-                    if (!s || s->version != top.version || s->tier != targetTier) {
-                        heap_.pop(); continue;
-                    }
-                    if (top.predictedNext > bestPred) {
-                        bestPred = top.predictedNext;
-                        bestHashes = s->hashes;
-                    }
-                    heap_.pop();
-                }
-                if (bestHashes.h2 != 0) return bestHashes;
-            }
-            return {};
-        }
-
-        bool isAdaptive() const { return adaptive_; }
-
-        void onGhostHit(uint64_t h2) {
-            Slot* s = probe(h2);
-            if (!s || s->avgGap == 0 || s->lastEpoch == 0) return;
-            uint32_t actualGap = epoch_ - s->lastEpoch;
-            double regret = (double)((actualGap > s->avgGap)
-                ? (actualGap - s->avgGap) : (s->avgGap - actualGap))
-                / (double)s->avgGap;
-            regret = std::min(regret, 5.0);
-            regretEMA_ = (1.0 - REGRET_ALPHA) * regretEMA_ + REGRET_ALPHA * regret;
-            updateAdaptiveFlag();
-        }
-
-        void setTier(uint64_t h2, uint8_t tier) {
-            Slot* s = probe(h2);
-            if (s) s->tier = tier;
-        }
-
-        void eraseKey(uint64_t h2) {
-            size_t idx = h2 & mask_;
-            while (true) {
-                if (slots_[idx].h2 == h2) {
-                    size_t next = (idx + 1) & mask_;
-                    while (slots_[next].h2 != 0) {
-                        size_t ideal = slots_[next].h2 & mask_;
-                        size_t dist_next = (next - ideal) & mask_;
-                        size_t dist_idx = (next - idx) & mask_;
-                        if (dist_next >= dist_idx) {
-                            slots_[idx] = slots_[next];
-                            idx = next;
-                        }
-                        next = (next + 1) & mask_;
-                    }
-                    slots_[idx] = {};
-                    return;
-                }
-                if (slots_[idx].h2 == 0) return;
-                idx = (idx + 1) & mask_;
-            }
-        }
-
-        void initKey(uint64_t h2, HashPair hp, uint8_t tier) {
-            Slot* s = probeOrInsert(h2);
-            s->hashes = hp;
-            s->state = augPack(AUG_REMARC_MAX, 0);
-            s->lastEpoch = epoch_;
-            s->avgGap = 0;
-            s->tier = tier;
-            pushToHeap(h2);
-        }
-
-        uint32_t epoch() const { return epoch_; }
-        void advanceEpoch() { epoch_++; }
-
-        uint8_t demoteCheck(uint64_t h2, uint8_t demoteThresh) {
-            Slot* s = probe(h2);
-            if (!s) return 0;
-            uint32_t gap = epoch_ - s->lastEpoch;
-            uint8_t r = augGetR(s->state), f = augGetF(s->state);
-            for (uint32_t i = 0; i < gap && r > 0; i++) r = augDecayR(r);
-            if (demoteThresh > 0 && (uint16_t)r + f <= demoteThresh) {
-                s->lastEpoch = epoch_;
-                s->state = augPack(augDecayR(augGetR(s->state)), f);
-                return 1;
-            }
-            s->lastEpoch = epoch_;
-            pushToHeap(h2);
-            return 0;
-        }
-
-        double confidence() const {
-            double cv = (popMeanGap_ > 1.0)
-                ? std::sqrt(std::max(0.0, popM2Gap_)) / popMeanGap_
-                : 1.0;
-            return std::max(0.0, 1.0 - cv * 3.0) *
-                   std::max(0.0, 1.0 - regretEMA_);
-        }
-    };
-
-    // =================================================================
-    //  AugAdaptStore: ARC cache with AugAdaptScorer
-    // =================================================================
-    //
-    //  Uses CMap<Value> for storage + FlatList for ARC structure +
-    //  AugAdaptScorer for eviction decisions. Same public interface as
-    //  ConcurrentARC so it's a drop-in Store replacement.
-
-    template <class Value>
-        requires std::is_move_constructible_v<Value> && std::is_trivially_copyable_v<Value>
-    class AugAdaptStore {
-    public:
-        using EvictionCallback = std::function<void(const Value&)>;
-
-    private:
-        enum Tier : uint8_t { NONE = 0, T1 = 1, T2 = 2, B1 = 3, B2 = 4 };
-        static constexpr uint8_t demoteThresh_ = 4;
-
-        CMap<Value> store_;
-        FlatList t1_, t2_, b1_, b2_;
-        AugAdaptScorer scorer_;
-        SpinLock lock_;
-        PromoteBuf promoteBuf_;
-        size_t capacity_;
-        size_t p_;
-        EvictionCallback evictionCallback_ = [](const Value&) {};
-
-        bool evictAndGhost(Tier targetTier, Tier ghostTier) {
-            HashPair victimHashes = scorer_.selectVictim(targetTier);
-            uint64_t victimH2 = victimHashes.h2;
-            bool usedHeap = (victimH2 != 0);
-
-            if (!usedHeap) {
-                auto& l = (targetTier == T1) ? t1_ : t2_;
-                if (l.empty()) return false;
-                victimHashes = l.back();
-                victimH2 = victimHashes.h2;
-            }
-
-            auto result = store_.FindAndEraseByHash(victimHashes);
-            if (result.err != NO_ERR) return false;
-
-            if (targetTier == T1) t1_.erase(victimH2);
-            else t2_.erase(victimH2);
-
-            if (ghostTier != NONE) {
-                auto& gl = (ghostTier == B1) ? b1_ : b2_;
-                gl.push_front(victimHashes);
-                scorer_.setTier(victimH2, ghostTier);
-            } else {
-                scorer_.eraseKey(victimH2);
-            }
-            if (result.value) evictionCallback_(*result.value);
-            return true;
-        }
-
-        bool replaceLocked(HashPair hp) {
-            bool evictT1 = !t1_.empty() && (t1_.size() > p_ ||
-                (b2_.contains(hp.h2) && t1_.size() == p_));
-            if (evictT1 && !t1_.empty()) {
-                return evictAndGhost(T1, B1);
-            } else if (!t2_.empty()) {
-                return evictAndGhost(T2, B2);
-            }
-            return false;
-        }
-
-        bool evictLocked() {
-            if (t1_.size() + b1_.size() >= capacity_) {
-                if (t1_.size() < capacity_ && !b1_.empty()) {
-                    uint64_t h2 = b1_.back().h2;
-                    b1_.pop_back();
-                    scorer_.eraseKey(h2);
-                } else if (!t1_.empty()) {
-                    if (!evictAndGhost(T1, NONE)) return false;
-                }
-            }
-            if (t1_.size() + t2_.size() + b1_.size() + b2_.size() >= 2 * capacity_) {
-                if (!b2_.empty()) {
-                    uint64_t h2 = b2_.back().h2;
-                    b2_.pop_back();
-                    scorer_.eraseKey(h2);
-                } else if (!t2_.empty()) {
-                    if (!evictAndGhost(T2, NONE)) return false;
-                }
-            }
-            return true;
-        }
-
-    public:
-        AugAdaptStore(size_t cap, CMapAllocFn af = CMapDefaultAlloc, CMapFreeFn ff = CMapDefaultFree)
-            : store_(cap, af, ff), t1_(cap), t2_(cap), b1_(cap), b2_(cap),
-              scorer_(cap), capacity_(cap), p_(0) {}
-
-        void setWakeCallback(std::function<void()> cb) { promoteBuf_.setWakeCallback(std::move(cb)); }
-
-        void drainPromotes() {
-            std::lock_guard<SpinLock> guard(lock_);
-            promoteBuf_.drain(t1_, t2_);
-        }
-
-        void SetEvictionCallback(EvictionCallback cb) { evictionCallback_ = cb; }
-
-        uint8_t GetDesire(uint64_t h2) const {
-            size_t idx = h2 & scorer_.mask_;
-            while (true) {
-                const auto& s = scorer_.slots_[idx];
-                if (s.h2 == h2) return augGetR(s.state);
-                if (s.h2 == 0) return 0;
-                idx = (idx + 1) & scorer_.mask_;
-            }
-        }
-
-        std::optional<Value> Find(const std::string& key) {
-            HashPair hashes = HashKey(key);
-            auto val = store_.FindByHash(hashes);
-            if (!val) return std::nullopt;
-            promoteBuf_.enqueue(hashes);
-            return val;
-        }
-
-        template <typename Fn>
-        Error UpdateInPlace(const std::string& key, Fn&& fn) {
-            return store_.UpdateInPlace(key, std::forward<Fn>(fn));
-        }
-
-        template <typename Fn>
-        Error UpdateInPlaceByHash(const HashPair& hashes, Fn&& fn) {
-            return store_.UpdateInPlaceByHash(hashes, std::forward<Fn>(fn));
-        }
-
-        typename CMap<Value>::FindAndEraseResult Erase(const std::string& key) {
-            std::lock_guard<SpinLock> guard(lock_);
-            promoteBuf_.drain(t1_, t2_);
-            HashPair hashes = HashKey(key);
-            uint64_t h2 = hashes.h2;
-            t1_.erase(h2);
-            t2_.erase(h2);
-            b1_.erase(h2);
-            b2_.erase(h2);
-            scorer_.eraseKey(h2);
-            return store_.FindAndErase(key);
-        }
-
-        typename CMap<Value>::FindAndEraseResult EraseByHash(const HashPair& hashes) {
-            std::lock_guard<SpinLock> guard(lock_);
-            promoteBuf_.drain(t1_, t2_);
-            uint64_t h2 = hashes.h2;
-            t1_.erase(h2);
-            t2_.erase(h2);
-            b1_.erase(h2);
-            b2_.erase(h2);
-            scorer_.eraseKey(h2);
-            return store_.FindAndEraseByHash(hashes);
-        }
-
-        Error Set(const std::string& key, const Value& val) {
-            std::lock_guard<SpinLock> guard(lock_);
-            promoteBuf_.drain(t1_, t2_);
-            scorer_.advanceEpoch();
-
-            HashPair hashes = HashKey(key);
-            uint64_t h2 = hashes.h2;
-
-            AugAdaptScorer* sc = &scorer_;
-            (void)sc;
-
-            bool inT1 = t1_.contains(h2);
-            bool inT2 = t2_.contains(h2);
-            bool inB1 = b1_.contains(h2);
-            bool inB2 = b2_.contains(h2);
-
-            if (inT1 || inT2) {
-                uint8_t tier = inT1 ? T1 : T2;
-                scorer_.touchKey(h2, hashes, tier);
-
-                if (inT1) {
-                    t1_.erase(h2);
-                    t2_.push_front(hashes);
-                    scorer_.setTier(h2, T2);
-                } else {
-                    if (scorer_.demoteCheck(h2, demoteThresh_)) {
-                        t2_.erase(h2);
-                        t1_.push_front(hashes);
-                        scorer_.setTier(h2, T1);
-                    } else {
-                        t2_.splice_front(h2);
-                    }
-                }
-                return store_.Set(key, val).err;
-            }
-
-            Tier ghostTier = NONE;
-            if (inB1) {
-                scorer_.onGhostHit(h2);
-                size_t d = b1_.size() > 0 ? std::max(b2_.size() / b1_.size(), (size_t)1) : 1;
-                p_ = std::min(capacity_, p_ + d);
-                b1_.erase(h2);
-                ghostTier = B1;
-            } else if (inB2) {
-                scorer_.onGhostHit(h2);
-                size_t d = b2_.size() > 0 ? std::max(b1_.size() / b2_.size(), (size_t)1) : 1;
-                size_t dec = std::max(d, (size_t)1);
-                p_ = (p_ >= dec) ? p_ - dec : 0;
-                b2_.erase(h2);
-                ghostTier = B2;
-            }
-
-            if (ghostTier != NONE) {
-                if (!evictLocked()) return ABANDONED_SET;
-                if (!replaceLocked(hashes)) return ABANDONED_SET;
-                scorer_.touchKey(h2, hashes, T2);
-                t2_.push_front(hashes);
-                scorer_.setTier(h2, T2);
-            } else {
-                if (!evictLocked()) return ABANDONED_SET;
-                scorer_.initKey(h2, hashes, T1);
-                t1_.push_front(hashes);
-            }
-
-            return store_.Set(key, val).err;
-        }
-    };
-
-    template<typename Value>
-        requires std::is_move_constructible_v<Value> && std::is_trivially_copyable_v<Value>
-    class ConcurrentLRU {
-        CMap<Value> store_;
-        FlatList lru_;
-        SpinLock lock_;
-        PromoteBuf promoteBuf_;
-        size_t capacity_;
-        using EvictionCallback = std::function<void(const Value&)>;
-        EvictionCallback evictionCallback_;
-
-        bool evictTailLocked() {
-            if (lru_.empty()) return false;
-            HashPair victim = lru_.back();
-            auto result = store_.FindAndEraseByHash(victim);
-            if (result.err != NO_ERR) return false;
-            lru_.pop_back();
-            if (result.value && evictionCallback_) evictionCallback_(*result.value);
-            return true;
-        }
-
-    public:
-        ConcurrentLRU(size_t cap,
-                      CMapAllocFn af = CMapDefaultAlloc,
-                      CMapFreeFn ff = CMapDefaultFree)
-            : store_(cap, af, ff), lru_(2 * cap), capacity_(cap) {}
-
-        ~ConcurrentLRU() = default;
-
-        void setWakeCallback(std::function<void()> cb) { promoteBuf_.setWakeCallback(std::move(cb)); }
-
-        void drainPromotes() {
-            std::lock_guard<SpinLock> guard(lock_);
-            promoteBuf_.drainSingle(lru_);
-        }
-
-        void SetEvictionCallback(EvictionCallback cb) {
-            evictionCallback_ = std::move(cb);
-        }
-
-        bool ForceEvictOne() {
-            std::lock_guard<SpinLock> guard(lock_);
-            promoteBuf_.drainSingle(lru_);
-            return evictTailLocked();
-        }
-
-        uint8_t GetDesire(uint64_t) const { return 0; }
-
-        std::optional<Value> Find(const std::string& key) {
-            HashPair hashes = HashKey(key);
-            auto val = store_.FindByHash(hashes);
-            if (!val) return std::nullopt;
-            promoteBuf_.enqueue(hashes);
-            return val;
-        }
-
-        template <typename Fn>
-        Error UpdateInPlace(const std::string& key, Fn&& fn) {
-            return store_.UpdateInPlace(key, std::forward<Fn>(fn));
-        }
-
-        template <typename Fn>
-        Error UpdateInPlaceByHash(const HashPair& hashes, Fn&& fn) {
-            return store_.UpdateInPlaceByHash(hashes, std::forward<Fn>(fn));
-        }
-
-        typename CMap<Value>::FindAndEraseResult Erase(const std::string& key) {
-            std::lock_guard<SpinLock> guard(lock_);
-            promoteBuf_.drainSingle(lru_);
-            HashPair hashes = HashKey(key);
-            lru_.erase(hashes.h2);
-            return store_.FindAndErase(std::string_view(key));
-        }
-
-        auto EraseByHash(const HashPair& hashes) {
-            std::lock_guard<SpinLock> guard(lock_);
-            promoteBuf_.drainSingle(lru_);
-            lru_.erase(hashes.h2);
-            return store_.FindAndEraseByHash(hashes);
-        }
-
-        Error Set(const std::string& key, const Value& val) {
-            std::lock_guard<SpinLock> guard(lock_);
-            promoteBuf_.drainSingle(lru_);
-            HashPair hashes = HashKey(key);
-            uint64_t h2 = hashes.h2;
-            CMapSetResult result = store_.Set(key, val);
-            if (result.err != NO_ERR) return result.err;
-
-            if (!result.inserted) {
-                lru_.splice_front(h2);
-                return NO_ERR;
-            }
-
-            while (lru_.size() >= capacity_) {
-                if (!evictTailLocked()) break;
-            }
-            lru_.push_front(hashes);
-            return NO_ERR;
-        }
-
-        Error EvictAndSet(const std::string& key, const Value& val) {
-            std::lock_guard<SpinLock> guard(lock_);
-            promoteBuf_.drainSingle(lru_);
-
-            if (!evictTailLocked()) return ABANDONED_SET;
-
-            HashPair hashes = HashKey(key);
-            uint64_t h2 = hashes.h2;
-            CMapSetResult result = store_.Set(key, val);
-            if (result.err != NO_ERR) return result.err;
-
-            if (!result.inserted) {
-                lru_.splice_front(h2);
-                return NO_ERR;
-            }
-
-            while (lru_.size() >= capacity_) {
-                if (!evictTailLocked()) break;
-            }
-            lru_.push_front(hashes);
-            return NO_ERR;
-        }
-
-        bool MigrateAndLeaveSentinel(const HashPair&, int) { return false; }
-        int FindSentinel(const HashPair&) const { return -1; }
-    };
-
-    template<typename Value>
-        requires std::is_move_constructible_v<Value> && std::is_trivially_copyable_v<Value>
-    class RawCMapStore {
-        CMap<Value> store_;
-    public:
-        RawCMapStore(size_t cap,
-                     CMapAllocFn af = CMapDefaultAlloc,
-                     CMapFreeFn ff = CMapDefaultFree)
-            : store_(cap, af, ff) {}
-
-        void SetEvictionCallback(auto) {}
-        void setWakeCallback(std::function<void()>) {}
-        void drainPromotes() {}
-
-        uint8_t GetDesire(uint64_t) const { return 0; }
-
-        std::optional<Value> Find(const std::string& key) {
-            return store_.Find(std::string_view(key));
-        }
-
-        Error UpdateInPlace(const std::string& key, auto&& fn) {
-            return store_.UpdateInPlace(std::string_view(key), std::forward<decltype(fn)>(fn));
-        }
-
-        Error UpdateInPlaceByHash(const HashPair& hashes, auto&& fn) {
-            return store_.UpdateInPlaceByHash(hashes, std::forward<decltype(fn)>(fn));
-        }
-
-        typename CMap<Value>::FindAndEraseResult Erase(const std::string& key) {
-            return store_.FindAndErase(std::string_view(key));
-        }
-
-        auto EraseByHash(const HashPair& hashes) {
-            return store_.FindAndEraseByHash(hashes);
-        }
-
-        bool MigrateAndLeaveSentinel(const HashPair&, int) { return false; }
-        int FindSentinel(const HashPair&) const { return -1; }
-
-        Error Set(const std::string& key, const Value& val) {
-            auto r = store_.Set(std::string_view(key), val);
-            return r.err;
         }
     };
 

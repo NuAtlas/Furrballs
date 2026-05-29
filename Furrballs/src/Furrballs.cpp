@@ -7,7 +7,6 @@
 
 #include "Furrballs.h"
 #include "CMap.h"
-#include "NativeStore.h"
 #undef max
 #undef min
 #include <cstring>
@@ -81,50 +80,6 @@ namespace NuAtlas {
         GlobalNumaState globalNumaState;
     }
 }
-
-struct FlatDesireMap {
-    struct Slot { uint64_t h2; uint8_t desire; };
-    static constexpr uint64_t EMPTY = ~0ULL;
-
-    Slot* slots_ = nullptr;
-    size_t mask_ = 0;
-
-    void init(size_t capacity) {
-        size_t sz = 64;
-        while (sz < capacity) sz <<= 1;
-        mask_ = sz - 1;
-        slots_ = new Slot[sz]();
-        for (size_t i = 0; i < sz; i++) slots_[i].h2 = EMPTY;
-    }
-
-    ~FlatDesireMap() { delete[] slots_; }
-
-    uint8_t get(uint64_t h2) const noexcept {
-        if (!slots_) return 0;
-        size_t idx = h2 & mask_;
-        for (size_t i = 0; i <= mask_; i++) {
-            Slot& s = slots_[idx];
-            if (s.h2 == h2) return s.desire;
-            if (s.h2 == EMPTY) return 0;
-            idx = (idx + 1) & mask_;
-        }
-        return 0;
-    }
-
-    void set(uint64_t h2, uint8_t desire) noexcept {
-        if (!slots_) return;
-        size_t idx = h2 & mask_;
-        for (size_t i = 0; i <= mask_; i++) {
-            Slot& s = slots_[idx];
-            if (s.h2 == h2 || s.h2 == EMPTY) {
-                s.h2 = h2;
-                s.desire = desire;
-                return;
-            }
-            idx = (idx + 1) & mask_;
-        }
-    }
-};
 
 class BlockedBloomFilter {
     static constexpr size_t kBlockBytes = 64;
@@ -254,18 +209,10 @@ struct PerNodeDetails{
     Numatic::NumaLocalMemoryResource nodeMR;
     std::pmr::vector<Page> NodePages;
     typename Policy::template Store<KeyMeta> KeyStore;
-    FlatDesireMap ShadowDesire;
-    SpinLock DesireLock;
-    std::atomic<uint8_t> MinDesire{0};
     std::atomic<size_t> CurrentPage{0};
     std::atomic<size_t> StagingPageIdx{SIZE_MAX};
     void* PhysicalPageInNode = nullptr;
-    float EvictThresh = 0.5f;
-    size_t PrevMigrationCount = 0;
-    size_t PrevDeadKeys = 0;
-    float AdaptiveStep = 0.05f;
     BlockedBloomFilter KeyBloom;
-    uint8_t MaxDeadAge = 8;
 
     OpenIdx<FatAnnexEntry> annexIdx;
     SpinLock annexLock;
@@ -436,7 +383,7 @@ struct PerNodeDetails{
     }
 
     PerNodeDetails(size_t arcCap, CMapAllocFn af = CMapDefaultAlloc, CMapFreeFn ff = CMapDefaultFree, bool useAnnex = false, size_t annexCap = 0)
-         : NodePages(&nodeMR), KeyStore(arcCap, af, ff), annexIdx(annexCap > 0 ? annexCap : 1), annexEnabled(useAnnex) { if constexpr (Policy::HasDesire && Policy::HasPerKeyState) ShadowDesire.init(arcCap * 2); }
+         : NodePages(&nodeMR), KeyStore(arcCap, af, ff), annexIdx(annexCap > 0 ? annexCap : 1), annexEnabled(useAnnex) {}
 };
 
 template<typename Policy>
@@ -471,7 +418,7 @@ NuAtlas::FurrBall<Policy>::FurrBall(const FurrConfig& config, size_t numPages) n
       BloomFilterBytes(config.BloomFilterBytes),
        HashRouted(config.HashRouted),
        UseAnnex(config.EnableAnnex),
-    policyConfig(Policy::MakeConfig(config.remarcConfig)),
+    policyConfig(Policy::MakeConfig()),
     DataMembers(new ImplDetail())
 {
 }
@@ -944,47 +891,6 @@ void NuAtlas::FurrBall<Policy>::ScanAndExecute(int nodeID) noexcept {
 
         if constexpr (Policy::HasDesire) {
             details->MinDesire.store(maxEvictScore, std::memory_order_relaxed);
-        }
-    }
-}
-
-// =====================================================================
-//  UpdateMinDesire: lightweight scan to enable migration gate
-// =====================================================================
-
-template<typename Policy>
-void NuAtlas::FurrBall<Policy>::UpdateMinDesire(int nodeID) noexcept {
-    if (!DataMembers || !DataMembers->privateNumaState) return;
-    if (nodeID < 0 || nodeID >= Detail::globalNumaState.NumaNodeCount) return;
-    auto* details = DataMembers->privateNumaState->NodeDetails[nodeID];
-    if (!details) return;
-
-    if constexpr (Policy::HasDesire && Policy::HasPerKeyState) {
-        uint8_t maxES = 0;
-        for (auto& page : details->NodePages) {
-            PageTier tier = page.Tier.load(std::memory_order_relaxed);
-            if (tier == PageTier::Empty || tier == PageTier::Freeze) continue;
-            for (size_t i = 0; i < page.TempCtrl.size(); i++) {
-                uint8_t es = Policy::EvictScore(page.TempCtrl[i]);
-                if (es > maxES) maxES = es;
-            }
-        }
-        details->MinDesire.store(maxES, std::memory_order_relaxed);
-    } else if constexpr (Policy::HasDesire && !Policy::HasPerKeyState) {
-        uint8_t maxD = 0;
-        for (auto& page : details->NodePages) {
-            PageTier tier = page.Tier.load(std::memory_order_relaxed);
-            if (tier == PageTier::Empty || tier == PageTier::Freeze) continue;
-            for (uint64_t h2 : page.KeyH2) {
-                uint8_t d = details->KeyStore.GetDesire(h2);
-                if (d > maxD) maxD = d;
-            }
-        }
-        details->MinDesire.store(maxD, std::memory_order_relaxed);
-    } else {
-        for (auto& page : details->NodePages) {
-            (void)page.Tier.load(std::memory_order_relaxed);
-            if (!page.TempCtrl.empty()) (void)page.TempCtrl[0];
         }
     }
 }
@@ -2110,12 +2016,7 @@ NuAtlas::FurrBall<Policy>::~FurrBall() noexcept {
 }
 
 // =====================================================================
-//  Explicit instantiations — add new policy types here
+//  Explicit instantiations
 // =====================================================================
 
-template class FurrBall<StandardRemarc>;
 template class FurrBall<ArcPolicy>;
-template class FurrBall<SimpleMigratePolicy>;
-template class FurrBall<AugAdaptPolicy>;
-template class FurrBall<NativeRemarcPolicy>;
-template class FurrBall<LruPolicy>;

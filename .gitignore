@@ -405,10 +405,22 @@ BenchDB_TL/
 /_site/
 
 # Build directories
+build*/
+!buildfast/
 buildasan/
 buildevict/
 buildfast/
+buildcheck/
+buildhost/
+buildrel/
+buildrel_test/
+Benchmark/Benchmark/
 EvictBench/
+
+# Runtime artifacts
+texput.log
+vps-ycsb-*
+io_*/
 
 # LaTeX intermediates
 *.aux
