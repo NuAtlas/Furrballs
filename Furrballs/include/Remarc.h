@@ -17,8 +17,11 @@ namespace NuAtlas
         std::atomic<bool> locked_{false};
     public:
         void lock() noexcept {
-            while (locked_.exchange(true, std::memory_order_acquire)) {
-                _mm_pause();
+            for (;;) {
+                while (locked_.load(std::memory_order_relaxed)) {
+                    _mm_pause();
+                }
+                if (!locked_.exchange(true, std::memory_order_acquire)) return;
             }
         }
         bool try_lock() noexcept {
