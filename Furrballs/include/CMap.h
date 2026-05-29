@@ -666,7 +666,7 @@ namespace NuAtlas {
 
     public:
         ConcurrentARC(size_t cap, CMapAllocFn af = CMapDefaultAlloc, CMapFreeFn ff = CMapDefaultFree)
-            : store_(cap, af, ff), t1_(2 * cap), t2_(2 * cap), b1_(2 * cap), b2_(2 * cap),
+            : store_(cap, af, ff), t1_(cap), t2_(cap), b1_(cap), b2_(cap),
               capacity_(cap), p_(0) {}
 
         void setWakeCallback(std::function<void()> cb) { promoteBuf_.setWakeCallback(std::move(cb)); }
@@ -1215,7 +1215,7 @@ namespace NuAtlas {
 
     public:
         AugAdaptStore(size_t cap, CMapAllocFn af = CMapDefaultAlloc, CMapFreeFn ff = CMapDefaultFree)
-            : store_(cap, af, ff), t1_(2 * cap), t2_(2 * cap), b1_(2 * cap), b2_(2 * cap),
+            : store_(cap, af, ff), t1_(cap), t2_(cap), b1_(cap), b2_(cap),
               scorer_(cap), capacity_(cap), p_(0) {}
 
         void setWakeCallback(std::function<void()> cb) { promoteBuf_.setWakeCallback(std::move(cb)); }
