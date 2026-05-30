@@ -1913,6 +1913,91 @@ BENCHMARK_REGISTER_F(NUMABench_FurrBallRemote, Run)
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
+// ============================================================================
+//  64MB cache / 2M universe — ARC vs LRU eviction pressure
+//  2M keys × 64B = 128MB working set, 64MB cache → ~50% miss rate
+//  Well above per-CCD L3 (32MB on Milan), eviction policy matters here.
+// ============================================================================
+
+// --- ARC vs LRU: Partitioned 4t ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
+    ->Args({4, 65536, 0, 64, 2000000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUTL, Run)
+    ->Args({4, 65536, 0, 64, 2000000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- ARC vs LRU: Shared 4t ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
+    ->Args({4, 65536, 1, 64, 2000000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUTL, Run)
+    ->Args({4, 65536, 1, 64, 2000000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- ARC vs LRU: Zipfian ReadOnly 4t (pure read, no write path drain) ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
+    ->Args({4, 65536, 3, 64, 2000000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUTL, Run)
+    ->Args({4, 65536, 3, 64, 2000000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- ARC vs LRU: Trace 4t ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
+    ->Args({4, 65536, 2, 64, 2000000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUTL, Run)
+    ->Args({4, 65536, 2, 64, 2000000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- ARC vs LRU: 1T baseline ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
+    ->Args({1, 65536, 0, 64, 2000000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUTL, Run)
+    ->Args({1, 65536, 0, 64, 2000000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- TBB + CacheLib baselines at 64MB/2M ---
+BENCHMARK_REGISTER_F(NUMABench_TBB, Run)
+    ->Args({4, 65536, 0, 64, 2000000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+#ifdef USE_CACHELIB
+BENCHMARK_REGISTER_F(NUMABench_CacheLib, Run)
+    ->Args({4, 65536, 0, 64, 2000000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+#endif
+
+// --- 1024B values: 2M keys × 1KB = 2GB working set, 64MB cache = 3.1% hit rate ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
+    ->Args({4, 65536, 0, 1024, 2000000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUTL, Run)
+    ->Args({4, 65536, 0, 1024, 2000000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
 int main(int argc, char** argv) {
     benchmark::Initialize(&argc, argv);
     if (benchmark::ReportUnrecognizedArguments(argc, argv)) return 1;
