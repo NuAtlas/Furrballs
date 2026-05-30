@@ -1203,7 +1203,6 @@ struct AbseilAdapter {
 // --- CacheLib adapter ---
 #ifdef USE_CACHELIB
 #include <cachelib/allocator/CacheAllocator.h>
-#include <filesystem>
 
 struct CacheLibAdapter {
     static constexpr const char* Name = "CacheLib";
@@ -1214,21 +1213,15 @@ struct CacheLibAdapter {
     std::unique_ptr<LruAllocator> cache;
     PoolId pool;
     size_t footprintBytes_ = 0;
-    static int runId;
-    std::string cacheDir;
 
     void create(int, int totalCapacityKB) {
         size_t targetBytes = (size_t)totalCapacityKB * 1024;
         if (targetBytes < TARGET_USABLE_BYTES) targetBytes = TARGET_USABLE_BYTES;
         size_t configSize = targetBytes * 2;
 
-        cacheDir = "/tmp/ycsb_cachelib_" + std::to_string(runId++);
-        mkdir(cacheDir.c_str(), 0755);
-
         LruAllocator::Config config;
         config.setCacheName("ycsb_cl");
         config.setCacheSize(configSize);
-        config.cacheDir = cacheDir;
 
         std::set<uint32_t> allocSizes = {64, 128, 256, 512, 1024, 2048};
         config.setDefaultAllocSizes(allocSizes);
@@ -1260,14 +1253,10 @@ struct CacheLibAdapter {
 
     void destroy() {
         cache.reset();
-        if (!cacheDir.empty()) {
-            std::filesystem::remove_all(cacheDir);
-        }
     }
 
     static int numNodes() { return 0; }
 };
-int CacheLibAdapter::runId = 0;
 #endif
 
 // --- RocksDB LRU Cache adapter ---
