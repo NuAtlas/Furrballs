@@ -1122,20 +1122,15 @@ struct CuckooAdapter {
     }
 
     bool get(const std::string& key, uint8_t* buf, size_t bufSize, size_t& outSize) {
-        try {
-            auto locked = map->lock_table();
-            auto it = locked.find(key);
-            if (it != locked.end()) {
-                outSize = it->second.size();
-                if (bufSize >= outSize) {
-                    memcpy(buf, it->second.data(), outSize);
-                }
-                return true;
+        std::vector<uint8_t> val;
+        if (map->find(key, val)) {
+            outSize = val.size();
+            if (bufSize >= outSize) {
+                memcpy(buf, val.data(), outSize);
             }
-            return false;
-        } catch (...) {
-            return false;
+            return true;
         }
+        return false;
     }
 
     void put(const std::string& key, const uint8_t* data, size_t size) {
