@@ -1154,25 +1154,36 @@ struct CuckooAdapter {
 
 // --- abseil adapter ---
 #ifdef USE_ABSEIL
-#include <absl/container/parallel_flat_hash_map.h>
+#include <absl/container/flat_hash_map.h>
+#include <mutex>
+#include <vector>
 
 struct AbseilAdapter {
     static constexpr const char* Name = "Abseil";
-    using Map = absl::parallel_flat_hash_map<std::string, std::vector<uint8_t>>;
-    Map* map = nullptr;
+    static constexpr size_t kStripes = 64;
+    using InnerMap = absl::flat_hash_map<std::string, std::vector<uint8_t>>;
+    std::vector<InnerMap> maps_;
+    std::vector<std::mutex> mutexes_;
     size_t footprintBytes_ = 0;
 
+    size_t idx(const std::string& key) const {
+        return std::hash<std::string>()(key) % kStripes;
+    }
+
     void create(int, int) {
-        map = new Map();
+        maps_.resize(kStripes);
+        mutexes_ = std::vector<std::mutex>(kStripes);
         footprintBytes_ = 0;
     }
 
     bool get(const std::string& key, uint8_t* buf, size_t bufSize, size_t& outSize) {
-        auto* val = map->get_if(key);
-        if (val) {
-            outSize = val->size();
+        size_t i = idx(key);
+        std::lock_guard<std::mutex> lk(mutexes_[i]);
+        auto it = maps_[i].find(key);
+        if (it != maps_[i].end()) {
+            outSize = it->second.size();
             if (bufSize >= outSize) {
-                memcpy(buf, val->data(), outSize);
+                memcpy(buf, it->second.data(), outSize);
             }
             return true;
         }
@@ -1180,11 +1191,14 @@ struct AbseilAdapter {
     }
 
     void put(const std::string& key, const uint8_t* data, size_t size) {
-        (*map)[key].assign(data, data + size);
+        size_t i = idx(key);
+        std::lock_guard<std::mutex> lk(mutexes_[i]);
+        maps_[i][key].assign(data, data + size);
     }
 
     void destroy() {
-        delete map; map = nullptr;
+        maps_.clear();
+        mutexes_.clear();
     }
 
     static int numNodes() { return 0; }
