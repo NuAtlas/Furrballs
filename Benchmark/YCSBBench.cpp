@@ -1203,6 +1203,7 @@ struct AbseilAdapter {
 // --- CacheLib adapter ---
 #ifdef USE_CACHELIB
 #include <cachelib/allocator/CacheAllocator.h>
+#include <filesystem>
 
 struct CacheLibAdapter {
     static constexpr const char* Name = "CacheLib";
@@ -1260,8 +1261,7 @@ struct CacheLibAdapter {
     void destroy() {
         cache.reset();
         if (!cacheDir.empty()) {
-            std::string rm = "rm -rf " + cacheDir;
-            system(rm.c_str());
+            std::filesystem::remove_all(cacheDir);
         }
     }
 
