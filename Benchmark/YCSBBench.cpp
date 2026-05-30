@@ -1112,7 +1112,7 @@ struct TBBAdapter {
 
 struct CuckooAdapter {
     static constexpr const char* Name = "Cuckoo";
-    using Map = cuckoohash_map<std::string, std::vector<uint8_t>>;
+    using Map = libcuckoo::cuckoohash_map<std::string, std::vector<uint8_t>>;
     Map* map = nullptr;
     size_t footprintBytes_ = 0;
 
