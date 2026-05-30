@@ -1987,6 +1987,35 @@ BENCHMARK_REGISTER_F(NUMABench_CacheLib, Run)
     ->Unit(benchmark::kMicrosecond);
 #endif
 
+// --- SN (single-node, no NUMA) baselines ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallSN, Run)
+    ->Args({4, 65536, 0, 64, 2000000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUSN, Run)
+    ->Args({4, 65536, 0, 64, 2000000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- RR (round-robin, NUMA-blind) baseline ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallRR, Run)
+    ->Args({4, 65536, 0, 64, 2000000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- CN (cross-node) baseline ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallCN, Run)
+    ->Args({4, 65536, 0, 64, 2000000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- LRU CN baseline ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUCN, Run)
+    ->Args({4, 65536, 0, 64, 2000000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
 // --- 1024B values: 2M keys × 1KB = 2GB working set, 64MB cache = 3.1% hit rate ---
 BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
     ->Args({4, 65536, 0, 1024, 2000000})
