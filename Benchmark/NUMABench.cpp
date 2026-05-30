@@ -2027,6 +2027,102 @@ BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUTL, Run)
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
+// ============================================================================
+//  Stress tests: find the deferred cache breaking point
+//
+//  1. Scale: 8T/16T/32T on 4 NUMA nodes (2/4/8 threads per SpinLock)
+//  2. UniformRO (workload=4): no Zipfian skew, every key accessed equally
+//  3. ReadOnly (workload=3): reproduces YCSB-C no-annex p50_get=1.3us anomaly
+// ============================================================================
+
+// --- Scale: Partitioned 8T (2 threads per lock) ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
+    ->Args({8, 65536, 0, 64, 2000000})
+    ->Iterations(1)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUTL, Run)
+    ->Args({8, 65536, 0, 64, 2000000})
+    ->Iterations(1)->Unit(benchmark::kMicrosecond);
+
+// --- Scale: Partitioned 16T (4 threads per lock) ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
+    ->Args({16, 65536, 0, 64, 2000000})
+    ->Iterations(1)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUTL, Run)
+    ->Args({16, 65536, 0, 64, 2000000})
+    ->Iterations(1)->Unit(benchmark::kMicrosecond);
+
+// --- Scale: Partitioned 32T (8 threads per lock) ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
+    ->Args({32, 65536, 0, 64, 2000000})
+    ->Iterations(1)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUTL, Run)
+    ->Args({32, 65536, 0, 64, 2000000})
+    ->Iterations(1)->Unit(benchmark::kMicrosecond);
+
+// --- UniformRO 4T: every key equally likely, true eviction pressure ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
+    ->Args({4, 65536, 4, 64, 2000000})
+    ->Iterations(1)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUTL, Run)
+    ->Args({4, 65536, 4, 64, 2000000})
+    ->Iterations(1)->Unit(benchmark::kMicrosecond);
+
+// --- UniformRO 16T: eviction pressure + thread contention ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
+    ->Args({16, 65536, 4, 64, 2000000})
+    ->Iterations(1)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUTL, Run)
+    ->Args({16, 65536, 4, 64, 2000000})
+    ->Iterations(1)->Unit(benchmark::kMicrosecond);
+
+// --- UniformRO 32T: maximum stress ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
+    ->Args({32, 65536, 4, 64, 2000000})
+    ->Iterations(1)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUTL, Run)
+    ->Args({32, 65536, 4, 64, 2000000})
+    ->Iterations(1)->Unit(benchmark::kMicrosecond);
+
+// --- ReadOnly 4T: reproduces YCSB-C no-annex anomaly (p50_get = 1.3us?) ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
+    ->Args({4, 65536, 3, 64, 2000000})
+    ->Iterations(1)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUTL, Run)
+    ->Args({4, 65536, 3, 64, 2000000})
+    ->Iterations(1)->Unit(benchmark::kMicrosecond);
+
+// --- ReadOnly 4T SN: same test on single node (isolate NUMA factor) ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallSN, Run)
+    ->Args({4, 65536, 3, 64, 2000000})
+    ->Iterations(1)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUSN, Run)
+    ->Args({4, 65536, 3, 64, 2000000})
+    ->Iterations(1)->Unit(benchmark::kMicrosecond);
+
+// --- TBB scale baselines ---
+BENCHMARK_REGISTER_F(NUMABench_TBB, Run)
+    ->Args({8, 65536, 0, 64, 2000000})
+    ->Iterations(1)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(NUMABench_TBB, Run)
+    ->Args({16, 65536, 0, 64, 2000000})
+    ->Iterations(1)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(NUMABench_TBB, Run)
+    ->Args({32, 65536, 0, 64, 2000000})
+    ->Iterations(1)->Unit(benchmark::kMicrosecond);
+
+#ifdef USE_CACHELIB
+// --- CacheLib scale baselines ---
+BENCHMARK_REGISTER_F(NUMABench_CacheLib, Run)
+    ->Args({8, 65536, 0, 64, 2000000})
+    ->Iterations(1)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(NUMABench_CacheLib, Run)
+    ->Args({16, 65536, 0, 64, 2000000})
+    ->Iterations(1)->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(NUMABench_CacheLib, Run)
+    ->Args({32, 65536, 0, 64, 2000000})
+    ->Iterations(1)->Unit(benchmark::kMicrosecond);
+#endif
+
 int main(int argc, char** argv) {
     benchmark::Initialize(&argc, argv);
     if (benchmark::ReportUnrecognizedArguments(argc, argv)) return 1;
