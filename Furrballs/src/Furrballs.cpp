@@ -2025,3 +2025,4 @@ NuAtlas::FurrBall<Policy>::~FurrBall() noexcept {
 // =====================================================================
 
 template class FurrBall<ArcPolicy>;
+template class FurrBall<LruPolicy>;

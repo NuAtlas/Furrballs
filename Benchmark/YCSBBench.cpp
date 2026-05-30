@@ -1561,6 +1561,18 @@ BENCHMARK_DEFINE_F(YCSB_FurrBallTLAnnex, Run)(benchmark::State& state) {
     RunYCSBBench<FurrBallAnnexAdapter<>>(state);
 }
 
+// --- FurrBall LRU (no annex) YCSB ---
+struct YCSB_FurrBallTL_LRU : YCSBBench<FurrBallAdapter<Routing::ThreadLocal, LruPolicy>> {};
+BENCHMARK_DEFINE_F(YCSB_FurrBallTL_LRU, Run)(benchmark::State& state) {
+    RunYCSBBench<FurrBallAdapter<Routing::ThreadLocal, LruPolicy>>(state);
+}
+
+// --- FurrBall LRU + Annex YCSB ---
+struct YCSB_FurrBallTLAnnex_LRU : YCSBBench<FurrBallAnnexAdapter<Routing::ThreadLocal, LruPolicy>> {};
+BENCHMARK_DEFINE_F(YCSB_FurrBallTLAnnex_LRU, Run)(benchmark::State& state) {
+    RunYCSBBench<FurrBallAnnexAdapter<Routing::ThreadLocal, LruPolicy>>(state);
+}
+
 // --- TBB YCSB ---
 struct YCSB_TBB : YCSBBench<TBBAdapter> {};
 BENCHMARK_DEFINE_F(YCSB_TBB, Run)(benchmark::State& state) {
@@ -1791,6 +1803,14 @@ BENCHMARK_REGISTER_F(YCSB_FurrBallTLAnnex, Run)
     ->Args({4, 65536, 10, 64, 100000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallTL_LRU, Run)
+    ->Args({4, 65536, 10, 64, 100000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallTLAnnex_LRU, Run)
+    ->Args({4, 65536, 10, 64, 100000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
 BENCHMARK_REGISTER_F(YCSB_TBB, Run)
     ->Args({4, 65536, 10, 64, 100000})
     ->Iterations(10)
@@ -1839,6 +1859,14 @@ BENCHMARK_REGISTER_F(YCSB_FurrBallTLAnnex, Run)
     ->Args({4, 65536, 11, 64, 100000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallTL_LRU, Run)
+    ->Args({4, 65536, 11, 64, 100000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallTLAnnex_LRU, Run)
+    ->Args({4, 65536, 11, 64, 100000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
 BENCHMARK_REGISTER_F(YCSB_TBB, Run)
     ->Args({4, 65536, 11, 64, 100000})
     ->Iterations(10)
@@ -1872,6 +1900,14 @@ BENCHMARK_REGISTER_F(YCSB_FurrBallAnnex, Run)
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 BENCHMARK_REGISTER_F(YCSB_FurrBallTLAnnex, Run)
+    ->Args({4, 65536, 12, 64, 100000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallTL_LRU, Run)
+    ->Args({4, 65536, 12, 64, 100000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(YCSB_FurrBallTLAnnex_LRU, Run)
     ->Args({4, 65536, 12, 64, 100000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);

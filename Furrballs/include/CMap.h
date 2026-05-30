@@ -1125,4 +1125,149 @@ namespace NuAtlas {
         int FindSentinel(const HashPair&) const { return -1; }
     };
 
+    template <class Value>
+        requires std::is_move_constructible_v<Value> && std::is_trivially_copyable_v<Value>
+    class ConcurrentLRU {
+    public:
+        using EvictionCallback = std::function<void(const Value&)>;
+
+    private:
+        CMap<Value> store_;
+        FlatList list_;
+        SpinLock lruLock_;
+        PromoteBuf promoteBuf_;
+        size_t capacity_;
+        EvictionCallback evictionCallback_ = [](const Value&) {};
+
+        void drainPromoteBufAndApply() {
+            HashPair batch[64];
+            size_t count = 0;
+            promoteBuf_.drainWith([&](HashPair hashes) {
+                if (count < 64) batch[count++] = hashes;
+            });
+            for (size_t i = 0; i < count; i++) {
+                list_.splice_front(batch[i].h2);
+            }
+        }
+
+    public:
+        ConcurrentLRU(size_t cap, CMapAllocFn af = CMapDefaultAlloc, CMapFreeFn ff = CMapDefaultFree)
+            : store_(cap, af, ff), list_(cap), capacity_(cap) {}
+
+        void setWakeCallback(std::function<void()> cb) { promoteBuf_.setWakeCallback(std::move(cb)); }
+
+        void drainPromotes() {
+            std::lock_guard<SpinLock> guard(lruLock_);
+            drainPromoteBufAndApply();
+        }
+
+        void SetEvictionCallback(EvictionCallback cb) { evictionCallback_ = cb; }
+
+        bool ForceEvictOne() {
+            std::lock_guard<SpinLock> guard(lruLock_);
+            drainPromoteBufAndApply();
+            if (list_.empty()) return false;
+            HashPair old = list_.back();
+            auto result = store_.FindAndEraseByHash(old);
+            if (result.err != NO_ERR) return false;
+            list_.pop_back();
+            if (result.value) evictionCallback_(*result.value);
+            return true;
+        }
+
+        uint8_t GetDesire(uint64_t) const { return 0; }
+
+        std::optional<Value> Find(const std::string& key) {
+            HashPair hashes = HashKey(key);
+            auto val = store_.FindByHash(hashes);
+            if (!val) return std::nullopt;
+            promoteBuf_.enqueue(hashes);
+            return val;
+        }
+
+        template <typename Fn>
+        Error UpdateInPlace(const std::string& key, Fn&& fn) {
+            return store_.UpdateInPlace(key, std::forward<Fn>(fn));
+        }
+
+        template <typename Fn>
+        Error UpdateInPlaceByHash(const HashPair& hashes, Fn&& fn) {
+            return store_.UpdateInPlaceByHash(hashes, std::forward<Fn>(fn));
+        }
+
+        typename CMap<Value>::FindAndEraseResult Erase(const std::string& key) {
+            std::lock_guard<SpinLock> guard(lruLock_);
+            drainPromoteBufAndApply();
+            HashPair hashes = HashKey(key);
+            list_.erase(hashes.h2);
+            return store_.FindAndErase(key);
+        }
+
+        typename CMap<Value>::FindAndEraseResult EraseByHash(const HashPair& hashes) {
+            std::lock_guard<SpinLock> guard(lruLock_);
+            drainPromoteBufAndApply();
+            list_.erase(hashes.h2);
+            return store_.FindAndEraseByHash(hashes);
+        }
+
+        bool MigrateAndLeaveSentinel(const HashPair& hashes, int destNode) {
+            std::lock_guard<SpinLock> guard(lruLock_);
+            drainPromoteBufAndApply();
+            list_.erase(hashes.h2);
+            return store_.FindAndEraseByHash(hashes);
+        }
+
+        Error Set(const std::string& key, const Value& val) {
+            std::lock_guard<SpinLock> guard(lruLock_);
+            drainPromoteBufAndApply();
+
+            HashPair hashes = HashKey(key);
+            CMapSetResult result = store_.Set(key, val);
+            if (result.err != NO_ERR) return result.err;
+
+            if (!result.inserted) {
+                list_.splice_front(hashes.h2);
+                return NO_ERR;
+            }
+
+            while (list_.size() >= capacity_) {
+                HashPair old = list_.back();
+                auto eraseResult = store_.FindAndEraseByHash(old);
+                list_.pop_back();
+                if (eraseResult.value) evictionCallback_(*eraseResult.value);
+            }
+            list_.push_front(hashes);
+            return NO_ERR;
+        }
+
+        Error EvictAndSet(const std::string& key, const Value& val) {
+            std::lock_guard<SpinLock> guard(lruLock_);
+            drainPromoteBufAndApply();
+
+            bool evicted = false;
+            if (!list_.empty()) {
+                HashPair old = list_.back();
+                auto eraseResult = store_.FindAndEraseByHash(old);
+                if (eraseResult.err == NO_ERR) {
+                    list_.pop_back();
+                    if (eraseResult.value) evictionCallback_(*eraseResult.value);
+                    evicted = true;
+                }
+            }
+            if (!evicted) return ABANDONED_SET;
+
+            HashPair hashes = HashKey(key);
+            CMapSetResult result = store_.Set(key, val);
+            if (result.err != NO_ERR) return result.err;
+
+            if (!result.inserted) {
+                list_.splice_front(hashes.h2);
+                return NO_ERR;
+            }
+
+            list_.push_front(hashes);
+            return NO_ERR;
+        }
+    };
+
 } // namespace NuAtlas

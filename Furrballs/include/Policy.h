@@ -43,4 +43,23 @@ namespace NuAtlas {
         static uint8_t InitialState() noexcept { return 0; }
     };
 
+    template<typename Value>
+        requires std::is_move_constructible_v<Value> && std::is_trivially_copyable_v<Value>
+    class ConcurrentLRU;
+
+    struct LruPolicy {
+        template<typename Value> using Store = ConcurrentLRU<Value>;
+        using Config = struct {};
+
+        static constexpr bool HasPerKeyState = false;
+        static constexpr bool HasMigration   = false;
+        static constexpr bool HasScanner     = false;
+        static constexpr bool HasDesire      = false;
+        static constexpr bool HasStoreEviction = true;
+        static constexpr bool HasRemarcConfig   = false;
+
+        static Config MakeConfig() noexcept { return {}; }
+        static uint8_t InitialState() noexcept { return 0; }
+    };
+
 } // namespace NuAtlas
