@@ -32,6 +32,49 @@ namespace NuAtlas
         }
     };
 
+    class alignas(64) MCSLock {
+        struct Node {
+            std::atomic<bool> waiting{true};
+            Node* next{nullptr};
+        };
+
+        std::atomic<Node*> tail_{nullptr};
+
+    public:
+        void lock() noexcept {
+            Node* me = &localNode_;
+            me->waiting.store(true, std::memory_order_relaxed);
+            me->next = nullptr;
+
+            Node* prev = tail_.exchange(me, std::memory_order_acq_rel);
+            if (!prev) return;
+
+            prev->next = me;
+            while (me->waiting.load(std::memory_order_acquire)) {
+                _mm_pause();
+            }
+        }
+
+        void unlock() noexcept {
+            Node* me = &localNode_;
+            if (!me->next) {
+                Node* expected = me;
+                if (tail_.compare_exchange_strong(expected, nullptr,
+                        std::memory_order_release, std::memory_order_relaxed)) {
+                    return;
+                }
+                while (!me->next) {
+                    _mm_pause();
+                }
+            }
+            me->next->waiting.store(false, std::memory_order_release);
+            me->next = nullptr;
+        }
+
+    private:
+        static thread_local Node localNode_;
+    };
+
     constexpr uint8_t REMARC_MAX = 15;
 
     struct RemarcConfig {

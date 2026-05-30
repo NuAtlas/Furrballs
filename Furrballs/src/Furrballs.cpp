@@ -7,8 +7,13 @@
 
 #include "Furrballs.h"
 #include "CMap.h"
+#include "Remarc.h"
 #undef max
 #undef min
+
+namespace NuAtlas {
+    thread_local MCSLock::Node MCSLock::localNode_;
+}
 #include <cstring>
 #include <chrono>
 #include <rocksdb/db.h>

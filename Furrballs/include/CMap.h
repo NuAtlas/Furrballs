@@ -809,6 +809,22 @@ namespace NuAtlas {
             }
         }
 
+        void drainPromoteBufCooperative(size_t maxItems) {
+            HashPair batch[16];
+            size_t count = 0;
+            promoteBuf_.drainWith([&](HashPair hashes) {
+                if (count < maxItems && count < 16) batch[count++] = hashes;
+            });
+            for (size_t i = 0; i < count; i++) {
+                uint8_t lid = lists_.whichList(batch[i].h2);
+                if (lid == 0) {
+                    lists_.promoteT1toT2(batch[i]);
+                } else if (lid == 1) {
+                    lists_.spliceFrontT2(batch[i].h2);
+                }
+            }
+        }
+
         bool replaceLocked(uint64_t h2) {
             if (!lists_.emptyT1() && (lists_.sizeT1() > p_ ||
                 (lists_.containsB2(h2) && lists_.sizeT1() == p_))) {
@@ -950,7 +966,7 @@ namespace NuAtlas {
 
         Error Set(const std::string& key, const Value& val) {
             std::lock_guard<SpinLock> guard(arcLock_);
-            drainPromoteBufAndApply();
+            drainPromoteBufCooperative(4);
 
             HashPair hashes = HashKey(key);
             uint64_t h2 = hashes.h2;
@@ -991,7 +1007,7 @@ namespace NuAtlas {
 
         Error EvictAndSet(const std::string& key, const Value& val) {
             std::lock_guard<SpinLock> guard(arcLock_);
-            drainPromoteBufAndApply();
+            drainPromoteBufCooperative(4);
 
             bool evicted = false;
             if (!lists_.emptyT1() && (lists_.sizeT1() > p_ || lists_.emptyT2())) {
@@ -1150,6 +1166,17 @@ namespace NuAtlas {
             }
         }
 
+        void drainPromoteBufCooperative(size_t maxItems) {
+            HashPair batch[16];
+            size_t count = 0;
+            promoteBuf_.drainWith([&](HashPair hashes) {
+                if (count < maxItems && count < 16) batch[count++] = hashes;
+            });
+            for (size_t i = 0; i < count; i++) {
+                list_.splice_front(batch[i].h2);
+            }
+        }
+
     public:
         ConcurrentLRU(size_t cap, CMapAllocFn af = CMapDefaultAlloc, CMapFreeFn ff = CMapDefaultFree)
             : store_(cap, af, ff), list_(cap), capacity_(cap) {}
@@ -1219,7 +1246,7 @@ namespace NuAtlas {
 
         Error Set(const std::string& key, const Value& val) {
             std::lock_guard<SpinLock> guard(lruLock_);
-            drainPromoteBufAndApply();
+            drainPromoteBufCooperative(4);
 
             HashPair hashes = HashKey(key);
             CMapSetResult result = store_.Set(key, val);
@@ -1242,7 +1269,7 @@ namespace NuAtlas {
 
         Error EvictAndSet(const std::string& key, const Value& val) {
             std::lock_guard<SpinLock> guard(lruLock_);
-            drainPromoteBufAndApply();
+            drainPromoteBufCooperative(4);
 
             bool evicted = false;
             if (!list_.empty()) {
