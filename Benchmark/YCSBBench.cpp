@@ -1106,6 +1106,91 @@ struct TBBAdapter {
     static int numNodes() { return 0; }
 };
 
+// --- libcuckoo adapter ---
+#ifdef USE_CUCKOO
+#include <libcuckoo/cuckoohash_map.hh>
+
+struct CuckooAdapter {
+    static constexpr const char* Name = "Cuckoo";
+    using Map = cuckoohash_map<std::string, std::vector<uint8_t>>;
+    Map* map = nullptr;
+    size_t footprintBytes_ = 0;
+
+    void create(int, int) {
+        map = new Map();
+        footprintBytes_ = 0;
+    }
+
+    bool get(const std::string& key, uint8_t* buf, size_t bufSize, size_t& outSize) {
+        try {
+            auto locked = map->lock_table();
+            auto it = locked.find(key);
+            if (it != locked.end()) {
+                outSize = it->second.size();
+                if (bufSize >= outSize) {
+                    memcpy(buf, it->second.data(), outSize);
+                }
+                return true;
+            }
+            return false;
+        } catch (...) {
+            return false;
+        }
+    }
+
+    void put(const std::string& key, const uint8_t* data, size_t size) {
+        map->upsert(key, [data, size](std::vector<uint8_t>& v) {
+            v.assign(data, data + size);
+        }, std::vector<uint8_t>(data, data + size));
+    }
+
+    void destroy() {
+        delete map; map = nullptr;
+    }
+
+    static int numNodes() { return 0; }
+};
+#endif
+
+// --- abseil adapter ---
+#ifdef USE_ABSEIL
+#include <absl/container/parallel_flat_hash_map.h>
+
+struct AbseilAdapter {
+    static constexpr const char* Name = "Abseil";
+    using Map = absl::parallel_flat_hash_map<std::string, std::vector<uint8_t>>;
+    Map* map = nullptr;
+    size_t footprintBytes_ = 0;
+
+    void create(int, int) {
+        map = new Map();
+        footprintBytes_ = 0;
+    }
+
+    bool get(const std::string& key, uint8_t* buf, size_t bufSize, size_t& outSize) {
+        auto* val = map->get_if(key);
+        if (val) {
+            outSize = val->size();
+            if (bufSize >= outSize) {
+                memcpy(buf, val->data(), outSize);
+            }
+            return true;
+        }
+        return false;
+    }
+
+    void put(const std::string& key, const uint8_t* data, size_t size) {
+        (*map)[key].assign(data, data + size);
+    }
+
+    void destroy() {
+        delete map; map = nullptr;
+    }
+
+    static int numNodes() { return 0; }
+};
+#endif
+
 // --- CacheLib adapter ---
 #ifdef USE_CACHELIB
 #include <cachelib/allocator/CacheAllocator.h>
@@ -1498,6 +1583,22 @@ BENCHMARK_DEFINE_F(YCSB_CacheLib, Run)(benchmark::State& state) {
 }
 #endif
 
+#ifdef USE_CUCKOO
+// --- libcuckoo YCSB ---
+struct YCSB_Cuckoo : YCSBBench<CuckooAdapter> {};
+BENCHMARK_DEFINE_F(YCSB_Cuckoo, Run)(benchmark::State& state) {
+    RunYCSBBench<CuckooAdapter>(state);
+}
+#endif
+
+#ifdef USE_ABSEIL
+// --- abseil YCSB ---
+struct YCSB_Abseil : YCSBBench<AbseilAdapter> {};
+BENCHMARK_DEFINE_F(YCSB_Abseil, Run)(benchmark::State& state) {
+    RunYCSBBench<AbseilAdapter>(state);
+}
+#endif
+
 // ============================================================================
 //  Registration matrix:
 //    5 systems x 3 workloads (A/B/C) x 2 thread counts (1T/2T)
@@ -1702,6 +1803,18 @@ BENCHMARK_REGISTER_F(YCSB_RocksDB, Run)
     ->Unit(benchmark::kMicrosecond);
 #ifdef USE_CACHELIB
 BENCHMARK_REGISTER_F(YCSB_CacheLib, Run)
+    ->Args({4, 65536, 10, 64, 100000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+#endif
+#ifdef USE_CUCKOO
+BENCHMARK_REGISTER_F(YCSB_Cuckoo, Run)
+    ->Args({4, 65536, 10, 64, 100000})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+#endif
+#ifdef USE_ABSEIL
+BENCHMARK_REGISTER_F(YCSB_Abseil, Run)
     ->Args({4, 65536, 10, 64, 100000})
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);

@@ -7,6 +7,8 @@
       "features": [ "tbb", "lz4" ]
     },
     "xxhash",
-    "cachelib"
+    "cachelib",
+    "libcuckoo",
+    "abseil"
   ]
 }
