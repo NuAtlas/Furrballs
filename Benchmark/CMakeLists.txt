@@ -36,6 +36,11 @@ target_link_libraries(YCSBBench PRIVATE Furrballs Numatic Threads::Threads bench
 target_link_libraries(YCSBBench PRIVATE RocksDB::rocksdb)
 target_link_libraries(YCSBBench PRIVATE TBB::tbb)
 
+add_executable(NUMABench "NUMABench.cpp")
+target_include_directories(NUMABench PRIVATE "${CMAKE_SOURCE_DIR}/Furrballs/include" "${CMAKE_SOURCE_DIR}/numatic/include")
+target_link_libraries(NUMABench PRIVATE Furrballs Numatic Threads::Threads benchmark::benchmark)
+target_link_libraries(NUMABench PRIVATE TBB::tbb)
+
 option(USE_CACHELIB "Build YCSBBench with CacheLib adapter" OFF)
 if(USE_CACHELIB)
     find_package(magic_enum QUIET)
@@ -58,7 +63,9 @@ if(USE_CACHELIB)
     endif()
     find_package(cachelib CONFIG REQUIRED)
     target_compile_definitions(YCSBBench PRIVATE USE_CACHELIB)
+    target_compile_definitions(NUMABench PRIVATE USE_CACHELIB)
     target_link_libraries(YCSBBench PRIVATE cachelib)
+    target_link_libraries(NUMABench PRIVATE cachelib)
 endif()
 
 option(USE_CUCKOO "Build YCSBBench with libcuckoo adapter" OFF)
