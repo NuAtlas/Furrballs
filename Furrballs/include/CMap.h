@@ -792,6 +792,9 @@ namespace NuAtlas {
         size_t capacity_;
         size_t p_;
         EvictionCallback evictionCallback_ = [](const Value&) {};
+        mutable std::atomic<size_t> replaceFails_{0};
+        mutable std::atomic<size_t> evictFails_{0};
+        mutable std::atomic<size_t> abandonedSets_{0};
 
         void drainPromoteBufAndApply() {
             HashPair batch[64];
@@ -830,7 +833,7 @@ namespace NuAtlas {
                 (lists_.containsB2(h2) && lists_.sizeT1() == p_))) {
                 HashPair old = lists_.backT1();
                 auto result = store_.FindAndEraseByHash(old);
-                if (result.err != NO_ERR) return false;
+                if (result.err != NO_ERR) { replaceFails_.fetch_add(1, std::memory_order_relaxed); return false; }
                 lists_.popBackT1();
                 lists_.pushB1(old);
                 if (result.value) evictionCallback_(*result.value);
@@ -839,7 +842,7 @@ namespace NuAtlas {
             if (!lists_.emptyT2()) {
                 HashPair old = lists_.backT2();
                 auto result = store_.FindAndEraseByHash(old);
-                if (result.err != NO_ERR) return false;
+                if (result.err != NO_ERR) { replaceFails_.fetch_add(1, std::memory_order_relaxed); return false; }
                 lists_.popBackT2();
                 lists_.pushB2(old);
                 if (result.value) evictionCallback_(*result.value);
@@ -855,7 +858,7 @@ namespace NuAtlas {
                 } else if (!lists_.emptyT1()) {
                     HashPair hashes = lists_.backT1();
                     auto result = store_.FindAndEraseByHash(hashes);
-                    if (result.err != NO_ERR) return false;
+                    if (result.err != NO_ERR) { evictFails_.fetch_add(1, std::memory_order_relaxed); return false; }
                     lists_.popBackT1();
                     if (result.value) evictionCallback_(*result.value);
                 }
@@ -866,7 +869,7 @@ namespace NuAtlas {
                 } else if (!lists_.emptyT2()) {
                     HashPair hashes = lists_.backT2();
                     auto result = store_.FindAndEraseByHash(hashes);
-                    if (result.err != NO_ERR) return false;
+                    if (result.err != NO_ERR) { evictFails_.fetch_add(1, std::memory_order_relaxed); return false; }
                     lists_.popBackT2();
                     if (result.value) evictionCallback_(*result.value);
                 }
@@ -875,11 +878,23 @@ namespace NuAtlas {
         }
 
     public:
+        ~ConcurrentARC() {
+            auto ab = abandonedSets_.load(std::memory_order_relaxed);
+            auto rf = replaceFails_.load(std::memory_order_relaxed);
+            auto ef = evictFails_.load(std::memory_order_relaxed);
+            if (ab > 0 || rf > 0 || ef > 0) {
+                fprintf(stderr, "[ARC DIAG] abandoned=%zu replaceFails=%zu evictFails=%zu cap=%zu\n", ab, rf, ef, capacity_);
+            }
+        }
         ConcurrentARC(size_t cap, CMapAllocFn af = CMapDefaultAlloc, CMapFreeFn ff = CMapDefaultFree)
             : store_(cap, af, ff), lists_(cap),
               capacity_(cap), p_(0) {}
 
         void setWakeCallback(std::function<void()> cb) { promoteBuf_.setWakeCallback(std::move(cb)); }
+
+        size_t getReplaceFails() const { return replaceFails_.load(std::memory_order_relaxed); }
+        size_t getEvictFails() const { return evictFails_.load(std::memory_order_relaxed); }
+        size_t getAbandonedSets() const { return abandonedSets_.load(std::memory_order_relaxed); }
 
         void drainPromotes() {
         }
@@ -986,7 +1001,7 @@ namespace NuAtlas {
             if (lists_.containsB1(h2)) {
                 size_t delta1 = lists_.sizeB1() > 0 ? lists_.sizeB2() / lists_.sizeB1() : 1;
                 p_ = std::min(capacity_, p_ + std::max(delta1, (size_t)1));
-                if (!replaceLocked(h2)) return ABANDONED_SET;
+                if (!replaceLocked(h2)) { abandonedSets_.fetch_add(1, std::memory_order_relaxed); return ABANDONED_SET; }
                 lists_.promoteB1toT2(hashes);
                 return NO_ERR;
             }
@@ -995,12 +1010,12 @@ namespace NuAtlas {
                 size_t delta2 = lists_.sizeB2() > 0 ? lists_.sizeB1() / lists_.sizeB2() : 1;
                 size_t dec = std::max(delta2, (size_t)1);
                 p_ = (p_ >= dec) ? p_ - dec : 0;
-                if (!replaceLocked(h2)) return ABANDONED_SET;
+                if (!replaceLocked(h2)) { abandonedSets_.fetch_add(1, std::memory_order_relaxed); return ABANDONED_SET; }
                 lists_.promoteB2toT2(hashes);
                 return NO_ERR;
             }
 
-            if (!evictLocked()) return ABANDONED_SET;
+            if (!evictLocked()) { abandonedSets_.fetch_add(1, std::memory_order_relaxed); return ABANDONED_SET; }
             lists_.pushT1(hashes);
             return NO_ERR;
         }
@@ -1029,7 +1044,7 @@ namespace NuAtlas {
                     evicted = true;
                 }
             }
-            if (!evicted) return ABANDONED_SET;
+            if (!evicted) { abandonedSets_.fetch_add(1, std::memory_order_relaxed); return ABANDONED_SET; }
 
             HashPair hashes = HashKey(key);
             uint64_t h2 = hashes.h2;
@@ -1049,7 +1064,7 @@ namespace NuAtlas {
             if (lists_.containsB1(h2)) {
                 size_t delta1 = lists_.sizeB1() > 0 ? lists_.sizeB2() / lists_.sizeB1() : 1;
                 p_ = std::min(capacity_, p_ + std::max(delta1, (size_t)1));
-                if (!replaceLocked(h2)) return ABANDONED_SET;
+                if (!replaceLocked(h2)) { abandonedSets_.fetch_add(1, std::memory_order_relaxed); return ABANDONED_SET; }
                 lists_.promoteB1toT2(hashes);
                 return NO_ERR;
             }
@@ -1058,12 +1073,12 @@ namespace NuAtlas {
                 size_t delta2 = lists_.sizeB2() > 0 ? lists_.sizeB1() / lists_.sizeB2() : 1;
                 size_t dec = std::max(delta2, (size_t)1);
                 p_ = (p_ >= dec) ? p_ - dec : 0;
-                if (!replaceLocked(h2)) return ABANDONED_SET;
+                if (!replaceLocked(h2)) { abandonedSets_.fetch_add(1, std::memory_order_relaxed); return ABANDONED_SET; }
                 lists_.promoteB2toT2(hashes);
                 return NO_ERR;
             }
 
-            if (!evictLocked()) return ABANDONED_SET;
+            if (!evictLocked()) { abandonedSets_.fetch_add(1, std::memory_order_relaxed); return ABANDONED_SET; }
             lists_.pushT1(hashes);
             return NO_ERR;
         }
