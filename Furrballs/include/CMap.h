@@ -882,8 +882,6 @@ namespace NuAtlas {
         void setWakeCallback(std::function<void()> cb) { promoteBuf_.setWakeCallback(std::move(cb)); }
 
         void drainPromotes() {
-            std::lock_guard<SpinLock> guard(arcLock_);
-            drainPromoteBufAndApply();
         }
 
         void SetEvictionCallback(EvictionCallback cb) { evictionCallback_ = cb; }
@@ -918,7 +916,10 @@ namespace NuAtlas {
             HashPair hashes = HashKey(key);
             auto val = store_.FindByHash(hashes);
             if (!val) return std::nullopt;
-            promoteBuf_.enqueue(hashes);
+            std::lock_guard<SpinLock> guard(arcLock_);
+            uint8_t lid = lists_.whichList(hashes.h2);
+            if (lid == 0) lists_.promoteT1toT2(hashes);
+            else if (lid == 1) lists_.spliceFrontT2(hashes.h2);
             return val;
         }
 
@@ -966,7 +967,6 @@ namespace NuAtlas {
 
         Error Set(const std::string& key, const Value& val) {
             std::lock_guard<SpinLock> guard(arcLock_);
-            drainPromoteBufCooperative(4);
 
             HashPair hashes = HashKey(key);
             uint64_t h2 = hashes.h2;
@@ -1007,7 +1007,6 @@ namespace NuAtlas {
 
         Error EvictAndSet(const std::string& key, const Value& val) {
             std::lock_guard<SpinLock> guard(arcLock_);
-            drainPromoteBufCooperative(4);
 
             bool evicted = false;
             if (!lists_.emptyT1() && (lists_.sizeT1() > p_ || lists_.emptyT2())) {
