@@ -1291,7 +1291,6 @@ Error NuAtlas::FurrBall<Policy>::Get(const std::string &key, void* outBuf, size_
             }
             if (hasFat && fatEntry.nodeId != static_cast<uint32_t>(local) && fatEntry.nodeId < static_cast<uint32_t>(nodeCount)) {
                 if (BufSize >= fatEntry.dataSize) {
-                    _mm_prefetch(fatEntry.dataOffset, _MM_HINT_T0);
                     memcpy(outBuf, fatEntry.dataOffset, fatEntry.dataSize);
                     outSize = fatEntry.dataSize;
                     localDetails->AnnexDirectedHit.fetch_add(1, std::memory_order_relaxed);
@@ -2031,3 +2030,4 @@ NuAtlas::FurrBall<Policy>::~FurrBall() noexcept {
 
 template class FurrBall<ArcPolicy>;
 template class FurrBall<LruPolicy>;
+template class FurrBall<S3FifoPolicy>;

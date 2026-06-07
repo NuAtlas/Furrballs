@@ -792,9 +792,6 @@ namespace NuAtlas {
         size_t capacity_;
         size_t p_;
         EvictionCallback evictionCallback_ = [](const Value&) {};
-        mutable std::atomic<size_t> replaceFails_{0};
-        mutable std::atomic<size_t> evictFails_{0};
-        mutable std::atomic<size_t> abandonedSets_{0};
 
         void drainPromoteBufAndApply() {
             HashPair batch[64];
@@ -833,7 +830,7 @@ namespace NuAtlas {
                 (lists_.containsB2(h2) && lists_.sizeT1() == p_))) {
                 HashPair old = lists_.backT1();
                 auto result = store_.FindAndEraseByHash(old);
-                if (result.err != NO_ERR) { replaceFails_.fetch_add(1, std::memory_order_relaxed); return false; }
+                if (result.err != NO_ERR) { return false; }
                 lists_.popBackT1();
                 lists_.pushB1(old);
                 if (result.value) evictionCallback_(*result.value);
@@ -842,7 +839,7 @@ namespace NuAtlas {
             if (!lists_.emptyT2()) {
                 HashPair old = lists_.backT2();
                 auto result = store_.FindAndEraseByHash(old);
-                if (result.err != NO_ERR) { replaceFails_.fetch_add(1, std::memory_order_relaxed); return false; }
+                if (result.err != NO_ERR) { return false; }
                 lists_.popBackT2();
                 lists_.pushB2(old);
                 if (result.value) evictionCallback_(*result.value);
@@ -858,7 +855,7 @@ namespace NuAtlas {
                 } else if (!lists_.emptyT1()) {
                     HashPair hashes = lists_.backT1();
                     auto result = store_.FindAndEraseByHash(hashes);
-                    if (result.err != NO_ERR) { evictFails_.fetch_add(1, std::memory_order_relaxed); return false; }
+                    if (result.err != NO_ERR) { return false; }
                     lists_.popBackT1();
                     if (result.value) evictionCallback_(*result.value);
                 }
@@ -869,7 +866,7 @@ namespace NuAtlas {
                 } else if (!lists_.emptyT2()) {
                     HashPair hashes = lists_.backT2();
                     auto result = store_.FindAndEraseByHash(hashes);
-                    if (result.err != NO_ERR) { evictFails_.fetch_add(1, std::memory_order_relaxed); return false; }
+                    if (result.err != NO_ERR) { return false; }
                     lists_.popBackT2();
                     if (result.value) evictionCallback_(*result.value);
                 }
@@ -878,23 +875,11 @@ namespace NuAtlas {
         }
 
     public:
-        ~ConcurrentARC() {
-            auto ab = abandonedSets_.load(std::memory_order_relaxed);
-            auto rf = replaceFails_.load(std::memory_order_relaxed);
-            auto ef = evictFails_.load(std::memory_order_relaxed);
-            if (ab > 0 || rf > 0 || ef > 0) {
-                fprintf(stderr, "[ARC DIAG] abandoned=%zu replaceFails=%zu evictFails=%zu cap=%zu\n", ab, rf, ef, capacity_);
-            }
-        }
         ConcurrentARC(size_t cap, CMapAllocFn af = CMapDefaultAlloc, CMapFreeFn ff = CMapDefaultFree)
             : store_(cap, af, ff), lists_(cap),
               capacity_(cap), p_(0) {}
 
         void setWakeCallback(std::function<void()> cb) { promoteBuf_.setWakeCallback(std::move(cb)); }
-
-        size_t getReplaceFails() const { return replaceFails_.load(std::memory_order_relaxed); }
-        size_t getEvictFails() const { return evictFails_.load(std::memory_order_relaxed); }
-        size_t getAbandonedSets() const { return abandonedSets_.load(std::memory_order_relaxed); }
 
         void drainPromotes() {
         }
@@ -931,10 +916,7 @@ namespace NuAtlas {
             HashPair hashes = HashKey(key);
             auto val = store_.FindByHash(hashes);
             if (!val) return std::nullopt;
-            std::lock_guard<SpinLock> guard(arcLock_);
-            uint8_t lid = lists_.whichList(hashes.h2);
-            if (lid == 0) lists_.promoteT1toT2(hashes);
-            else if (lid == 1) lists_.spliceFrontT2(hashes.h2);
+            promoteBuf_.enqueue(hashes);
             return val;
         }
 
@@ -1001,7 +983,7 @@ namespace NuAtlas {
             if (lists_.containsB1(h2)) {
                 size_t delta1 = lists_.sizeB1() > 0 ? lists_.sizeB2() / lists_.sizeB1() : 1;
                 p_ = std::min(capacity_, p_ + std::max(delta1, (size_t)1));
-                if (!replaceLocked(h2)) { abandonedSets_.fetch_add(1, std::memory_order_relaxed); return ABANDONED_SET; }
+                if (!replaceLocked(h2)) return ABANDONED_SET;
                 lists_.promoteB1toT2(hashes);
                 return NO_ERR;
             }
@@ -1010,12 +992,12 @@ namespace NuAtlas {
                 size_t delta2 = lists_.sizeB2() > 0 ? lists_.sizeB1() / lists_.sizeB2() : 1;
                 size_t dec = std::max(delta2, (size_t)1);
                 p_ = (p_ >= dec) ? p_ - dec : 0;
-                if (!replaceLocked(h2)) { abandonedSets_.fetch_add(1, std::memory_order_relaxed); return ABANDONED_SET; }
+                if (!replaceLocked(h2)) return ABANDONED_SET;
                 lists_.promoteB2toT2(hashes);
                 return NO_ERR;
             }
 
-            if (!evictLocked()) { abandonedSets_.fetch_add(1, std::memory_order_relaxed); return ABANDONED_SET; }
+            if (!evictLocked()) return ABANDONED_SET;
             lists_.pushT1(hashes);
             return NO_ERR;
         }
@@ -1044,7 +1026,7 @@ namespace NuAtlas {
                     evicted = true;
                 }
             }
-            if (!evicted) { abandonedSets_.fetch_add(1, std::memory_order_relaxed); return ABANDONED_SET; }
+            if (!evicted) return ABANDONED_SET;
 
             HashPair hashes = HashKey(key);
             uint64_t h2 = hashes.h2;
@@ -1064,7 +1046,7 @@ namespace NuAtlas {
             if (lists_.containsB1(h2)) {
                 size_t delta1 = lists_.sizeB1() > 0 ? lists_.sizeB2() / lists_.sizeB1() : 1;
                 p_ = std::min(capacity_, p_ + std::max(delta1, (size_t)1));
-                if (!replaceLocked(h2)) { abandonedSets_.fetch_add(1, std::memory_order_relaxed); return ABANDONED_SET; }
+                if (!replaceLocked(h2)) return ABANDONED_SET;
                 lists_.promoteB1toT2(hashes);
                 return NO_ERR;
             }
@@ -1073,12 +1055,12 @@ namespace NuAtlas {
                 size_t delta2 = lists_.sizeB2() > 0 ? lists_.sizeB1() / lists_.sizeB2() : 1;
                 size_t dec = std::max(delta2, (size_t)1);
                 p_ = (p_ >= dec) ? p_ - dec : 0;
-                if (!replaceLocked(h2)) { abandonedSets_.fetch_add(1, std::memory_order_relaxed); return ABANDONED_SET; }
+                if (!replaceLocked(h2)) return ABANDONED_SET;
                 lists_.promoteB2toT2(hashes);
                 return NO_ERR;
             }
 
-            if (!evictLocked()) { abandonedSets_.fetch_add(1, std::memory_order_relaxed); return ABANDONED_SET; }
+            if (!evictLocked()) return ABANDONED_SET;
             lists_.pushT1(hashes);
             return NO_ERR;
         }
@@ -1307,6 +1289,278 @@ namespace NuAtlas {
             }
 
             list_.push_front(hashes);
+            return NO_ERR;
+        }
+    };
+
+    // ============================================================================
+    //  S3-FIFO: Simple, scalable FIFO-based cache eviction
+    //
+    //  Three static FIFO queues: Small (10%), Main (90%), Ghost (same as Main).
+    //  - New items enter Small. Items accessed >=2x in Small graduate to Main.
+    //  - Main uses FIFO-reinsertion: evicted items with count >= 2 get re-inserted
+    //    with counter decremented by 1.
+    //  - Ghost tracks recently-evicted hashes for fast re-admission.
+    //  - Find() is lock-free: atomic counter increment, no list reordering.
+    //  - Set() acquires SpinLock, FIFO push/pop only -- no promote.
+    //
+    //  Counter array: std::atomic<uint8_t> indexed by h2 % size (4x capacity).
+    //  Collision rate ~3% at 256K items -- acceptable for prototype.
+    //
+    //  Reference: Yang et al., "FIFO Queues Are All You Need for Cache Eviction"
+    //              SOSP'23
+    // ============================================================================
+
+    template<typename Value>
+    requires std::is_move_constructible_v<Value> && std::is_trivially_copyable_v<Value>
+    class ConcurrentS3FIFO {
+        static constexpr uint8_t kCounterMax = 2;
+        static constexpr size_t kSmallRatio = 10;
+
+        using EvictionCallback = std::function<void(const Value&)>;
+
+        CMap<Value> store_;
+        FlatList small_;
+        FlatList main_;
+        OpenIdx<uint8_t> ghost_;
+        std::atomic<uint8_t>* counters_ = nullptr;
+        size_t countersSize_ = 0;
+        SpinLock lock_;
+        size_t capacity_;
+        size_t smallCap_;
+        size_t mainCap_;
+        EvictionCallback evictionCallback_ = [](const Value&) {};
+        size_t ghostCount_ = 0;
+
+        size_t counterIdx(uint32_t h2) const noexcept {
+            return h2 & (countersSize_ - 1);
+        }
+
+        uint8_t getCount(uint32_t h2) const noexcept {
+            return counters_[counterIdx(h2)].load(std::memory_order_relaxed);
+        }
+
+        void setCount(uint32_t h2, uint8_t c) noexcept {
+            counters_[counterIdx(h2)].store(c, std::memory_order_relaxed);
+        }
+
+        void evictSmallTail() {
+            if (small_.empty()) return;
+            HashPair old = small_.back();
+            small_.pop_back();
+            if (getCount(old.h2) >= kCounterMax) {
+                main_.push_front(old);
+                setCount(old.h2, 0);
+                evictMainTail();
+            } else {
+                if (ghostCount_ < mainCap_) {
+                    ghost_.insert(old.h2, 1);
+                    ghostCount_++;
+                }
+                auto r = store_.FindAndEraseByHash(old);
+                if (r.value) evictionCallback_(*r.value);
+            }
+        }
+
+        void evictMainTail() {
+            if (main_.size() <= mainCap_ || main_.empty()) return;
+            HashPair old = main_.back();
+            main_.pop_back();
+            if (getCount(old.h2) >= kCounterMax) {
+                main_.push_front(old);
+                uint8_t c = getCount(old.h2);
+                if (c > 0) setCount(old.h2, c - 1);
+            } else {
+                if (ghostCount_ < mainCap_) {
+                    ghost_.insert(old.h2, 1);
+                    ghostCount_++;
+                }
+                auto r = store_.FindAndEraseByHash(old);
+                if (r.value) evictionCallback_(*r.value);
+            }
+        }
+
+    public:
+        ConcurrentS3FIFO(size_t cap, CMapAllocFn af = CMapDefaultAlloc, CMapFreeFn ff = CMapDefaultFree)
+            : store_(cap, af, ff),
+              small_(cap),
+              main_(cap),
+              ghost_(cap),
+              capacity_(cap) {
+            size_t allocCap = 1;
+            while (allocCap < cap) allocCap <<= 1;
+            countersSize_ = allocCap * 4;
+            counters_ = new std::atomic<uint8_t>[countersSize_];
+            for (size_t i = 0; i < countersSize_; i++)
+                counters_[i].store(0, std::memory_order_relaxed);
+            smallCap_ = std::max(size_t(1), cap * kSmallRatio / 100);
+            mainCap_ = cap > smallCap_ ? cap - smallCap_ : 1;
+        }
+
+        ~ConcurrentS3FIFO() {
+            delete[] counters_;
+        }
+
+        ConcurrentS3FIFO(const ConcurrentS3FIFO&) = delete;
+        ConcurrentS3FIFO& operator=(const ConcurrentS3FIFO&) = delete;
+
+        void setWakeCallback(std::function<void()> cb) {}
+        void drainPromotes() {}
+        void SetEvictionCallback(EvictionCallback cb) { evictionCallback_ = std::move(cb); }
+        uint8_t GetDesire(uint64_t) const { return 0; }
+
+        bool ForceEvictOne() {
+            std::lock_guard<SpinLock> guard(lock_);
+            if (!main_.empty()) {
+                HashPair old = main_.back();
+                main_.pop_back();
+                if (ghostCount_ < mainCap_) {
+                    ghost_.insert(old.h2, 1);
+                    ghostCount_++;
+                }
+                auto r = store_.FindAndEraseByHash(old);
+                if (r.value) evictionCallback_(*r.value);
+                return true;
+            }
+            if (!small_.empty()) {
+                HashPair old = small_.back();
+                small_.pop_back();
+                if (ghostCount_ < mainCap_) {
+                    ghost_.insert(old.h2, 1);
+                    ghostCount_++;
+                }
+                auto r = store_.FindAndEraseByHash(old);
+                if (r.value) evictionCallback_(*r.value);
+                return true;
+            }
+            return false;
+        }
+
+        std::optional<Value> Find(const std::string& key) {
+            HashPair hashes = HashKey(key);
+            auto val = store_.FindByHash(hashes);
+            if (!val) return std::nullopt;
+            uint8_t c = getCount(hashes.h2);
+            if (c < kCounterMax) {
+                setCount(hashes.h2, c + 1);
+            }
+            return val;
+        }
+
+        template <typename Fn>
+        Error UpdateInPlace(const std::string& key, Fn&& fn) {
+            return store_.UpdateInPlace(key, std::forward<Fn>(fn));
+        }
+
+        template <typename Fn>
+        Error FindAndUpdateInPlace(const std::string& key, size_t maxDataSize, Fn&& fn) {
+            return store_.UpdateInPlace(key, maxDataSize, std::forward<Fn>(fn));
+        }
+
+        template <typename Fn>
+        Error UpdateInPlaceByHash(const HashPair& hashes, Fn&& fn) {
+            return store_.UpdateInPlaceByHash(hashes, std::forward<Fn>(fn));
+        }
+
+        typename CMap<Value>::FindAndEraseResult Erase(const std::string& key) {
+            std::lock_guard<SpinLock> guard(lock_);
+            HashPair hashes = HashKey(key);
+            setCount(hashes.h2, 0);
+            small_.erase(hashes.h2);
+            main_.erase(hashes.h2);
+            return store_.FindAndErase(key);
+        }
+
+        typename CMap<Value>::FindAndEraseResult EraseByHash(const HashPair& hashes) {
+            std::lock_guard<SpinLock> guard(lock_);
+            setCount(hashes.h2, 0);
+            small_.erase(hashes.h2);
+            main_.erase(hashes.h2);
+            return store_.FindAndEraseByHash(hashes);
+        }
+
+        bool MigrateAndLeaveSentinel(const HashPair& hashes, int destNode) {
+            std::lock_guard<SpinLock> guard(lock_);
+            setCount(hashes.h2, 0);
+            small_.erase(hashes.h2);
+            main_.erase(hashes.h2);
+            return store_.FindAndEraseByHash(hashes);
+        }
+
+        Error Set(const std::string& key, const Value& val) {
+            std::lock_guard<SpinLock> guard(lock_);
+
+            HashPair hashes = HashKey(key);
+            CMapSetResult result = store_.Set(key, val);
+            if (result.err != NO_ERR) return result.err;
+            if (!result.inserted) return NO_ERR;
+
+            setCount(hashes.h2, 0);
+
+            if (ghost_.contains(hashes.h2)) {
+                ghost_.erase(hashes.h2);
+                ghostCount_--;
+                setCount(hashes.h2, 1);
+                main_.push_front(hashes);
+                evictMainTail();
+            } else {
+                small_.push_front(hashes);
+                while (small_.size() > smallCap_) {
+                    evictSmallTail();
+                }
+            }
+
+            return NO_ERR;
+        }
+
+        Error EvictAndSet(const std::string& key, const Value& val) {
+            std::lock_guard<SpinLock> guard(lock_);
+
+            bool evicted = false;
+            if (!main_.empty()) {
+                HashPair old = main_.back();
+                main_.pop_back();
+                if (ghostCount_ < mainCap_) {
+                    ghost_.insert(old.h2, 1);
+                    ghostCount_++;
+                }
+                auto r = store_.FindAndEraseByHash(old);
+                if (r.value) evictionCallback_(*r.value);
+                evicted = true;
+            }
+            if (!evicted && !small_.empty()) {
+                HashPair old = small_.back();
+                small_.pop_back();
+                if (ghostCount_ < mainCap_) {
+                    ghost_.insert(old.h2, 1);
+                    ghostCount_++;
+                }
+                auto r = store_.FindAndEraseByHash(old);
+                if (r.value) evictionCallback_(*r.value);
+                evicted = true;
+            }
+            if (!evicted) return ABANDONED_SET;
+
+            HashPair hashes = HashKey(key);
+            CMapSetResult result = store_.Set(key, val);
+            if (result.err != NO_ERR) return result.err;
+            if (!result.inserted) return NO_ERR;
+
+            setCount(hashes.h2, 0);
+
+            if (ghost_.contains(hashes.h2)) {
+                ghost_.erase(hashes.h2);
+                ghostCount_--;
+                setCount(hashes.h2, 1);
+                main_.push_front(hashes);
+                evictMainTail();
+            } else {
+                small_.push_front(hashes);
+                while (small_.size() > smallCap_) {
+                    evictSmallTail();
+                }
+            }
+
             return NO_ERR;
         }
     };

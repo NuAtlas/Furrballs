@@ -1240,6 +1240,99 @@ BENCHMARK_DEFINE_F(NUMABench_FurrBallLRURemote, Run)(benchmark::State& state) {
     RunNUMABench<FurrBallLRURemoteAdapter>(state, trace);
 }
 
+// --- FurrBall S3-FIFO ThreadLocal ---
+
+using FurrBallS3FIFOTLAdapter = FurrBallAdapter<Routing::ThreadLocal, S3FifoPolicy>;
+
+struct NUMABench_FurrBallS3FIFOTL : NUMABench<FurrBallS3FIFOTLAdapter> {};
+BENCHMARK_DEFINE_F(NUMABench_FurrBallS3FIFOTL, Run)(benchmark::State& state) {
+    RunNUMABench<FurrBallS3FIFOTLAdapter>(state, trace);
+}
+
+// Equal-capacity S3-FIFO benchmarks (32MB budget, 700K universe)
+
+// --- S3-FIFO Equal cap: Partitioned 2t ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallS3FIFOTL, Run)
+    ->Args({2, 32768, 0, 64, 700000, 99})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- S3-FIFO Equal cap: Shared 2t ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallS3FIFOTL, Run)
+    ->Args({2, 32768, 1, 64, 700000, 99})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- S3-FIFO Equal cap: Partitioned 4t ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallS3FIFOTL, Run)
+    ->Args({4, 32768, 0, 64, 700000, 99})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- S3-FIFO Equal cap: Shared 4t ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallS3FIFOTL, Run)
+    ->Args({4, 32768, 1, 64, 700000, 99})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- S3-FIFO Equal cap: Partitioned 8t ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallS3FIFOTL, Run)
+    ->Args({8, 32768, 0, 64, 700000, 99})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- S3-FIFO Equal cap: Shared 8t ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallS3FIFOTL, Run)
+    ->Args({8, 32768, 1, 64, 700000, 99})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- S3-FIFO Equal cap: Partitioned 32t ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallS3FIFOTL, Run)
+    ->Args({32, 32768, 0, 64, 700000, 99})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- S3-FIFO Equal cap: Shared 32t ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallS3FIFOTL, Run)
+    ->Args({32, 32768, 1, 64, 700000, 99})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- S3-FIFO Theta sweep: 4t Shared, theta=0.80/0.90 ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallS3FIFOTL, Run)
+    ->Args({4, 65536, 1, 64, 2000000, 80})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(NUMABench_FurrBallS3FIFOTL, Run)
+    ->Args({4, 65536, 1, 64, 2000000, 90})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- S3-FIFO Theta sweep: 32t Shared, theta=0.80/0.90 ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallS3FIFOTL, Run)
+    ->Args({32, 65536, 1, 64, 2000000, 80})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(NUMABench_FurrBallS3FIFOTL, Run)
+    ->Args({32, 65536, 1, 64, 2000000, 90})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- S3-FIFO Theta sweep: 4t Shared, theta=0.99 (baseline) ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallS3FIFOTL, Run)
+    ->Args({4, 65536, 1, 64, 2000000, 99})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- S3-FIFO Theta sweep: 32t Shared, theta=0.99 (baseline) ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallS3FIFOTL, Run)
+    ->Args({32, 65536, 1, 64, 2000000, 99})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
 // Equal-capacity LRU benchmarks (32MB budget, 700K universe)
 // LRU_TL: totalCapacityKB=32768 always
 // LRU_SN: totalCapacityKB=32768 always
