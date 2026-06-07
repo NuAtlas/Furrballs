@@ -497,7 +497,8 @@ namespace NuAtlas {
             static constexpr bool kNeedsSplit = (16 + sizeof(Value)) > 64;
 
             std::atomic<uint8_t> seq;
-            uint8_t padding[7];
+            std::atomic<uint8_t> freq;
+            uint8_t padding[6];
             std::atomic<uint64_t> fingerprint;
 
             alignas(kNeedsSplit ? 64 : alignof(Value)) Value value;
@@ -613,6 +614,25 @@ namespace NuAtlas {
             } while (s1 != slot.seq.load(std::memory_order_acquire));
             return std::bit_cast<Value>(buf);
         }
+
+        void TouchByHash(const HashPair& pair) const noexcept {
+            ProbeResult result = Probe<false>(pair);
+            if (result.matchSlot == SIZE_MAX) return;
+            auto* freq = const_cast<std::atomic<uint8_t>*>(&Slots()[result.matchSlot].freq);
+            uint8_t c = freq->load(std::memory_order_relaxed);
+            while (c < 2) {
+                if (freq->compare_exchange_weak(c, c + 1,
+                        std::memory_order_relaxed, std::memory_order_relaxed))
+                    break;
+            }
+        }
+
+        uint8_t GetFreqByHash(const HashPair& pair) const noexcept {
+            ProbeResult result = Probe<false>(pair);
+            if (result.matchSlot == SIZE_MAX) return 0;
+            return Slots()[result.matchSlot].freq.load(std::memory_order_relaxed);
+        }
+
         CMapSetResult Set(std::string_view key, const Value& val) noexcept {
             HashPair pair = HashKey(key);
             auto h2_short = static_cast<uint8_t>(pair.h2 >> 57);
@@ -645,6 +665,7 @@ namespace NuAtlas {
                 return {ABANDONED_SET, false};
 
             targetSlot.fingerprint.store(pair.h2, std::memory_order_relaxed);
+            targetSlot.freq.store(0, std::memory_order_relaxed);
             if (!CasCtrl(targetIdx, static_cast<uint8_t>(CMapCtrlState::kDeleted), h2_short) &&
                 !CasCtrl(targetIdx, static_cast<uint8_t>(CMapCtrlState::kEmpty), h2_short)) {
                 targetSlot.seq.store(expected, std::memory_order_release);
@@ -1301,11 +1322,12 @@ namespace NuAtlas {
     //  - Main uses FIFO-reinsertion: evicted items with count >= 2 get re-inserted
     //    with counter decremented by 1.
     //  - Ghost tracks recently-evicted hashes for fast re-admission.
-    //  - Find() is lock-free: atomic counter increment, no list reordering.
+    //  - Find() is lock-free: atomic counter increment via CMap per-slot freq,
+    //    no list reordering.
     //  - Set() acquires SpinLock, FIFO push/pop only -- no promote.
     //
-    //  Counter array: std::atomic<uint8_t> indexed by h2 % size (4x capacity).
-    //  Collision rate ~3% at 256K items -- acceptable for prototype.
+    //  Counter: per-CMap-slot std::atomic<uint8_t> (in Slot::freq), zero extra
+    //  memory, zero collisions. CMap::TouchByHash increments, GetFreqByHash reads.
     //
     //  Reference: Yang et al., "FIFO Queues Are All You Need for Cache Eviction"
     //              SOSP'23
@@ -1323,8 +1345,6 @@ namespace NuAtlas {
         FlatList small_;
         FlatList main_;
         OpenIdx<uint8_t> ghost_;
-        std::atomic<uint8_t>* counters_ = nullptr;
-        size_t countersSize_ = 0;
         SpinLock lock_;
         size_t capacity_;
         size_t smallCap_;
@@ -1332,23 +1352,11 @@ namespace NuAtlas {
         EvictionCallback evictionCallback_ = [](const Value&) {};
         size_t ghostCount_ = 0;
 
-        size_t counterIdx(uint32_t h2) const noexcept {
-            return h2 & (countersSize_ - 1);
-        }
-
-        uint8_t getCount(uint32_t h2) const noexcept {
-            return counters_[counterIdx(h2)].load(std::memory_order_relaxed);
-        }
-
-        void setCount(uint32_t h2, uint8_t c) noexcept {
-            counters_[counterIdx(h2)].store(c, std::memory_order_relaxed);
-        }
-
         void evictSmallTail() {
             if (small_.empty()) return;
             HashPair old = small_.back();
             small_.pop_back();
-            if (getCount(old.h2) >= kCounterMax) {
+            if (store_.GetFreqByHash(old) >= kCounterMax) {
                 main_.push_front(old);
                 evictMainTail();
             } else {
@@ -1365,7 +1373,7 @@ namespace NuAtlas {
             if (main_.size() <= mainCap_ || main_.empty()) return;
             HashPair old = main_.back();
             main_.pop_back();
-            if (getCount(old.h2) >= kCounterMax) {
+            if (store_.GetFreqByHash(old) >= kCounterMax) {
                 main_.push_front(old);
             } else {
                 if (ghostCount_ < mainCap_) {
@@ -1384,19 +1392,11 @@ namespace NuAtlas {
               main_(cap),
               ghost_(cap),
               capacity_(cap) {
-            size_t allocCap = 1;
-            while (allocCap < cap) allocCap <<= 1;
-            countersSize_ = allocCap * 4;
-            counters_ = new std::atomic<uint8_t>[countersSize_];
-            for (size_t i = 0; i < countersSize_; i++)
-                counters_[i].store(0, std::memory_order_relaxed);
             smallCap_ = std::max(size_t(1), cap * kSmallRatio / 100);
             mainCap_ = cap > smallCap_ ? cap - smallCap_ : 1;
         }
 
-        ~ConcurrentS3FIFO() {
-            delete[] counters_;
-        }
+        ~ConcurrentS3FIFO() = default;
 
         ConcurrentS3FIFO(const ConcurrentS3FIFO&) = delete;
         ConcurrentS3FIFO& operator=(const ConcurrentS3FIFO&) = delete;
@@ -1435,13 +1435,8 @@ namespace NuAtlas {
 
         std::optional<Value> Find(const std::string& key) {
             HashPair hashes = HashKey(key);
-            auto val = store_.FindByHash(hashes);
-            if (!val) return std::nullopt;
-            uint8_t c = getCount(hashes.h2);
-            if (c < kCounterMax) {
-                setCount(hashes.h2, c + 1);
-            }
-            return val;
+            store_.TouchByHash(hashes);
+            return store_.FindByHash(hashes);
         }
 
         template <typename Fn>
@@ -1462,7 +1457,6 @@ namespace NuAtlas {
         typename CMap<Value>::FindAndEraseResult Erase(const std::string& key) {
             std::lock_guard<SpinLock> guard(lock_);
             HashPair hashes = HashKey(key);
-            setCount(hashes.h2, 0);
             small_.erase(hashes.h2);
             main_.erase(hashes.h2);
             return store_.FindAndErase(key);
@@ -1470,7 +1464,6 @@ namespace NuAtlas {
 
         typename CMap<Value>::FindAndEraseResult EraseByHash(const HashPair& hashes) {
             std::lock_guard<SpinLock> guard(lock_);
-            setCount(hashes.h2, 0);
             small_.erase(hashes.h2);
             main_.erase(hashes.h2);
             return store_.FindAndEraseByHash(hashes);
@@ -1478,7 +1471,6 @@ namespace NuAtlas {
 
         bool MigrateAndLeaveSentinel(const HashPair& hashes, int destNode) {
             std::lock_guard<SpinLock> guard(lock_);
-            setCount(hashes.h2, 0);
             small_.erase(hashes.h2);
             main_.erase(hashes.h2);
             return store_.FindAndEraseByHash(hashes);
