@@ -1350,7 +1350,6 @@ namespace NuAtlas {
             small_.pop_back();
             if (getCount(old.h2) >= kCounterMax) {
                 main_.push_front(old);
-                setCount(old.h2, 0);
                 evictMainTail();
             } else {
                 if (ghostCount_ < mainCap_) {
@@ -1368,8 +1367,6 @@ namespace NuAtlas {
             main_.pop_back();
             if (getCount(old.h2) >= kCounterMax) {
                 main_.push_front(old);
-                uint8_t c = getCount(old.h2);
-                if (c > 0) setCount(old.h2, c - 1);
             } else {
                 if (ghostCount_ < mainCap_) {
                     ghost_.insert(old.h2, 1);
@@ -1495,12 +1492,9 @@ namespace NuAtlas {
             if (result.err != NO_ERR) return result.err;
             if (!result.inserted) return NO_ERR;
 
-            setCount(hashes.h2, 0);
-
             if (ghost_.contains(hashes.h2)) {
                 ghost_.erase(hashes.h2);
                 ghostCount_--;
-                setCount(hashes.h2, 1);
                 main_.push_front(hashes);
                 evictMainTail();
             } else {
@@ -1546,12 +1540,9 @@ namespace NuAtlas {
             if (result.err != NO_ERR) return result.err;
             if (!result.inserted) return NO_ERR;
 
-            setCount(hashes.h2, 0);
-
             if (ghost_.contains(hashes.h2)) {
                 ghost_.erase(hashes.h2);
                 ghostCount_--;
-                setCount(hashes.h2, 1);
                 main_.push_front(hashes);
                 evictMainTail();
             } else {
