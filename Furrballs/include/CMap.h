@@ -497,8 +497,7 @@ namespace NuAtlas {
             static constexpr bool kNeedsSplit = (16 + sizeof(Value)) > 64;
 
             std::atomic<uint8_t> seq;
-            std::atomic<uint8_t> freq;
-            uint8_t padding[6];
+            uint8_t aux[7];               // policy-owned auxiliary data (zeroed on insert)
             std::atomic<uint64_t> fingerprint;
 
             alignas(kNeedsSplit ? 64 : alignof(Value)) Value value;
@@ -615,22 +614,58 @@ namespace NuAtlas {
             return std::bit_cast<Value>(buf);
         }
 
-        void TouchByHash(const HashPair& pair) const noexcept {
+        struct AuxRef {
+            Value value;
+            const uint8_t* aux;  // pointer to 7 bytes, valid until slot reuse
+        };
+
+        std::optional<AuxRef> FindWithAux(const HashPair& pair) const noexcept {
             ProbeResult result = Probe<false>(pair);
-            if (result.matchSlot == SIZE_MAX) return;
-            auto* freq = const_cast<std::atomic<uint8_t>*>(&Slots()[result.matchSlot].freq);
-            uint8_t c = freq->load(std::memory_order_relaxed);
-            while (c < 2) {
-                if (freq->compare_exchange_weak(c, c + 1,
-                        std::memory_order_relaxed, std::memory_order_relaxed))
-                    break;
-            }
+            if (result.matchSlot == SIZE_MAX) return std::nullopt;
+            const Slot& slot = Slots()[result.matchSlot];
+            alignas(Value) std::byte buf[sizeof(Value)];
+            uint8_t s1;
+            do {
+                s1 = slot.seq.load(std::memory_order_acquire);
+                if (s1 & 1) { _mm_pause(); continue; }
+                std::memcpy(buf, &slot.value, sizeof(Value));
+            } while (s1 != slot.seq.load(std::memory_order_acquire));
+            return AuxRef{std::bit_cast<Value>(buf), slot.aux};
         }
 
-        uint8_t GetFreqByHash(const HashPair& pair) const noexcept {
-            ProbeResult result = Probe<false>(pair);
-            if (result.matchSlot == SIZE_MAX) return 0;
-            return Slots()[result.matchSlot].freq.load(std::memory_order_relaxed);
+        struct AuxEvictRef {
+            Value value;
+            uint8_t aux[7];      // snapshot at eviction time
+        };
+
+        std::optional<AuxEvictRef> EvictWithAux(const HashPair& hashes) noexcept {
+            ProbeResult result = Probe<false>(hashes);
+            if (result.matchSlot == SIZE_MAX) return std::nullopt;
+
+            Slot& targetSlot = Slots()[result.matchSlot];
+            uint8_t expected = targetSlot.seq.load(std::memory_order_acquire);
+            if (expected & 1) return std::nullopt;
+            if (!targetSlot.seq.compare_exchange_strong(expected, expected + 1,
+                    std::memory_order_acq_rel, std::memory_order_acquire)) {
+                return std::nullopt;
+            }
+
+            if (!CasCtrl(result.matchSlot, static_cast<uint8_t>(hashes.h2 >> 57),
+                    static_cast<uint8_t>(CMapCtrlState::kDeleted))) {
+                targetSlot.seq.store(expected, std::memory_order_release);
+                return std::nullopt;
+            }
+
+            alignas(Value) std::byte buf[sizeof(Value)];
+            std::memcpy(buf, &targetSlot.value, sizeof(Value));
+            uint8_t auxCopy[7];
+            std::memcpy(auxCopy, targetSlot.aux, 7);
+            targetSlot.fingerprint.store(0, std::memory_order_relaxed);
+            std::memset(&targetSlot.value, 0, sizeof(Value));
+            targetSlot.seq.store(expected + 2, std::memory_order_release);
+            AuxEvictRef out{std::bit_cast<Value>(buf), {}};
+            std::memcpy(out.aux, auxCopy, 7);
+            return out;
         }
 
         CMapSetResult Set(std::string_view key, const Value& val) noexcept {
@@ -665,7 +700,7 @@ namespace NuAtlas {
                 return {ABANDONED_SET, false};
 
             targetSlot.fingerprint.store(pair.h2, std::memory_order_relaxed);
-            targetSlot.freq.store(0, std::memory_order_relaxed);
+            std::memset(targetSlot.aux, 0, 7);
             if (!CasCtrl(targetIdx, static_cast<uint8_t>(CMapCtrlState::kDeleted), h2_short) &&
                 !CasCtrl(targetIdx, static_cast<uint8_t>(CMapCtrlState::kEmpty), h2_short)) {
                 targetSlot.seq.store(expected, std::memory_order_release);
@@ -1356,7 +1391,9 @@ namespace NuAtlas {
             if (small_.empty()) return;
             HashPair old = small_.back();
             small_.pop_back();
-            if (store_.GetFreqByHash(old) >= kCounterMax) {
+            auto r = store_.EvictWithAux(old);
+            if (!r) return;
+            if (r->aux[0] >= kCounterMax) {
                 main_.push_front(old);
                 evictMainTail();
             } else {
@@ -1364,8 +1401,7 @@ namespace NuAtlas {
                     ghost_.insert(old.h2, 1);
                     ghostCount_++;
                 }
-                auto r = store_.FindAndEraseByHash(old);
-                if (r.value) evictionCallback_(*r.value);
+                if (evictionCallback_) evictionCallback_(r->value);
             }
         }
 
@@ -1373,15 +1409,16 @@ namespace NuAtlas {
             if (main_.size() <= mainCap_ || main_.empty()) return;
             HashPair old = main_.back();
             main_.pop_back();
-            if (store_.GetFreqByHash(old) >= kCounterMax) {
+            auto r = store_.EvictWithAux(old);
+            if (!r) return;
+            if (r->aux[0] >= kCounterMax) {
                 main_.push_front(old);
             } else {
                 if (ghostCount_ < mainCap_) {
                     ghost_.insert(old.h2, 1);
                     ghostCount_++;
                 }
-                auto r = store_.FindAndEraseByHash(old);
-                if (r.value) evictionCallback_(*r.value);
+                 if (evictionCallback_) evictionCallback_(r->value);
             }
         }
 
@@ -1415,8 +1452,8 @@ namespace NuAtlas {
                     ghost_.insert(old.h2, 1);
                     ghostCount_++;
                 }
-                auto r = store_.FindAndEraseByHash(old);
-                if (r.value) evictionCallback_(*r.value);
+                auto r = store_.EvictWithAux(old);
+                if (r && evictionCallback_) evictionCallback_(r->value);
                 return true;
             }
             if (!small_.empty()) {
@@ -1426,8 +1463,8 @@ namespace NuAtlas {
                     ghost_.insert(old.h2, 1);
                     ghostCount_++;
                 }
-                auto r = store_.FindAndEraseByHash(old);
-                if (r.value) evictionCallback_(*r.value);
+                auto r = store_.EvictWithAux(old);
+                if (r && evictionCallback_) evictionCallback_(r->value);
                 return true;
             }
             return false;
@@ -1435,8 +1472,13 @@ namespace NuAtlas {
 
         std::optional<Value> Find(const std::string& key) {
             HashPair hashes = HashKey(key);
-            store_.TouchByHash(hashes);
-            return store_.FindByHash(hashes);
+            auto r = store_.FindWithAux(hashes);
+            if (!r) return std::nullopt;
+            if (r->aux[0] < kCounterMax) {
+                unsigned char* p = const_cast<unsigned char*>(&r->aux[0]);
+                __atomic_add_fetch(p, 1, __ATOMIC_RELAXED);
+            }
+            return r->value;
         }
 
         template <typename Fn>
