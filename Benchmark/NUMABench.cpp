@@ -1321,6 +1321,38 @@ BENCHMARK_REGISTER_F(NUMABench_FurrBallS3FIFOTL, Run)
     ->Iterations(10)
     ->Unit(benchmark::kMicrosecond);
 
+// --- S3-FIFO Theta sweep: 4t Partitioned, theta=0.80/0.90/0.99 ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallS3FIFOTL, Run)
+    ->Args({4, 65536, 0, 64, 2000000, 80})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(NUMABench_FurrBallS3FIFOTL, Run)
+    ->Args({4, 65536, 0, 64, 2000000, 90})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(NUMABench_FurrBallS3FIFOTL, Run)
+    ->Args({4, 65536, 0, 64, 2000000, 99})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+// --- S3-FIFO Theta sweep: 32t Partitioned, theta=0.80/0.90/0.99 ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallS3FIFOTL, Run)
+    ->Args({32, 65536, 0, 64, 2000000, 80})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(NUMABench_FurrBallS3FIFOTL, Run)
+    ->Args({32, 65536, 0, 64, 2000000, 90})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_REGISTER_F(NUMABench_FurrBallS3FIFOTL, Run)
+    ->Args({32, 65536, 0, 64, 2000000, 99})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
 // --- S3-FIFO Theta sweep: 4t Shared, theta=0.99 (baseline) ---
 BENCHMARK_REGISTER_F(NUMABench_FurrBallS3FIFOTL, Run)
     ->Args({4, 65536, 1, 64, 2000000, 99})
@@ -2220,6 +2252,41 @@ BENCHMARK_REGISTER_F(NUMABench_FurrBallTL, Run)
 BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUTL, Run)
     ->Args({32, 65536, 0, 64, 2000000, 80})
     ->Iterations(1)->Unit(benchmark::kMicrosecond);
+
+// --- ARC+LRU+S3-FIFO Shared theta sweep: 4t/32t, theta=0.80/0.90/0.99 ---
+BENCHMARK_REGISTER_F(NUMABench_FurrBallS3FIFOTL, Run)
+    ->Args({4, 65536, 1, 64, 2000000, 80})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUTL, Run)
+    ->Args({4, 65536, 1, 64, 2000000, 80})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(NUMABench_FurrBallS3FIFOTL, Run)
+    ->Args({4, 65536, 1, 64, 2000000, 90})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUTL, Run)
+    ->Args({4, 65536, 1, 64, 2000000, 90})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(NUMABench_FurrBallS3FIFOTL, Run)
+    ->Args({32, 65536, 1, 64, 2000000, 80})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUTL, Run)
+    ->Args({32, 65536, 1, 64, 2000000, 80})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(NUMABench_FurrBallS3FIFOTL, Run)
+    ->Args({32, 65536, 1, 64, 2000000, 90})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+BENCHMARK_REGISTER_F(NUMABench_FurrBallLRUTL, Run)
+    ->Args({32, 65536, 1, 64, 2000000, 90})
+    ->Iterations(10)
+    ->Unit(benchmark::kMicrosecond);
+
 BENCHMARK_REGISTER_F(NUMABench_TBB, Run)
     ->Args({8, 65536, 0, 64, 2000000, 99})
     ->Iterations(1)->Unit(benchmark::kMicrosecond);
