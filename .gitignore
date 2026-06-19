@@ -436,3 +436,7 @@ io_*/
 data/ec2-results*/
 
 .quarto-cli/
+
+# Quarto render output
+*_files/
+*.html

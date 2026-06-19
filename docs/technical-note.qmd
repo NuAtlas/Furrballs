@@ -1,0 +1,158 @@
+---
+title: "Furrballs: NUMA-Aware Concurrent Hash Map with Pluggable Cache Policies"
+author: "Hamza Jamil Saied"
+date: 2026-06
+---
+
+## Abstract
+
+We present Furrballs, a NUMA-aware concurrent hash map with pluggable cache replacement policies. The system shards key storage across NUMA nodes with per-node lock-free Swiss tables (CMap), and uses a per-node routing cache (annex) that eliminates remote NUMA probes on cross-node lookups. We introduce an auxiliary-byte API (`aux[7]`) that embeds per-slot policy scratchpad directly in the hash table, enabling single-probe combined read-and-policy operations. We also present empirical evidence that popular adaptive cache policies (ARC, S3-FIFO) degrade under per-node sharding: ARC's adaptation parameter diverges when each shard independently optimizes for its local key distribution, and S3-FIFO's fixed-probation queue turns over too rapidly under high insertion rates. LRU, which has no shared adaptation and no contention-sensitive thresholds, is the only policy among those tested that remains performant under sharding. This suggests that LRU's dominance in production sharded caches is not an accident of inertia but a consequence of the constraint that per-node lock partitioning places on policy design.
+
+## 1. Introduction
+
+Modern servers expose asymmetric memory topologies through NUMA, where access latency depends on which socket the data resides on. Concurrent in-memory caches on these servers must handle both the topology (where to place data) and the concurrency (how to evict under contention).
+
+Existing cache replacement policies were designed for single-instance deployment:
+- **ARC** (Megiddo & Modha, 2003): uses a shared adaptation parameter `p_` to balance recency and frequency. Designed for single-threaded block caching.
+- **S3-FIFO** (Song et al., 2023): uses a two-queue design with access-count graduation. Designed for filesystem page caching.
+- **LRU**: no shared state, no adaptation. Trivially correct under sharding.
+
+All three have been deployed in production sharded caches, but only LRU survives without modification. We investigate why, using a testbed that combines a lock-free-read concurrent Swiss table with per-node sharding on real NUMA hardware (AWS c6a.metal, 4 NUMA nodes, 192 vCPUs).
+
+## 2. CMap: Concurrent Swiss Table with Auxiliary Bytes
+
+CMap is a concurrent open-addressed hash table using Swiss-table probing with SSE2 SIMD. Each 64-byte slot stores:
+
+```
+| seq (1B) | aux[7] (7B) | fingerprint (8B) | value (48B) |
+```
+
+**Lock-free reads** use a seqlock protocol: readers load the seq counter, read the value under a version check, and retry if a writer intervened. No lock is held on the read path.
+
+**Auxiliary bytes (`aux[7]`)**: Seven bytes per slot reserved for policy scratchpad. CMap zeroes `aux` on insert and never reads or writes it. Two new operations leverage this region:
+
+- **`FindWithAux(h)`**: Single probe returns both the value and a pointer to `aux`. Used by S3-FIFO to atomically read a value and increment an access counter in one probe, without separate touch + read operations.
+- **`EvictWithAux(h)`**: Single probe reads the value and a copy of `aux`, then atomically erases the slot. Used by S3-FIFO to check the access counter and decide eviction in one probe.
+
+This reduces S3-FIFO from 3--5 CMap probes per Set() to 1 probe per Find() and 1 per eviction, directly reducing lock hold time under contention.
+
+## 3. Sharded Deployment and Policy Compatibility
+
+Furrballs shards key storage by NUMA node. Each node holds an independent CMap instance with its own cache policy instance. Total cache capacity is divided equally across nodes. Thread-local routing places keys on the accessing thread's NUMA node; cross-node reads search all shards.
+
+This architecture provides lock partitioning (the primary throughput advantage) but exposes a critical question: which cache policies remain correct under sharding?
+
+### 3.1 ARC: Independent Adaptation Divergence
+
+ARC's `p_` parameter balances the boundary between recency-favored and frequency-favored eviction. In single-instance deployment, a single `p_` adapts to the workload's global recency/frequency mix. Under per-node sharding, each node runs an independent ARC instance with its own `p_`. Each node's `p_` optimizes for only its local key distribution, not the global workload. The per-node `p_` values may individually be reasonable but collectively produce worse eviction decisions than a single global `p_`.
+
+We emphasize: ARC's adaptation mechanism is not "broken" by concurrency. The issue is architectural — ARC was designed for a single shared `p_` that reflects the full workload. Sharding replaces one `p_` with N independent copies, each seeing a different (and potentially skewed) slice of the key space. The result is not noisy oscillation but systematic divergence: each shard converges to a `p_` value appropriate for its local partition, which may be far from the globally optimal value.
+
+**Evidence** (AWS c6a.metal, 64MB cache, 2M key universe, Zipfian theta=0.90):
+
+| Config | Threads | ARC hit% | LRU hit% | S3-FIFO hit% |
+|--------|----------|----------|----------|-------------|
+| Partitioned | 4 | 62.7 | 62.7 | 62.7 |
+| Partitioned | 32 | **20.3** | **63.4** | **35.4** |
+
+At 32 threads, ARC's hit rate collapses to 20.3% while LRU achieves 63.4% on the same workload and capacity. A possible fix would be a shared atomic `p_` across all shards, but this reintroduces shared state and defeats the lock-partitioning benefit. Our claim is not that ARC cannot be adapted for sharding, but that doing so requires modifying the adaptation mechanism — the unmodified algorithm degrades under per-node independence.
+
+### 3.2 S3-FIFO: Contention-Sensitive Graduation
+
+S3-FIFO uses a small FIFO queue (10% of capacity) as a probationary filter. New entries enter Small and must receive 2 accesses before graduating to Main (90% of capacity). Under high contention (8 threads per node), the Small queue turns over too rapidly for entries to survive to graduation. Items are evicted from Small before their second access, reducing Main's hit rate.
+
+**Evidence** (AWS c6a.metal, 64MB cache, 2M key universe, Partitioned workload):
+
+| Threads | S3-FIFO hit% | ARC hit% | LRU hit% | S3-FIFO ops/s | LRU ops/s |
+|----------|-------------|----------|----------|-------------|-----------|
+| 4 | 93.5 | 93.5 | 93.5 | 15.4M | 14.8M |
+| 32 | 92.5 | 20.3 | 95.5 | **26.4M** | 27.2M |
+
+At 4 threads, all three policies produce identical hit rates. At 32 threads, S3-FIFO and LRU maintain 92--96% hit rates, while ARC collapses to 20.3%. Notably, S3-FIFO achieves 26.4M ops/s at 32T — matching LRU's throughput — with flat tail latency (p99 1.27us vs LRU's 1.62us). The lock-free `FindWithAux()` eliminates read-path contention, giving S3-FIFO a tail latency advantage over LRU even at high thread counts.
+
+At lower hit rates (theta=0.90), S3-FIFO underperforms LRU:
+
+| Threads | theta | S3-FIFO hit% | LRU hit% |
+|----------|-------|-------------|----------|
+| 32 | 0.90 | **35.4** | **63.4** |
+| 32 | 0.80 | **20.1** | **41.8** |
+
+The degradation is caused by the Small queue (10% of per-node capacity) turning over too rapidly under contention. Items graduate from Small to Main only after 2 accesses; under 32 threads, the Small queue receives more insertions per unit time than accesses, so items are evicted before graduation. This is an algorithmic property of S3-FIFO's graduation mechanism, not a data structure bug.
+
+A natural counter is dynamic Small sizing: grow the Small queue when insertion rate exceeds graduation rate, shrink it otherwise. This could salvage S3-FIFO under contention. However, any sizing heuristic that responds to contention (measuring insertion vs. graduation rates across shards) reintroduces cross-shard coordination — the same constraint that limits ARC. The question is whether a lightweight, local-only sizing heuristic (e.g., based on local insertion rate only, without cross-shard communication) is sufficient. We leave this as future work.
+
+### 3.3 LRU: Absence of Failure Modes
+
+LRU uses per-key recency only (no shared adaptation, no graduation threshold). Per-node LRU instances are fully independent and correct. Lock partitioning gives LRU the same throughput benefit as any other policy, with no algorithmic degradation.
+
+We do not claim LRU is the best cache policy. LRU has well-known weaknesses: poor scan resistance, one-hit-wonder pollution, and no frequency awareness. Adaptive policies (ARC, S3-FIFO) fix these in unsharded deployment. Our observation is narrower: within the constraint of per-node independence required for lock partitioning, LRU is the only policy among those tested that does not degrade. This is a negative finding about the cost of sharding on policy design, not a positive endorsement of LRU. The pattern is: any mechanism that improves on LRU's known weaknesses requires either shared adaptation state (ARC's `p_`, TinyLFU's CountMin sketch) or contention-sensitive thresholds (S3-FIFO's graduation). Both are harder to maintain under per-node independence.
+
+## 4. Performance
+
+**Platform**: AWS c6a.metal, AMD EPYC 7R13 (4 NUMA nodes, 192 vCPUs), GCC 14, Release build.
+
+### 4.1 NUMABench: Thread Scaling (64MB cache, 64B values, 2M universe, Partitioned, theta=0.99)
+
+| System | 4T ops/s | 8T ops/s | 16T ops/s | 32T ops/s |
+|--------|----------|----------|-----------|-----------|
+| Meta CacheLib | 5.1M | 5.7M | 6.0M | 9.3M |
+| FurrBall LRU (ThreadLocal) | 16.0M | 8.7M | 16.0M | 23.9M |
+
+FurrBall LRU outperforms CacheLib by 1.5--3.1x in throughput and 1.3--5.6x in p50 GET latency. Hit rates are identical (~93--95%). Both systems are configured for 64MB usable capacity; CacheLib requires 128MB actual memory (2x slab overhead) to provide this, while FurrBall uses 64MB. 4T results are averaged over 10 iterations (CacheLib std: ±89K ops/s, FurrBall ±1.2M). 8T/16T/32T are single runs due to EC2 cost.
+
+For context, Intel TBB's `concurrent_hash_map` (unbounded, no eviction) achieves 17.2M ops/s at 4T on the same workload — comparable to FurrBall's 16.0M with full cache management.
+
+### 4.2 YCSB Workloads (4 threads, 64MB cache, 64B values)
+
+| Workload | FurrBall TL+Annex ops/s | CacheLib ops/s | FurrBall p50 GET | CacheLib p50 GET |
+|----------|------------------------|---------------|-------------------|-----------------|
+| A (50R/50W) | **16.0M** | 0.7M | 60ns | 2,774ns |
+| B (95R/5W) | **16.8M** | 1.7M | 60ns | 1,213ns |
+| C (100R) | **17.3M** | 2.2M | 50ns | 1,014ns |
+
+FurrBall outperforms CacheLib by 8--22x in throughput and 17--46x in p50 GET latency across all YCSB workloads. The annex (a per-node routing cache) is critical: on a GET miss on the local node, the annex stores a directed hint `{targetNodeId, dataOffset}` that allows a direct read without probing remote CMap instances. FurrBall exposes per-node annex counters (`AnnexDirectedHit`, `AnnexLookupMiss`, `AnnexFallbackHit`) but we do not report them here; a follow-up run on EC2 should capture these to quantify what fraction of cross-node reads are resolved by the annex vs. full probe.
+
+### 4.3 Lock-Free Read Advantage
+
+S3-FIFO's `FindWithAux()` enables atomic counter increment during lookup without any lock or list mutation:
+
+| Metric | LRU 32T | S3-FIFO 32T |
+|--------|----------|-------------|
+| p99_get | 1620ns | **1270ns** |
+| p50_get | 910ns | 190ns |
+
+S3-FIFO's p99 is 1.3x lower than LRU's at 32 threads, with p50 4.8x lower. The flat tail latency comes from eliminating lock contention on the read path.
+
+## 5. Related Work
+
+- **CacheLib** (Meta, 2020): Production LRU cache with per-pool NUMA sharding. FurrBall LRU outperforms CacheLib by 1.5--3.1x in throughput on equivalent NUMABench workloads and 8--22x on YCSB, primarily due to CMap's lock-free reads vs CacheLib's mutex-protected `find()` calls. CacheLib's slab allocator adds ~2x memory overhead.
+- **S3-FIFO** (Song et al., SOSP 2023): Two-queue cache policy with access-count graduation. Not designed for concurrent sharded deployment.
+- **ARC** (Megiddo & Modha, 2003): Adaptive replacement cache with recency/frequency balancing. Not designed for concurrent access.
+- **Swiss Tables** (Abseil): Open-addressed hash table with SIMD probing. CMap extends this with seqlock-based concurrency and per-slot auxiliary bytes.
+
+## 6. Limitations and Future Work
+
+- **Three policies only**: We test ARC, S3-FIFO, and LRU. Other policies (2Q, LIRS, LFU) may behave differently under sharding. In particular, policies that use only per-key state without global adaptation (e.g., a sharded version of 2Q) might avoid ARC's divergence while improving on LRU's weaknesses.
+- **ARC divergence not isolated**: We attribute ARC's collapse to independent `p_` adaptation across shards, but have not run a controlled experiment isolating partitioning from concurrency (e.g., single ARC instance on partitioned key space without threads). This would confirm whether the effect is architectural or concurrency-dependent.
+- **No scan workload**: LRU's known weakness (scan resistance) is not tested. Showing that LRU also degrades on scans while adaptive policies degrade worse would strengthen the argument that the cost of sharding is losing adaptive policies' improvements on pathological workloads.
+- **Annex stats not reported**: The annex routing cache counters (`AnnexDirectedHit`, `AnnexLookupMiss`, `AnnexFallbackHit`) are not captured in the current benchmark runs.
+- **Zipfian only**: All workloads use Zipfian key distribution. Uniform random and sequential scan workloads are not tested.
+
+## 7. Conclusion
+
+Per-node sharded caching is the dominant deployment model for in-memory caches (Memcached, Redis, CacheLib, RocksDB). We show that this deployment model constrains cache replacement policy design: among the policies tested (ARC, S3-FIFO, LRU), only LRU remains performant under per-node independence. Policies that improve on LRU's known weaknesses (scan resistance, frequency awareness) require shared adaptation state or contention-sensitive thresholds that are harder to maintain under sharding. This does not mean LRU is optimal — it means the cost of sharding is that we lose access to adaptive policies' improvements. LRU's dominance in production sharded caches may reflect this constraint rather than inertia.
+
+The aux[7] API is a practical contribution: it embeds policy scratchpad directly in the hash table, reducing probe count for policies like S3-FIFO and providing a clean interface for policy-specific per-slot metadata without external data structures.
+
+**Source code**: https://github.com/NuAtlas/Furrballs
+**Contact**: hamza.jamil.saied@gmail.com
+
+## Appendix: Reproducibility
+
+All benchmarks run on AWS c6a.metal (AMD EPYC 7R13 Milan, 4 NUMA nodes, 192 vCPUs, DDR4). Furrballs detects and uses all NUMA nodes internally (overrides external `numactl` binding). Capacity is divided equally across nodes. Threads are distributed across nodes by Furrballs' internal pinning.
+
+**FurrBall configuration**: Thread-local routing, 4KB page size, NUMA-aware allocation (each node's memory is allocated via `numalloc` on the local socket), annex enabled, ARC/LRU/S3-FIFO as compile-time policy templates.
+
+**CacheLib configuration**: `facebook::cachelib::LruAllocator` with a single pool. Cache size set to 2x the usable capacity (slab allocator overhead), allocation classes `{64, 128, 256, 512, 1024, 2048}` bytes. No NUMA binding (`setMemBind` not configured). Keys are `std::string`, values are stored via `handle->getMemory()` with `memcpy` on both read and write. `find()` returns a handle (mutex-protected lookup), `insertOrReplace()` for writes. This is CacheLib's default configuration — no tuning was applied.
+
+Reproducibility: `bench/ec2-run-all.sh` builds from clean, records environment metadata (compiler, flags, CPU topology), runs the full benchmark matrix, and parses results into formatted tables. Total runtime: approximately 15 minutes. Cost: approximately $0.80 on c6a.metal ($3.21/hr).

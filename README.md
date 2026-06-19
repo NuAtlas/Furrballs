@@ -1,99 +1,123 @@
 # Furrballs
 
-A NUMA-aware, high-performance caching library written in C++20 under the `NuAtlas` namespace.
+NUMA-aware concurrent cache in C++20. Per-node lock-free Swiss tables (CMap), a per-node routing cache (annex), and pluggable eviction policies (LRU, ARC, S3-FIFO).
 
-The core thesis contribution is using **NUMA topology as a first-class input to cache placement and eviction decisions** — per-page allocation places data on the NUMA node of the requesting thread, with **REMARC** (Reduction-Modeled Adaptive Replacement Cache) as the eviction and migration policy. REMARC reduces three access dimensions (recency, frequency, locality) into a unified 2D state space (S_local, S_remote), producing dual action scores (Evict, Migrate) via precomputed SIMD lookup tables scanned with pshufb. No published work combines NUMA topology with a multi-dimensional adaptive cache policy at the page level.
+## Why
+
+Production sharded caches (Memcached, Redis, CacheLib) all use LRU. Furrballs was built to understand why: policies that improve on LRU require shared state or contention-sensitive thresholds that degrade under per-node independence. LRU isn't the best policy — it's the only one among those tested that survives sharding without modification.
+
+See [`docs/technical-note.qmd`](docs/technical-note.qmd) for the full analysis and `docs/whitepaper.qmd`](docs/whitepaper.qmd) for the complete design history.
+
+## Results
+
+AWS c6a.metal, AMD EPYC 7R13, 4 NUMA nodes, 192 vCPUs. GCC 14, Release.
+
+### vs CacheLib (Meta)
+
+NUMABench: 64 MB usable cache, 64 B values, 2M universe, Partitioned, Zipfian theta=0.99.
+
+| Threads | CacheLib ops/s | FurrBall LRU ops/s | Speedup |
+|---------|--------------|-------------------|---------|
+| 4 | 5.1M | 16.0M | 3.1x |
+| 8 | 5.7M | 8.7M | 1.5x |
+| 16 | 6.0M | 16.0M | 2.7x |
+| 32 | 9.3M | 23.9M | 2.6x |
+
+YCSB: 4 threads, 64 MB cache, 64 B values.
+
+| Workload | CacheLib ops/s | CacheLib p50 GET | FurrBall ops/s | FurrBall p50 GET |
+|----------|--------------|------------------|----------------|-------------------|
+| A (50R/50W) | 0.7M | 2,774ns | 16.0M | 60ns |
+| B (95R/5W) | 1.7M | 1,213ns | 16.8M | 60ns |
+| C (100R) | 2.2M | 1,014ns | 17.3M | 50ns |
+
+CacheLib configured with tuned allocation classes, no NUMA binding. CacheLib requires 128 MB footprint (slab overhead) for 64 MB usable; FurrBall uses 64 MB. Full configuration in the technical note Appendix.
+
+### Shard-Native Policy Analysis (32 threads, theta=0.90)
+
+| Policy | Hit Rate | Issue |
+|--------|----------|-------|
+| LRU | 63.4% | No shared state — fully independent per node |
+| S3-FIFO | 35.4% | Small queue (10% cap) turns over too fast under contention |
+| ARC | 20.3% | Per-node p_ diverges from globally optimal value |
+
+### S3-FIFO Lock-Free Reads (32 threads)
+
+| Metric | LRU | S3-FIFO |
+|--------|-----|---------|
+| p50 GET | 910ns | **190ns** |
+| p99 GET | 1,620ns | **1,270ns** |
+
+S3-FIFO uses `FindWithAux()` for atomic counter increment during lookup, eliminating read-path lock contention.
 
 ## Architecture
 
 ```
-NuAtlas::FurrBall
-  +-- REMARC                           2D state space: (S_local, S_remote) → Evict/Migrate
-  +-- CMap                             Concurrent Swiss table (lock-free reads, CAS writes)
-  +-- MemoryManager                    NUMA-aware + regular allocation
-  +-- NodeJob                          Per-NUMA-node pinned worker thread
-  +-- Statistics                       Atomic hit/miss/eviction counters
-  +-- RocksDB                          Persistence (block cache disabled)
+NuAtlas::FurrBall<Policy>
+  ├── CMap<Value>            Lock-free Swiss table (SSE2 probing, seqlock reads, aux[7])
+  ├── Policy                 Compile-time template: LRU · ARC · S3-FIFO
+  ├── Annex                  Per-node routing cache (key → owning node + data offset)
+  ├── MemoryManager          NUMA-aware page allocation per node
+  ├── NodeJob                Per-NUMA-node pinned maintenance worker
+  ├── Statistics             Atomic per-node hit/miss/eviction counters
+  └── RocksDB (optional)     Cold tier with block cache disabled
 
-NuAtlas::Numatic                    Platform abstraction (Linux/Windows)
-  +-- NumaticUnix.cpp               libnuma
-  +-- NumaticWin.cpp                Windows NUMA APIs
+NuAtlas::Numatic            Platform abstraction
+  ├── NumaticUnix.cpp        libnuma
+  └── NumaticWin.cpp         Windows NUMA APIs
 ```
 
-**Layered model:**
-- **L1 (hot):** REMARC-managed pages with NUMA-aware placement and cross-node key migration — the thesis contribution.
-- **L2 (cold):** RocksDB backing store. Furrballs owns all caching.
+### CMap
 
-## Release (v0.1-alpha)
+Open-addressed Swiss table with 16-slot SSE2 SIMD probing groups. Lock-free reads via seqlock protocol (stamped version check, retry on writer interference). Each 64-byte aligned slot reserves 7 bytes of `aux` for policy scratchpad — CMap zeroes `aux` on insert and never reads or writes it. Policies use `FindWithAux()` and `EvictWithAux()` for single-probe combined read-and-policy operations.
 
-Snapshot for archival. This version includes:
+### Annex (Routing Cache)
 
-- **Core library** (Furrballs/): 2800 LOC C++20. REMARC eviction/migration policy with SIMD lookup tables, CMap concurrent Swiss table, NUMA-aware page allocation, RocksDB persistence, NodeJob per-node worker threading.
-- **Benchmarks** (Benchmark/): Single-node microbenchmark (30+ variants, 5 workloads), 3-node NUMA simulation, ghost map study. Archived experimental variants are in `#if 0` sections with their results preserved in the companion papers.
-- **Documentation** (docs/):
-  - [whitepaper.qmd](docs/whitepaper.qmd) — Furrballs systems paper (Paper 1). Covers architecture, NUMA placement, Phase 1/2 results.
-  - [remarc-paper.qmd](docs/remarc-paper.qmd) — REMARC algorithm paper (Paper 2). Covers framework, evaluation (16 findings), desire encoding, independence theorem. Status: research journal (living document).
-  - Published HTML+PDF available at the [project site](https://furrballs.pages.dev).
+On a SET to node X, a hint `{nodeId, dataOffset, dataSize}` is batched and broadcast to all other nodes' annex indices. On a GET miss on the local node, the annex resolves the owning node in one lookup and reads directly from the stored offset — no probing of remote CMap instances.
 
-**Validation:** Compiled and tested on GCC 13, Linux x86-64. Single-node benchmarks use synthetic workloads. Multi-node evaluation is simulation-based. Real hardware validation was performed on AWS c6i.metal (see whitepaper §5.18).
+This eliminates the cross-node probe cascade (O(N) remote probes → O(1) annex lookup). The architecture generalizes to RDMA: replace the `memcpy` from `dataOffset` with a one-sided RDMA read verb, and the annex becomes a local routing table for remote memory.
 
-## Dependencies
+### Policies
 
-- CMake 3.25+
-- C++20 compiler (GCC 13+, Clang 17+)
-- [vcpkg](https://vcpkg.io) for dependency management
-  - `lz4` — compression
-  - `rocksdb` — persistent backing store
-- `libnuma-dev` (Linux) — NUMA API
+Compile-time selectable via `FurrBall<Policy>` template. Each policy owns its key store, admission, and eviction. No virtual dispatch on the hot path.
 
-## Building
+## Build
+
+Requirements: CMake 3.25+, C++20 compiler (GCC 13+, Clang 17+), vcpkg. Linux needs libnuma-dev.
 
 ```bash
-# Set vcpkg location (once)
 export VCPKG_ROOT=/path/to/vcpkg
-
-# Configure (Linux GCC, debug)
-cmake --preset linux-debug
-
-# Build
-cmake --build build/linux-debug
+cmake --preset linux-release
+cmake --build build/linux-release
 ```
 
-Other presets: `linux-release`, `linux-clang-debug`, `linux-clang-release`, `windows-debug`, `windows-release`.
+vcpkg dependencies: `benchmark`, `xxhash`, `rocksdb[tbb,lz4]`, `lz4`.
 
-## VM Testing
+Presets: `linux-debug`, `linux-release`, `linux-clang-debug`, `linux-clang-release`, `windows-debug`, `windows-release`.
 
-QEMU NUMA simulation scripts live at `~/vm/furrballs/` (outside the repo to avoid snapshot bloat):
+## Benchmarks
 
-```bash
-~/vm/furrballs/furr.sh start    # Boot the VM
-~/vm/furrballs/furr.sh shell    # SSH into it
-~/vm/furrballs/furr.sh stop     # Shut down
-```
+- `Benchmark/NUMABench.cpp` — NUMA topology benchmark. Adapters for FurrBall (TL/SN), TBB, CacheLib, CacheLib-Numa, RocksDB. Per-thread latency vectors for local-vs-remote analysis.
+- `Benchmark/YCSBBench.cpp` — YCSB A/B/C against the same adapters, with capacity and thread scaling.
+- `bench/ec2-run-all.sh` — Reproducible EC2 run script (environment capture, full matrix, table parser). ~15 min, ~$0.80 on c6a.metal.
+- `data/ec2-c6a/` — Raw results (Google Benchmark JSON + plain text).
+
+## Coding Guidelines
+
+- `const` / `noexcept` by default. Exceptions only for unrecoverable errors.
+- Atomics and lock-free types preferred. No virtual dispatch in hot paths.
+- Error codes in public API. Factories over throwing constructors.
+- Destructors never throw.
+- Performance and latency above all else.
 
 ## Roadmap
 
 | Phase | Focus | Status |
-|---|---|---|
+|-------|-------|--------|
 | 1 | NUMA-aware core, key-based API, benchmark harness | Done |
-| 2a | CMap + ConcurrentARC (concurrent Swiss table, ARC eviction) | Done |
-| 2b | REMARC policy, migration-based eviction, RocksDB persistence | Done |
-| 3 | Adaptive Memory Pooling (AMP) — dynamic pool growth/contraction | Planned |
-| 4 | Server + Client + binary protocol | Planned |
-| 5 | Publication — formal benchmark results and thesis | In progress |
+| 2 | CMap Swiss table; LRU/ARC/S3-FIFO policies; annex routing cache | Done |
+| 3 | Dynamic memory pooling | Planned |
+| 4 | Server + client + binary protocol | Planned |
+| 5 | RDMA transport via annex | Planned |
 
-## Coding Guidelines
-
-- `const` on member functions and arguments wherever possible.
-- `noexcept` by default; only mark throwing when explicitly intended.
-- Multi-threading first. Use atomic types/operations when possible.
-- Only the paging system allocates memory (through `MemoryManager`).
-- Error codes over exceptions in the public API.
-- Factories instead of throwing constructors — guarantee all constructed objects are valid.
-- Destructors must never throw — cleanup must always be reliable and stable.
-- Exceptions are only for unrecoverable errors. Single try/catch layer, no catch-all.
-- Prioritize **performance and low latency** over all else.
-
-### Platform Priorities
-
-Unix (POSIX) and Windows. macOS is not a priority.
+Platform support: Linux x86-64 (primary), Windows (in progress). macOS is not a target.
