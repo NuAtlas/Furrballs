@@ -106,15 +106,29 @@ class BlockedBloomFilter {
         pos[3] = (h2 >> 27) & 0x1FF;
     }
 
+    void Release() noexcept {
+        if (words_) ::operator delete(words_, std::align_val_t{kBlockBytes});
+        words_ = nullptr;
+    }
+
 public:
     BlockedBloomFilter() = default;
+    BlockedBloomFilter(const BlockedBloomFilter&) = delete;
+    BlockedBloomFilter& operator=(const BlockedBloomFilter&) = delete;
+    ~BlockedBloomFilter() { Release(); }
 
     bool Init(size_t totalBytes) {
         if (totalBytes < kBlockBytes) return false;
+        Release();
         numBlocks_ = totalBytes / kBlockBytes;
         numWords_ = numBlocks_ * (kBlockBytes / sizeof(uint64_t));
-        words_ = new(std::align_val_t{64}) std::atomic<uint64_t>[numWords_]();
-        return words_ != nullptr;
+        // Blocks are cache-line aligned so each probe touches one line.
+        void* mem = ::operator new(numWords_ * sizeof(std::atomic<uint64_t>), std::align_val_t{kBlockBytes},
+                                   std::nothrow);
+        if (!mem) return false;
+        words_ = static_cast<std::atomic<uint64_t>*>(mem);
+        for (size_t i = 0; i < numWords_; i++) new (&words_[i]) std::atomic<uint64_t>(0);
+        return true;
     }
 
     void Add(uint64_t h1, uint64_t h2) {

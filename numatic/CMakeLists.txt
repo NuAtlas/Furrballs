@@ -13,7 +13,9 @@ PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
-if(NOT WIN32)
+if(WIN32)
+    target_link_libraries(Numatic PRIVATE psapi)
+else()
     target_link_libraries(Numatic PRIVATE numa)
 endif()
 

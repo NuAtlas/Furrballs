@@ -12,6 +12,9 @@
 #include <string>
 #include <algorithm>
 #include <functional>
+#include <memory>
+#include <mutex>
+#include <vector>
 #include <unordered_map>
 
 namespace NuAtlas {
@@ -393,22 +396,28 @@ namespace NuAtlas {
         }
     };
 
+    // Bounded MPSC ring of pending promotions (Vyukov-style per-slot
+    // sequence numbers). Producers never leave holes: a full ring rejects the
+    // enqueue without claiming a position, so dropped promotions are just lost
+    // recency hints and the consumer never stalls.
     class PromoteBuf {
         static constexpr size_t kCapacity = 4096;
         static constexpr size_t kThreshold = 1024;
 
         struct Slot {
+            std::atomic<size_t> seq;
             HashPair hashes;
-            std::atomic<bool> ready{false};
         };
 
         std::vector<Slot> slots_;
-        std::atomic<size_t> writeHead_{0};
-        size_t drainTail_ = 0;
+        alignas(64) std::atomic<size_t> writeHead_{0};
+        alignas(64) size_t drainTail_ = 0;
         std::function<void()> wakeCb_;
 
     public:
-        PromoteBuf() : slots_(kCapacity) {}
+        PromoteBuf() : slots_(kCapacity) {
+            for (size_t i = 0; i < kCapacity; ++i) slots_[i].seq.store(i, std::memory_order_relaxed);
+        }
 
         PromoteBuf(const PromoteBuf&) = delete;
         PromoteBuf& operator=(const PromoteBuf&) = delete;
@@ -420,25 +429,40 @@ namespace NuAtlas {
         }
 
         bool enqueue(HashPair hashes) {
-            size_t pos = writeHead_.fetch_add(1, std::memory_order_relaxed);
-            size_t idx = pos % kCapacity;
-            if (slots_[idx].ready.load(std::memory_order_acquire)) return false;
-            slots_[idx].hashes = hashes;
-            slots_[idx].ready.store(true, std::memory_order_release);
+            size_t pos = writeHead_.load(std::memory_order_relaxed);
+            for (;;) {
+                Slot& slot = slots_[pos % kCapacity];
+                size_t seq = slot.seq.load(std::memory_order_acquire);
+                if (seq == pos) {
+                    if (writeHead_.compare_exchange_weak(pos, pos + 1, std::memory_order_relaxed)) {
+                        slot.hashes = hashes;
+                        slot.seq.store(pos + 1, std::memory_order_release);
+                        break;
+                    }
+                } else if (seq < pos) {
+                    return false;  // full
+                } else {
+                    pos = writeHead_.load(std::memory_order_relaxed);
+                }
+            }
             if (pending() >= kThreshold && wakeCb_) wakeCb_();
             return true;
         }
 
+        // Single consumer (callers hold the policy lock). Applies fn to at
+        // most maxItems entries; the rest stay queued.
         template <typename Fn>
-        void drainWith(Fn&& fn) {
-            size_t head = writeHead_.load(std::memory_order_acquire);
-            while (drainTail_ < head) {
-                size_t idx = drainTail_ % kCapacity;
-                if (!slots_[idx].ready.load(std::memory_order_acquire)) break;
-                slots_[idx].ready.store(false, std::memory_order_relaxed);
-                fn(slots_[idx].hashes);
+        size_t drainWith(Fn&& fn, size_t maxItems = SIZE_MAX) {
+            size_t n = 0;
+            while (n < maxItems) {
+                Slot& slot = slots_[drainTail_ % kCapacity];
+                if (slot.seq.load(std::memory_order_acquire) != drainTail_ + 1) break;
+                fn(slot.hashes);
+                slot.seq.store(drainTail_ + kCapacity, std::memory_order_release);
                 ++drainTail_;
+                ++n;
             }
+            return n;
         }
     };
 
@@ -494,11 +518,12 @@ namespace NuAtlas {
         static constexpr unsigned int kGroupSize = 16;
 
         struct alignas(64) Slot {
-            static constexpr bool kNeedsSplit = (16 + sizeof(Value)) > 64;
+            static constexpr bool kNeedsSplit = (24 + sizeof(Value)) > 64;
 
             std::atomic<uint8_t> seq;
             uint8_t aux[7];               // policy-owned auxiliary data (zeroed on insert)
             std::atomic<uint64_t> fingerprint;
+            uint64_t h1;                  // home-group hash, for in-place rehash
 
             alignas(kNeedsSplit ? 64 : alignof(Value)) Value value;
         };
@@ -513,6 +538,7 @@ namespace NuAtlas {
         CMapFreeFn freeFn_ = nullptr;
         size_t numGroups_ = 0;
         size_t slotCount_ = 0;
+        size_t tombstones_ = 0;  // writer-only
 
       public:
         CMap(size_t capacity,
@@ -520,8 +546,11 @@ namespace NuAtlas {
              CMapFreeFn ff = CMapDefaultFree)
             : allocFn_(af), freeFn_(ff)
         {
-            size_t allocCap = 1;
-            while (allocCap < capacity) allocCap <<= 1;
+            // Keep load factor <= 7/8 at full capacity: a near-full Swiss table
+            // degrades every miss into a scan of most of the table.
+            size_t target = capacity + capacity / 7;
+            size_t allocCap = kGroupSize;
+            while (allocCap < target) allocCap <<= 1;
 
             numGroups_ = allocCap / kGroupSize;
             slotCount_ = allocCap;
@@ -549,9 +578,126 @@ namespace NuAtlas {
         // x86-64 guarantees byte-aligned stores are atomic.
         // SIMD load + concurrent CAS on same ctrl byte is safe in practice.
         bool CasCtrl(size_t slotIdx, uint8_t expected, uint8_t desired) noexcept {
-            return __atomic_compare_exchange_n(
-                &ctrl_[slotIdx], &expected, desired,
-                false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+            return std::atomic_ref<uint8_t>(ctrl_[slotIdx]).compare_exchange_strong(
+                expected, desired, std::memory_order_acq_rel, std::memory_order_acquire);
+        }
+
+        // Ctrl state for a slot being erased. Probe stops at the first group
+        // holding an EMPTY, so if this group still has one, no probe chain has
+        // ever continued past it and the slot can go straight back to EMPTY.
+        // Only groups that were once completely full accumulate tombstones.
+        // Requires a single writer (all callers erase under the policy lock).
+        uint8_t ErasedCtrl(size_t slotIdx) const noexcept {
+            size_t group = slotIdx / kGroupSize;
+            __m128i ctrl_vec = _mm_loadu_si128(reinterpret_cast<const __m128i*>(Ctrl() + group * kGroupSize));
+            int emptyMask = MatchCtrlMask(ctrl_vec, static_cast<uint8_t>(CMapCtrlState::kEmpty));
+            return emptyMask != 0 ? static_cast<uint8_t>(CMapCtrlState::kEmpty)
+                                  : static_cast<uint8_t>(CMapCtrlState::kDeleted);
+        }
+
+        // Erasers hold the policy lock; the only other seqlock holders are
+        // in-place updates (a short memcpy), so wait them out instead of
+        // failing. A failed eviction would force callers to either orphan the
+        // new key or overfill their lists.
+        uint8_t LockSlotForErase(Slot& slot) noexcept {
+            uint8_t s = slot.seq.load(std::memory_order_relaxed);
+            while ((s & 1) || !slot.seq.compare_exchange_weak(s, s + 1, std::memory_order_acq_rel,
+                                                              std::memory_order_relaxed)) {
+                _mm_pause();
+                s = slot.seq.load(std::memory_order_relaxed);
+            }
+            return s;
+        }
+
+        // Erase-side ctrl transition; counts the tombstone if one is left.
+        bool MarkErased(size_t slotIdx, uint8_t h2Short) noexcept {
+            uint8_t erased = ErasedCtrl(slotIdx);
+            if (!CasCtrl(slotIdx, h2Short, erased)) return false;
+            if (erased == static_cast<uint8_t>(CMapCtrlState::kDeleted)) ++tombstones_;
+            return true;
+        }
+
+        // Groups that were ever full never regain an EMPTY, so under churn every
+        // free slot eventually becomes a tombstone and each miss scans the whole
+        // table. Purge once tombstones reach 1/16 of the slots.
+        void MaybePurgeTombstones() noexcept {
+            if (tombstones_ * 16 < slotCount_) return;
+            try {
+                PurgeTombstones();
+            } catch (const std::bad_alloc&) {
+                // Keep serving with tombstones; the next erase retries.
+            }
+        }
+
+        // Rebuilds the table in place without tombstones. Writer-only (callers
+        // hold the policy lock). Every slot's seqlock is held for the duration,
+        // so readers spin rather than observe half-moved entries and in-place
+        // updates wait or report ABANDONED_SET. O(slots), amortized over the
+        // slots/16 erasures that trigger it.
+        void PurgeTombstones() {
+            struct Entry {
+                uint64_t h1, h2;
+                uint8_t aux[7];
+                alignas(Value) std::byte value[sizeof(Value)];
+            };
+            std::vector<Entry> live;
+            live.reserve(slotCount_);  // may throw: nothing is locked yet
+
+            for (size_t i = 0; i < slotCount_; ++i) {
+                std::atomic<uint8_t>& seq = slots_[i].seq;
+                uint8_t s = seq.load(std::memory_order_relaxed);
+                while ((s & 1) || !seq.compare_exchange_weak(s, s + 1, std::memory_order_acquire)) {
+                    _mm_pause();
+                    s = seq.load(std::memory_order_relaxed);
+                }
+            }
+
+            for (size_t i = 0; i < slotCount_; ++i) {
+                if (ctrl_[i] & 0x80) continue;  // EMPTY or DELETED
+                Slot& slot = slots_[i];
+                Entry& e = live.emplace_back();
+                e.h1 = slot.h1;
+                e.h2 = slot.fingerprint.load(std::memory_order_relaxed);
+                std::memcpy(e.aux, slot.aux, 7);
+                std::memcpy(e.value, &slot.value, sizeof(Value));
+            }
+            for (size_t i = 0; i < slotCount_; ++i) {
+                std::atomic_ref<uint8_t>(ctrl_[i]).store(static_cast<uint8_t>(CMapCtrlState::kEmpty),
+                                                         std::memory_order_relaxed);
+                slots_[i].fingerprint.store(0, std::memory_order_relaxed);
+            }
+            for (const Entry& e : live) {
+                size_t group = e.h1 & (numGroups_ - 1);
+                int emptyMask;
+                for (;;) {
+                    __m128i ctrl_vec = _mm_loadu_si128(reinterpret_cast<const __m128i*>(Ctrl() + group * kGroupSize));
+                    emptyMask = MatchCtrlMask(ctrl_vec, static_cast<uint8_t>(CMapCtrlState::kEmpty));
+                    if (emptyMask != 0) break;
+                    group = (group + 1) & (numGroups_ - 1);
+                }
+                size_t idx = group * kGroupSize + static_cast<size_t>(std::countr_zero(static_cast<unsigned>(emptyMask)));
+                Slot& slot = slots_[idx];
+                slot.h1 = e.h1;
+                slot.fingerprint.store(e.h2, std::memory_order_relaxed);
+                std::memcpy(slot.aux, e.aux, 7);
+                std::memcpy(&slot.value, e.value, sizeof(Value));
+                std::atomic_ref<uint8_t>(ctrl_[idx]).store(static_cast<uint8_t>(e.h2 >> 57),
+                                                           std::memory_order_relaxed);
+            }
+            tombstones_ = 0;
+
+            for (size_t i = 0; i < slotCount_; ++i)
+                slots_[i].seq.fetch_add(1, std::memory_order_release);
+        }
+
+        size_t SlotCount() const noexcept { return slotCount_; }
+
+        // Diagnostic: number of tombstoned slots (O(slots), not for hot paths).
+        size_t TombstoneCount() const noexcept {
+            size_t n = 0;
+            for (size_t i = 0; i < slotCount_; ++i)
+                n += ctrl_[i] == static_cast<uint8_t>(CMapCtrlState::kDeleted);
+            return n;
         }
 
         template <bool FindDeleted = false> ProbeResult Probe(const HashPair& hashes) const noexcept {
@@ -605,13 +751,24 @@ namespace NuAtlas {
             if (result.matchSlot == SIZE_MAX) return std::nullopt;
             const Slot& slot = Slots()[result.matchSlot];
             alignas(Value) std::byte buf[sizeof(Value)];
+            if (!ReadSlot(slot, pair.h2, buf)) return std::nullopt;
+            return std::bit_cast<Value>(buf);
+        }
+
+        // Seqlock read of a slot's value. The fingerprint is re-checked inside
+        // the read window: between Probe() and this read the slot may have been
+        // erased and reused by another key, which must read as a miss.
+        bool ReadSlot(const Slot& slot, uint64_t h2, std::byte* buf) const noexcept {
             uint8_t s1;
+            uint64_t fp = 0;
             do {
                 s1 = slot.seq.load(std::memory_order_acquire);
                 if (s1 & 1) { _mm_pause(); continue; }
+                fp = slot.fingerprint.load(std::memory_order_relaxed);
                 std::memcpy(buf, &slot.value, sizeof(Value));
-            } while (s1 != slot.seq.load(std::memory_order_acquire));
-            return std::bit_cast<Value>(buf);
+                std::atomic_thread_fence(std::memory_order_acquire);
+            } while ((s1 & 1) || s1 != slot.seq.load(std::memory_order_relaxed));
+            return fp == h2;
         }
 
         struct AuxRef {
@@ -624,12 +781,7 @@ namespace NuAtlas {
             if (result.matchSlot == SIZE_MAX) return std::nullopt;
             const Slot& slot = Slots()[result.matchSlot];
             alignas(Value) std::byte buf[sizeof(Value)];
-            uint8_t s1;
-            do {
-                s1 = slot.seq.load(std::memory_order_acquire);
-                if (s1 & 1) { _mm_pause(); continue; }
-                std::memcpy(buf, &slot.value, sizeof(Value));
-            } while (s1 != slot.seq.load(std::memory_order_acquire));
+            if (!ReadSlot(slot, pair.h2, buf)) return std::nullopt;
             return AuxRef{std::bit_cast<Value>(buf), slot.aux};
         }
 
@@ -643,15 +795,9 @@ namespace NuAtlas {
             if (result.matchSlot == SIZE_MAX) return std::nullopt;
 
             Slot& targetSlot = Slots()[result.matchSlot];
-            uint8_t expected = targetSlot.seq.load(std::memory_order_acquire);
-            if (expected & 1) return std::nullopt;
-            if (!targetSlot.seq.compare_exchange_strong(expected, expected + 1,
-                    std::memory_order_acq_rel, std::memory_order_acquire)) {
-                return std::nullopt;
-            }
+            uint8_t expected = LockSlotForErase(targetSlot);
 
-            if (!CasCtrl(result.matchSlot, static_cast<uint8_t>(hashes.h2 >> 57),
-                    static_cast<uint8_t>(CMapCtrlState::kDeleted))) {
+            if (!MarkErased(result.matchSlot, static_cast<uint8_t>(hashes.h2 >> 57))) {
                 targetSlot.seq.store(expected, std::memory_order_release);
                 return std::nullopt;
             }
@@ -665,6 +811,7 @@ namespace NuAtlas {
             targetSlot.seq.store(expected + 2, std::memory_order_release);
             AuxEvictRef out{std::bit_cast<Value>(buf), {}};
             std::memcpy(out.aux, auxCopy, 7);
+            MaybePurgeTombstones();
             return out;
         }
 
@@ -700,12 +847,15 @@ namespace NuAtlas {
                 return {ABANDONED_SET, false};
 
             targetSlot.fingerprint.store(pair.h2, std::memory_order_relaxed);
+            targetSlot.h1 = pair.h1;
             std::memset(targetSlot.aux, 0, 7);
-            if (!CasCtrl(targetIdx, static_cast<uint8_t>(CMapCtrlState::kDeleted), h2_short) &&
+            bool reusedTombstone = CasCtrl(targetIdx, static_cast<uint8_t>(CMapCtrlState::kDeleted), h2_short);
+            if (!reusedTombstone &&
                 !CasCtrl(targetIdx, static_cast<uint8_t>(CMapCtrlState::kEmpty), h2_short)) {
                 targetSlot.seq.store(expected, std::memory_order_release);
                 return {ABANDONED_SET, false};
             }
+            if (reusedTombstone) --tombstones_;
 
             std::memcpy(&targetSlot.value, &val, sizeof(Value));
             targetSlot.seq.store(expected + 2, std::memory_order_release);
@@ -730,7 +880,8 @@ namespace NuAtlas {
                     std::memory_order_acq_rel, std::memory_order_acquire))
                 return ABANDONED_SET;
 
-            if (targetSlot.value.DataOffset == nullptr) {
+            if (targetSlot.value.DataOffset == nullptr ||
+                targetSlot.fingerprint.load(std::memory_order_relaxed) != pair.h2) {
                 targetSlot.seq.store(expected, std::memory_order_release);
                 return KEY_NOT_FOUND;
             }
@@ -755,7 +906,8 @@ namespace NuAtlas {
             if (!targetSlot.seq.compare_exchange_strong(expected, expected + 1,
                     std::memory_order_acq_rel, std::memory_order_acquire))
                 return ABANDONED_SET;
-            if (targetSlot.value.DataOffset == nullptr) {
+            if (targetSlot.value.DataOffset == nullptr ||
+                targetSlot.fingerprint.load(std::memory_order_relaxed) != hashes.h2) {
                 targetSlot.seq.store(expected, std::memory_order_release);
                 return KEY_NOT_FOUND;
             }
@@ -776,16 +928,9 @@ namespace NuAtlas {
             if (result.matchSlot == SIZE_MAX) return out;
 
             Slot& targetSlot = Slots()[result.matchSlot];
-            uint8_t expected = targetSlot.seq.load(std::memory_order_acquire);
-            if (expected & 1) { out.err = ABANDONED_SET; return out; }
-            if (!targetSlot.seq.compare_exchange_strong(expected, expected + 1,
-                    std::memory_order_acq_rel, std::memory_order_acquire)) {
-                out.err = ABANDONED_SET;
-                return out;
-            }
+            uint8_t expected = LockSlotForErase(targetSlot);
 
-            if (!CasCtrl(result.matchSlot, static_cast<uint8_t>(pair.h2 >> 57),
-                    static_cast<uint8_t>(CMapCtrlState::kDeleted))) {
+            if (!MarkErased(result.matchSlot, static_cast<uint8_t>(pair.h2 >> 57))) {
                 targetSlot.seq.store(expected, std::memory_order_release);
                 out.err = ABANDONED_SET;
                 return out;
@@ -798,6 +943,7 @@ namespace NuAtlas {
             targetSlot.seq.store(expected + 2, std::memory_order_release);
             out.err = NO_ERR;
             out.value = std::bit_cast<Value>(buf);
+            MaybePurgeTombstones();
             return out;
         }
 
@@ -807,16 +953,9 @@ namespace NuAtlas {
             if (result.matchSlot == SIZE_MAX) return out;
 
             Slot& targetSlot = Slots()[result.matchSlot];
-            uint8_t expected = targetSlot.seq.load(std::memory_order_acquire);
-            if (expected & 1) { out.err = ABANDONED_SET; return out; }
-            if (!targetSlot.seq.compare_exchange_strong(expected, expected + 1,
-                    std::memory_order_acq_rel, std::memory_order_acquire)) {
-                out.err = ABANDONED_SET;
-                return out;
-            }
+            uint8_t expected = LockSlotForErase(targetSlot);
 
-            if (!CasCtrl(result.matchSlot, static_cast<uint8_t>(hashes.h2 >> 57),
-                    static_cast<uint8_t>(CMapCtrlState::kDeleted))) {
+            if (!MarkErased(result.matchSlot, static_cast<uint8_t>(hashes.h2 >> 57))) {
                 targetSlot.seq.store(expected, std::memory_order_release);
                 out.err = ABANDONED_SET;
                 return out;
@@ -829,6 +968,7 @@ namespace NuAtlas {
             targetSlot.seq.store(expected + 2, std::memory_order_release);
             out.err = NO_ERR;
             out.value = std::bit_cast<Value>(buf);
+            MaybePurgeTombstones();
             return out;
         }
 
@@ -849,36 +989,17 @@ namespace NuAtlas {
         size_t p_;
         EvictionCallback evictionCallback_ = [](const Value&) {};
 
-        void drainPromoteBufAndApply() {
-            HashPair batch[64];
-            size_t count = 0;
-            promoteBuf_.drainWith([&](HashPair hashes) {
-                if (count < 64) batch[count++] = hashes;
-            });
-            for (size_t i = 0; i < count; i++) {
-                uint8_t lid = lists_.whichList(batch[i].h2);
-                if (lid == 0) {
-                    lists_.promoteT1toT2(batch[i]);
-                } else if (lid == 1) {
-                    lists_.spliceFrontT2(batch[i].h2);
-                }
+        void promoteLocked(const HashPair& hashes) {
+            uint8_t lid = lists_.whichList(hashes.h2);
+            if (lid == 0) {
+                lists_.promoteT1toT2(hashes);
+            } else if (lid == 1) {
+                lists_.spliceFrontT2(hashes.h2);
             }
         }
 
-        void drainPromoteBufCooperative(size_t maxItems) {
-            HashPair batch[16];
-            size_t count = 0;
-            promoteBuf_.drainWith([&](HashPair hashes) {
-                if (count < maxItems && count < 16) batch[count++] = hashes;
-            });
-            for (size_t i = 0; i < count; i++) {
-                uint8_t lid = lists_.whichList(batch[i].h2);
-                if (lid == 0) {
-                    lists_.promoteT1toT2(batch[i]);
-                } else if (lid == 1) {
-                    lists_.spliceFrontT2(batch[i].h2);
-                }
-            }
+        void drainPromoteBufAndApply() {
+            promoteBuf_.drainWith([&](HashPair hashes) { promoteLocked(hashes); });
         }
 
         bool replaceLocked(uint64_t h2) {
@@ -904,28 +1025,27 @@ namespace NuAtlas {
             return true;
         }
 
-        bool evictLocked() {
-            if (lists_.sizeT1() + lists_.sizeB1() >= capacity_) {
+        // ARC case IV (miss on a key in no list), Megiddo & Modha 2003. Dropping
+        // a ghost entry only trims history; REPLACE is what makes room.
+        bool evictLocked(uint64_t h2) {
+            size_t l1 = lists_.sizeT1() + lists_.sizeB1();
+            size_t total = l1 + lists_.sizeT2() + lists_.sizeB2();
+            if (l1 >= capacity_) {
                 if (lists_.sizeT1() < capacity_ && !lists_.emptyB1()) {
                     lists_.popBackB1();
-                } else if (!lists_.emptyT1()) {
-                    HashPair hashes = lists_.backT1();
-                    auto result = store_.FindAndEraseByHash(hashes);
-                    if (result.err != NO_ERR) { return false; }
-                    lists_.popBackT1();
-                    if (result.value) evictionCallback_(*result.value);
+                    return replaceLocked(h2);
                 }
+                if (lists_.emptyT1()) return true;
+                HashPair hashes = lists_.backT1();
+                auto result = store_.FindAndEraseByHash(hashes);
+                if (result.err != NO_ERR) { return false; }
+                lists_.popBackT1();
+                if (result.value) evictionCallback_(*result.value);
+                return true;
             }
-            if (lists_.sizeT1() + lists_.sizeT2() + lists_.sizeB1() + lists_.sizeB2() >= 2 * capacity_) {
-                if (lists_.sizeT2() + lists_.sizeB2() > capacity_ && !lists_.emptyB2()) {
-                    lists_.popBackB2();
-                } else if (!lists_.emptyT2()) {
-                    HashPair hashes = lists_.backT2();
-                    auto result = store_.FindAndEraseByHash(hashes);
-                    if (result.err != NO_ERR) { return false; }
-                    lists_.popBackT2();
-                    if (result.value) evictionCallback_(*result.value);
-                }
+            if (total >= capacity_) {
+                if (total >= 2 * capacity_ && !lists_.emptyB2()) lists_.popBackB2();
+                return replaceLocked(h2);
             }
             return true;
         }
@@ -972,7 +1092,10 @@ namespace NuAtlas {
             HashPair hashes = HashKey(key);
             auto val = store_.FindByHash(hashes);
             if (!val) return std::nullopt;
-            promoteBuf_.enqueue(hashes);
+            // Promote inline: deferring ARC promotions lets a pending promote
+            // be evicted first, collapsing the hit rate (see 53a1422).
+            std::lock_guard<SpinLock> guard(arcLock_);
+            promoteLocked(hashes);
             return val;
         }
 
@@ -1027,19 +1150,14 @@ namespace NuAtlas {
             if (result.err != NO_ERR) return result.err;
 
             if (!result.inserted) {
-                uint8_t lid = lists_.whichList(h2);
-                if (lid == 0) {
-                    lists_.promoteT1toT2(hashes);
-                } else if (lid == 1) {
-                    lists_.spliceFrontT2(h2);
-                }
+                promoteLocked(hashes);
                 return NO_ERR;
             }
 
             if (lists_.containsB1(h2)) {
                 size_t delta1 = lists_.sizeB1() > 0 ? lists_.sizeB2() / lists_.sizeB1() : 1;
                 p_ = std::min(capacity_, p_ + std::max(delta1, (size_t)1));
-                if (!replaceLocked(h2)) return ABANDONED_SET;
+                replaceLocked(h2);  // key is already stored: never orphan it on a failed eviction
                 lists_.promoteB1toT2(hashes);
                 return NO_ERR;
             }
@@ -1048,12 +1166,12 @@ namespace NuAtlas {
                 size_t delta2 = lists_.sizeB2() > 0 ? lists_.sizeB1() / lists_.sizeB2() : 1;
                 size_t dec = std::max(delta2, (size_t)1);
                 p_ = (p_ >= dec) ? p_ - dec : 0;
-                if (!replaceLocked(h2)) return ABANDONED_SET;
+                replaceLocked(h2);  // key is already stored: never orphan it on a failed eviction
                 lists_.promoteB2toT2(hashes);
                 return NO_ERR;
             }
 
-            if (!evictLocked()) return ABANDONED_SET;
+            evictLocked(h2);  // key is already stored: never orphan it on a failed eviction
             lists_.pushT1(hashes);
             return NO_ERR;
         }
@@ -1090,19 +1208,14 @@ namespace NuAtlas {
             if (result.err != NO_ERR) return result.err;
 
             if (!result.inserted) {
-                uint8_t lid = lists_.whichList(h2);
-                if (lid == 0) {
-                    lists_.promoteT1toT2(hashes);
-                } else if (lid == 1) {
-                    lists_.spliceFrontT2(h2);
-                }
+                promoteLocked(hashes);
                 return NO_ERR;
             }
 
             if (lists_.containsB1(h2)) {
                 size_t delta1 = lists_.sizeB1() > 0 ? lists_.sizeB2() / lists_.sizeB1() : 1;
                 p_ = std::min(capacity_, p_ + std::max(delta1, (size_t)1));
-                if (!replaceLocked(h2)) return ABANDONED_SET;
+                replaceLocked(h2);  // key is already stored: never orphan it on a failed eviction
                 lists_.promoteB1toT2(hashes);
                 return NO_ERR;
             }
@@ -1111,12 +1224,12 @@ namespace NuAtlas {
                 size_t delta2 = lists_.sizeB2() > 0 ? lists_.sizeB1() / lists_.sizeB2() : 1;
                 size_t dec = std::max(delta2, (size_t)1);
                 p_ = (p_ >= dec) ? p_ - dec : 0;
-                if (!replaceLocked(h2)) return ABANDONED_SET;
+                replaceLocked(h2);  // key is already stored: never orphan it on a failed eviction
                 lists_.promoteB2toT2(hashes);
                 return NO_ERR;
             }
 
-            if (!evictLocked()) return ABANDONED_SET;
+            evictLocked(h2);  // key is already stored: never orphan it on a failed eviction
             lists_.pushT1(hashes);
             return NO_ERR;
         }
@@ -1208,30 +1321,16 @@ namespace NuAtlas {
         EvictionCallback evictionCallback_ = [](const Value&) {};
 
         void drainPromoteBufAndApply() {
-            HashPair batch[64];
-            size_t count = 0;
-            promoteBuf_.drainWith([&](HashPair hashes) {
-                if (count < 64) batch[count++] = hashes;
-            });
-            for (size_t i = 0; i < count; i++) {
-                list_.splice_front(batch[i].h2);
-            }
+            promoteBuf_.drainWith([&](HashPair hashes) { list_.splice_front(hashes.h2); });
         }
 
         void drainPromoteBufCooperative(size_t maxItems) {
-            HashPair batch[16];
-            size_t count = 0;
-            promoteBuf_.drainWith([&](HashPair hashes) {
-                if (count < maxItems && count < 16) batch[count++] = hashes;
-            });
-            for (size_t i = 0; i < count; i++) {
-                list_.splice_front(batch[i].h2);
-            }
+            promoteBuf_.drainWith([&](HashPair hashes) { list_.splice_front(hashes.h2); }, maxItems);
         }
 
     public:
         ConcurrentLRU(size_t cap, CMapAllocFn af = CMapDefaultAlloc, CMapFreeFn ff = CMapDefaultFree)
-            : store_(cap, af, ff), list_(cap), capacity_(cap) {}
+            : store_(cap + 1, af, ff), list_(cap + 1), capacity_(cap) {}
 
         void setWakeCallback(std::function<void()> cb) { promoteBuf_.setWakeCallback(std::move(cb)); }
 
@@ -1309,9 +1408,15 @@ namespace NuAtlas {
                 return NO_ERR;
             }
 
-            while (list_.size() >= capacity_) {
+            for (size_t tries = list_.size(); list_.size() >= capacity_ && tries > 0; --tries) {
                 HashPair old = list_.back();
                 auto eraseResult = store_.FindAndEraseByHash(old);
+                if (eraseResult.err == ABANDONED_SET) {
+                    // Slot held by an in-place update: popping it now would
+                    // orphan it in the store. Rotate and evict the next one.
+                    list_.splice_front(old.h2);
+                    continue;
+                }
                 list_.pop_back();
                 if (eraseResult.value) evictionCallback_(*eraseResult.value);
             }
@@ -1353,16 +1458,19 @@ namespace NuAtlas {
     //  S3-FIFO: Simple, scalable FIFO-based cache eviction
     //
     //  Three static FIFO queues: Small (10%), Main (90%), Ghost (same as Main).
-    //  - New items enter Small. Items accessed >=2x in Small graduate to Main.
-    //  - Main uses FIFO-reinsertion: evicted items with count >= 2 get re-inserted
-    //    with counter decremented by 1.
-    //  - Ghost tracks recently-evicted hashes for fast re-admission.
-    //  - Find() is lock-free: atomic counter increment via CMap per-slot freq,
+    //  - New items enter Small. On eviction from Small, items accessed more than
+    //    once move to Main (they stay in the store); the rest leave the cache and
+    //    their hash enters Ghost.
+    //  - Main uses FIFO-reinsertion: an item with a nonzero counter goes back to
+    //    the head with its counter decremented; the first zero-count item leaves.
+    //  - Ghost is a bounded FIFO of recently-evicted hashes. A Set() of a ghosted
+    //    key is admitted straight into Main.
+    //  - Find() is lock-free: relaxed atomic increment of the slot's counter,
     //    no list reordering.
-    //  - Set() acquires SpinLock, FIFO push/pop only -- no promote.
+    //  - Set() acquires the SpinLock; queue moves happen only there.
     //
-    //  Counter: per-CMap-slot std::atomic<uint8_t> (in Slot::freq), zero extra
-    //  memory, zero collisions. CMap::TouchByHash increments, GetFreqByHash reads.
+    //  Counter: CMap per-slot aux[0], zeroed on insert, saturating at
+    //  kCounterMax (racing increments may overshoot by a few; harmless).
     //
     //  Reference: Yang et al., "FIFO Queues Are All You Need for Cache Eviction"
     //              SOSP'23
@@ -1371,63 +1479,113 @@ namespace NuAtlas {
     template<typename Value>
     requires std::is_move_constructible_v<Value> && std::is_trivially_copyable_v<Value>
     class ConcurrentS3FIFO {
-        static constexpr uint8_t kCounterMax = 2;
+        static constexpr uint8_t kCounterMax = 3;
         static constexpr size_t kSmallRatio = 10;
 
+    public:
         using EvictionCallback = std::function<void(const Value&)>;
 
+    private:
         CMap<Value> store_;
         FlatList small_;
         FlatList main_;
-        OpenIdx<uint8_t> ghost_;
+        FlatList ghost_;
         SpinLock lock_;
         size_t capacity_;
         size_t smallCap_;
         size_t mainCap_;
         EvictionCallback evictionCallback_ = [](const Value&) {};
-        size_t ghostCount_ = 0;
 
-        void evictSmallTail() {
-            if (small_.empty()) return;
-            HashPair old = small_.back();
-            small_.pop_back();
-            auto r = store_.EvictWithAux(old);
-            if (!r) return;
-            if (r->aux[0] >= kCounterMax) {
-                main_.push_front(old);
-                evictMainTail();
-            } else {
-                if (ghostCount_ < mainCap_) {
-                    ghost_.insert(old.h2, 1);
-                    ghostCount_++;
-                }
-                if (evictionCallback_) evictionCallback_(r->value);
-            }
+        // Counter of a resident key, or nullptr if the key left the store.
+        std::optional<std::atomic_ref<uint8_t>> counterOf(const HashPair& hashes) noexcept {
+            auto r = store_.FindWithAux(hashes);
+            if (!r) return std::nullopt;
+            return std::atomic_ref<uint8_t>(*const_cast<uint8_t*>(&r->aux[0]));
         }
 
-        void evictMainTail() {
-            if (main_.size() <= mainCap_ || main_.empty()) return;
-            HashPair old = main_.back();
-            main_.pop_back();
-            auto r = store_.EvictWithAux(old);
-            if (!r) return;
-            if (r->aux[0] >= kCounterMax) {
-                main_.push_front(old);
-            } else {
-                if (ghostCount_ < mainCap_) {
-                    ghost_.insert(old.h2, 1);
-                    ghostCount_++;
+        // Removes the key from the store and records it in Ghost.
+        // Fails only if the slot is momentarily held by an in-place update.
+        bool evictToGhost(const HashPair& hashes) {
+            auto r = store_.EvictWithAux(hashes);
+            if (!r) return false;
+            ghost_.erase(hashes.h2);
+            if (ghost_.size() >= mainCap_) ghost_.pop_back();
+            ghost_.push_front(hashes);
+            evictionCallback_(r->value);
+            return true;
+        }
+
+        // Pops Main's tail until one item leaves the cache. Returns false if
+        // nothing could be evicted.
+        bool evictMainTail() {
+            // Each pass over Main decrements every counter, so 1 + kCounterMax
+            // passes always reach a zero; the bound also covers racing Find()s.
+            size_t budget = main_.size() * (kCounterMax + 2);
+            for (size_t i = 0; i < budget && !main_.empty(); ++i) {
+                HashPair old = main_.back();
+                main_.pop_back();
+                auto counter = counterOf(old);
+                if (!counter) return true;  // already gone from the store
+                uint8_t c = counter->load(std::memory_order_relaxed);
+                if (c > 0 && i + 1 < budget) {
+                    counter->store(c - 1, std::memory_order_relaxed);
+                    main_.push_front(old);
+                    continue;
                 }
-                 if (evictionCallback_) evictionCallback_(r->value);
+                if (evictToGhost(old)) return true;
+                main_.push_front(old);
             }
+            return false;
+        }
+
+        // Pops Small's tail: promotes it to Main if it was re-accessed,
+        // otherwise evicts it. Returns true if an item left the cache.
+        bool evictSmallTail() {
+            HashPair old = small_.back();
+            small_.pop_back();
+            auto counter = counterOf(old);
+            if (!counter) return true;
+            if (counter->load(std::memory_order_relaxed) > 1) {
+                main_.push_front(old);
+                return main_.size() > mainCap_ ? evictMainTail() : false;
+            }
+            if (evictToGhost(old)) return true;
+            small_.push_front(old);
+            return false;
+        }
+
+        bool evictOneLocked() {
+            for (size_t i = 0, n = small_.size(); i < n; ++i) {
+                if (small_.empty() || (small_.size() < smallCap_ && !main_.empty())) break;
+                if (evictSmallTail()) return true;
+            }
+            return evictMainTail();
+        }
+
+        Error setLocked(const std::string& key, const Value& val) {
+            HashPair hashes = HashKey(key);
+            CMapSetResult result = store_.Set(key, val);
+            if (result.err != NO_ERR) return result.err;
+            if (!result.inserted) return NO_ERR;
+
+            if (ghost_.contains(hashes.h2)) {
+                ghost_.erase(hashes.h2);
+                main_.push_front(hashes);
+            } else {
+                small_.push_front(hashes);
+            }
+            // Evict only when the whole cache is over capacity: Small may use
+            // Main's share while Main is underfilled (e.g. during a scan).
+            while (small_.size() + main_.size() > capacity_ && evictOneLocked()) {}
+            return NO_ERR;
         }
 
     public:
         ConcurrentS3FIFO(size_t cap, CMapAllocFn af = CMapDefaultAlloc, CMapFreeFn ff = CMapDefaultFree)
-            : store_(cap, af, ff),
-              small_(cap),
-              main_(cap),
-              ghost_(cap),
+            : store_(cap + 1, af, ff),
+              small_(cap + 1),
+              main_(cap + 1),
+              ghost_(cap + 1),
               capacity_(cap) {
             smallCap_ = std::max(size_t(1), cap * kSmallRatio / 100);
             mainCap_ = cap > smallCap_ ? cap - smallCap_ : 1;
@@ -1445,39 +1603,16 @@ namespace NuAtlas {
 
         bool ForceEvictOne() {
             std::lock_guard<SpinLock> guard(lock_);
-            if (!main_.empty()) {
-                HashPair old = main_.back();
-                main_.pop_back();
-                if (ghostCount_ < mainCap_) {
-                    ghost_.insert(old.h2, 1);
-                    ghostCount_++;
-                }
-                auto r = store_.EvictWithAux(old);
-                if (r && evictionCallback_) evictionCallback_(r->value);
-                return true;
-            }
-            if (!small_.empty()) {
-                HashPair old = small_.back();
-                small_.pop_back();
-                if (ghostCount_ < mainCap_) {
-                    ghost_.insert(old.h2, 1);
-                    ghostCount_++;
-                }
-                auto r = store_.EvictWithAux(old);
-                if (r && evictionCallback_) evictionCallback_(r->value);
-                return true;
-            }
-            return false;
+            return evictOneLocked();
         }
 
         std::optional<Value> Find(const std::string& key) {
             HashPair hashes = HashKey(key);
             auto r = store_.FindWithAux(hashes);
             if (!r) return std::nullopt;
-            if (r->aux[0] < kCounterMax) {
-                unsigned char* p = const_cast<unsigned char*>(&r->aux[0]);
-                __atomic_add_fetch(p, 1, __ATOMIC_RELAXED);
-            }
+            std::atomic_ref<uint8_t> counter(*const_cast<uint8_t*>(&r->aux[0]));
+            if (counter.load(std::memory_order_relaxed) < kCounterMax)
+                counter.fetch_add(1, std::memory_order_relaxed);
             return r->value;
         }
 
@@ -1487,106 +1622,37 @@ namespace NuAtlas {
         }
 
         template <typename Fn>
-        Error FindAndUpdateInPlace(const std::string& key, size_t maxDataSize, Fn&& fn) {
-            return store_.UpdateInPlace(key, maxDataSize, std::forward<Fn>(fn));
-        }
-
-        template <typename Fn>
         Error UpdateInPlaceByHash(const HashPair& hashes, Fn&& fn) {
             return store_.UpdateInPlaceByHash(hashes, std::forward<Fn>(fn));
         }
 
         typename CMap<Value>::FindAndEraseResult Erase(const std::string& key) {
-            std::lock_guard<SpinLock> guard(lock_);
-            HashPair hashes = HashKey(key);
-            small_.erase(hashes.h2);
-            main_.erase(hashes.h2);
-            return store_.FindAndErase(key);
+            return EraseByHash(HashKey(key));
         }
 
         typename CMap<Value>::FindAndEraseResult EraseByHash(const HashPair& hashes) {
             std::lock_guard<SpinLock> guard(lock_);
-            small_.erase(hashes.h2);
-            main_.erase(hashes.h2);
-            return store_.FindAndEraseByHash(hashes);
+            auto result = store_.FindAndEraseByHash(hashes);
+            if (result.err == NO_ERR) {
+                small_.erase(hashes.h2);
+                main_.erase(hashes.h2);
+            }
+            return result;
         }
 
         bool MigrateAndLeaveSentinel(const HashPair& hashes, int destNode) {
-            std::lock_guard<SpinLock> guard(lock_);
-            small_.erase(hashes.h2);
-            main_.erase(hashes.h2);
-            return store_.FindAndEraseByHash(hashes);
+            return EraseByHash(hashes).err == NO_ERR;
         }
 
         Error Set(const std::string& key, const Value& val) {
             std::lock_guard<SpinLock> guard(lock_);
-
-            HashPair hashes = HashKey(key);
-            CMapSetResult result = store_.Set(key, val);
-            if (result.err != NO_ERR) return result.err;
-            if (!result.inserted) return NO_ERR;
-
-            if (ghost_.contains(hashes.h2)) {
-                ghost_.erase(hashes.h2);
-                ghostCount_--;
-                main_.push_front(hashes);
-                evictMainTail();
-            } else {
-                small_.push_front(hashes);
-                while (small_.size() > smallCap_) {
-                    evictSmallTail();
-                }
-            }
-
-            return NO_ERR;
+            return setLocked(key, val);
         }
 
         Error EvictAndSet(const std::string& key, const Value& val) {
             std::lock_guard<SpinLock> guard(lock_);
-
-            bool evicted = false;
-            if (!main_.empty()) {
-                HashPair old = main_.back();
-                main_.pop_back();
-                if (ghostCount_ < mainCap_) {
-                    ghost_.insert(old.h2, 1);
-                    ghostCount_++;
-                }
-                auto r = store_.FindAndEraseByHash(old);
-                if (r.value) evictionCallback_(*r.value);
-                evicted = true;
-            }
-            if (!evicted && !small_.empty()) {
-                HashPair old = small_.back();
-                small_.pop_back();
-                if (ghostCount_ < mainCap_) {
-                    ghost_.insert(old.h2, 1);
-                    ghostCount_++;
-                }
-                auto r = store_.FindAndEraseByHash(old);
-                if (r.value) evictionCallback_(*r.value);
-                evicted = true;
-            }
-            if (!evicted) return ABANDONED_SET;
-
-            HashPair hashes = HashKey(key);
-            CMapSetResult result = store_.Set(key, val);
-            if (result.err != NO_ERR) return result.err;
-            if (!result.inserted) return NO_ERR;
-
-            if (ghost_.contains(hashes.h2)) {
-                ghost_.erase(hashes.h2);
-                ghostCount_--;
-                main_.push_front(hashes);
-                evictMainTail();
-            } else {
-                small_.push_front(hashes);
-                while (small_.size() > smallCap_) {
-                    evictSmallTail();
-                }
-            }
-
-            return NO_ERR;
+            if (!evictOneLocked()) return ABANDONED_SET;
+            return setLocked(key, val);
         }
     };
 

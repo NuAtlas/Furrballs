@@ -1,14 +1,26 @@
 {
   "dependencies": [
     "benchmark",
+    "gtest",
     "lz4",
     {
       "name": "rocksdb", 
       "features": [ "tbb", "lz4" ]
     },
-    "xxhash",
-    "cachelib",
-    "libcuckoo",
-    "abseil"
-  ]
+    "xxhash"
+  ],
+  "features": {
+    "cachelib": {
+      "description": "Enable CacheLib adapter for benchmarks (Linux only)",
+      "dependencies": [ "cachelib" ]
+    },
+    "cuckoo": {
+      "description": "Enable libcuckoo adapter for benchmarks",
+      "dependencies": [ "libcuckoo" ]
+    },
+    "abseil": {
+      "description": "Enable Abseil adapter for benchmarks",
+      "dependencies": [ "abseil" ]
+    }
+  }
 }

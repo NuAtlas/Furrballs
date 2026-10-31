@@ -2,6 +2,8 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#include <psapi.h>
+#include <cstring>
 
 namespace NuAtlas::Numatic {
 
@@ -21,20 +23,31 @@ namespace NuAtlas::Numatic {
         return 1;
     }
 
+    static thread_local int sNodeOverride = -1;
+
     int GetCurrentNode() noexcept {
-        thread_local int node = -1;
-        if (node == -1) {
+        if (sNodeOverride >= 0) return sNodeOverride;
+        thread_local int node = [] {
+            PROCESSOR_NUMBER proc;
+            GetCurrentProcessorNumberEx(&proc);
             USHORT n;
-            if (GetNumaProcessorNode(GetCurrentProcessorNumber(), &n)) {
-                node = static_cast<int>(n);
-            }
-        }
+            return GetNumaProcessorNodeEx(&proc, &n) ? static_cast<int>(n) : 0;
+        }();
         return node;
     }
 
+    void SetCurrentNodeOverride(int nodeId) noexcept {
+        sNodeOverride = nodeId;
+    }
+
+    void ClearCurrentNodeOverride() noexcept {
+        sNodeOverride = -1;
+    }
+
     void PinCurrentThreadToNode(int nodeId) noexcept {
-        UCHAR nodeMask = 1 << nodeId;
-        SetThreadAffinityMask(GetCurrentThread(), reinterpret_cast<ULONG_PTR>(&nodeMask));
+        GROUP_AFFINITY affinity{};
+        if (GetNumaNodeProcessorMaskEx(static_cast<USHORT>(nodeId), &affinity))
+            SetThreadGroupAffinity(GetCurrentThread(), &affinity, nullptr);
     }
 
     void SetPreferredNode(int nodeId) noexcept {
@@ -96,9 +109,11 @@ namespace NuAtlas::Numatic {
 
     int GetPageNode(void* page) noexcept {
         if (!page) return -1;
-        MEMORY_BASIC_INFORMATION mbi;
-        if (VirtualQuery(page, &mbi, sizeof(mbi)) == 0) return -1;
-        return static_cast<int>(mbi.Node);
+        PSAPI_WORKING_SET_EX_INFORMATION info{};
+        info.VirtualAddress = page;
+        if (!QueryWorkingSetEx(GetCurrentProcess(), &info, sizeof(info))) return -1;
+        if (!info.VirtualAttributes.Valid) return -1;  // not resident yet
+        return static_cast<int>(info.VirtualAttributes.Node);
     }
 
     bool IsHugePagesAvailable() noexcept {

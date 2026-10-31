@@ -20,8 +20,6 @@ set(HEADERS
 
 add_library(Furrballs STATIC ${SOURCES} ${HEADERS})
 
-target_compile_options(Furrballs PUBLIC -mssse3 -mavx2 -mbmi2)
-
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR}/src PREFIX "Source Files" FILES ${SOURCES})
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR}/include PREFIX "Header Files" FILES ${HEADERS})
 
@@ -55,6 +53,21 @@ if(NOT xxHash_FOUND)
         INTERFACE_INCLUDE_DIRECTORIES "${XXHASH_INCLUDE_DIR}")
 endif()
 
+# Header-only core (CMap + policy stores), usable without RocksDB or NUMA.
+add_library(FurrballsCore INTERFACE)
+target_include_directories(FurrballsCore INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(FurrballsCore INTERFACE xxHash::xxhash)
+if(WIN32)
+    # Keep windows.h from defining min/max macros over std::min/std::max.
+    target_compile_definitions(FurrballsCore INTERFACE NOMINMAX)
+endif()
+if(MSVC)
+    target_compile_options(FurrballsCore INTERFACE /arch:AVX2)
+else()
+    target_compile_options(FurrballsCore INTERFACE -mssse3 -mavx2 -mbmi2)
+endif()
+
+target_link_libraries(Furrballs PUBLIC FurrballsCore)
 target_link_libraries(Furrballs PRIVATE lz4::lz4 RocksDB::rocksdb xxHash::xxhash Numatic)
 target_include_directories(Furrballs
 PUBLIC

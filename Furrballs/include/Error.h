@@ -3,7 +3,7 @@
 namespace NuAtlas
 {
     //C-style Enum, with spilling
-        enum Error
+    enum Error
     {
         // General
         NO_ERR              = 0,

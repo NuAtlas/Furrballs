@@ -16,8 +16,17 @@ endif()
 
 project("Furrballs")
 
+option(FURRBALLS_BUILD_TESTS "Build the unit tests" ON)
+option(FURRBALLS_BUILD_BENCHMARKS "Build the benchmarks" ON)
 option(SIMULATE_NUMA_LATENCY_NS "Simulate cross-node NUMA latency (nanoseconds). 0 = disabled." 0)
 
 add_subdirectory("numatic")
 add_subdirectory("Furrballs")
-add_subdirectory("Benchmark")
+if(FURRBALLS_BUILD_BENCHMARKS)
+  add_subdirectory("Benchmark")
+endif()
+
+if(FURRBALLS_BUILD_TESTS)
+  enable_testing()
+  add_subdirectory("tests")
+endif()
