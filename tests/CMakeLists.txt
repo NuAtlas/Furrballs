@@ -5,8 +5,10 @@ add_executable(FurrballsTests
     CMapTest.cpp
     PolicyTest.cpp
     ConcurrencyTest.cpp
+    MissRatioTest.cpp
 )
 
+target_include_directories(FurrballsTests PRIVATE ${CMAKE_SOURCE_DIR}/Benchmark)
 target_link_libraries(FurrballsTests PRIVATE FurrballsCore GTest::gtest_main Threads::Threads)
 
 include(GoogleTest)

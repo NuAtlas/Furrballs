@@ -1,3 +1,9 @@
+# Trace replay: policy miss ratios on real/synthetic traces. Needs only the
+# header-only core, so it builds without RocksDB/TBB/google-benchmark.
+find_package(Threads REQUIRED)
+add_executable(TraceReplay "TraceReplay.cpp" "TraceSim.h")
+target_link_libraries(TraceReplay PRIVATE FurrballsCore Threads::Threads)
+
 find_package(benchmark CONFIG QUIET)
 if(NOT benchmark_FOUND)
     find_library(BENCHMARK_LIBRARY NAMES benchmark)
