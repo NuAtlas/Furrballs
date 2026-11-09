@@ -311,12 +311,14 @@ namespace TraceSim {
 
     // Policy names accepted by Replay().
     inline const std::vector<std::string>& PolicyNames() {
-        static const std::vector<std::string> names = {"lru", "arc", "s3fifo", "ref-lru", "ref-fifo", "opt"};
+        static const std::vector<std::string> names = {"lru",         "arc",            "s3fifo",
+                                                       "sharded-lru", "sharded-arc",    "sharded-s3fifo",
+                                                       "ref-lru",     "ref-fifo",       "opt"};
         return names;
     }
 
     inline bool IsConcurrentPolicy(const std::string& policy) {
-        return policy == "lru" || policy == "arc" || policy == "s3fifo";
+        return policy == "lru" || policy == "arc" || policy == "s3fifo" || policy.starts_with("sharded-");
     }
 
     inline ReplayResult Replay(const std::string& policy, const Trace& trace, size_t cap, unsigned threads = 1) {
@@ -324,6 +326,12 @@ namespace TraceSim {
         if (policy == "lru") return ReplayConcurrent<ConcurrentLRU<ReplayValue>>(trace, cap, threads);
         if (policy == "arc") return ReplayConcurrent<ConcurrentARC<ReplayValue>>(trace, cap, threads);
         if (policy == "s3fifo") return ReplayConcurrent<ConcurrentS3FIFO<ReplayValue>>(trace, cap, threads);
+        if (policy == "sharded-lru")
+            return ReplayConcurrent<ShardedStore<ConcurrentLRU<ReplayValue>>>(trace, cap, threads);
+        if (policy == "sharded-arc")
+            return ReplayConcurrent<ShardedStore<ConcurrentARC<ReplayValue>>>(trace, cap, threads);
+        if (policy == "sharded-s3fifo")
+            return ReplayConcurrent<ShardedStore<ConcurrentS3FIFO<ReplayValue>>>(trace, cap, threads);
         if (policy == "ref-lru") return ReplayReference<RefLRU>(trace, cap);
         if (policy == "ref-fifo") return ReplayReference<RefFIFO>(trace, cap);
         if (policy == "opt") return ReplayBelady(trace, cap);

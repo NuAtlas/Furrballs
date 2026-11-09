@@ -33,7 +33,9 @@ template <class Store>
 class ConcurrentPolicyTest : public ::testing::Test {};
 
 using Stores = ::testing::Types<ConcurrentLRU<TestValue>, ConcurrentARC<TestValue>,
-                                ConcurrentS3FIFO<TestValue>>;
+                                ConcurrentS3FIFO<TestValue>, ShardedStore<ConcurrentLRU<TestValue>>,
+                                ShardedStore<ConcurrentARC<TestValue>>,
+                                ShardedStore<ConcurrentS3FIFO<TestValue>>>;
 TYPED_TEST_SUITE(ConcurrentPolicyTest, Stores);
 
 // Readers race erase/reinsert churn; a slot reused by another key between

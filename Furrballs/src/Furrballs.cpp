@@ -225,9 +225,11 @@ struct AnnexDrainBuf {
 
 template<typename Policy>
 struct PerNodeDetails{
+    using Store = typename Policy::template Store<KeyMeta>;
+
     Numatic::NumaLocalMemoryResource nodeMR;
     std::pmr::vector<Page> NodePages;
-    typename Policy::template Store<KeyMeta> KeyStore;
+    Store KeyStore;
     std::atomic<size_t> CurrentPage{0};
     std::atomic<size_t> StagingPageIdx{SIZE_MAX};
     void* PhysicalPageInNode = nullptr;
@@ -402,8 +404,20 @@ struct PerNodeDetails{
         return result;
     }
 
+    // A sharded store is shared by this node's threads, not the whole
+    // machine's: size its shard count from the node it is built on (callers
+    // construct PerNodeDetails on the node's pinned worker).
+    static Store MakeKeyStore(size_t cap, CMapAllocFn af, CMapFreeFn ff) {
+        if constexpr (requires { Store::DefaultShardCount(size_t{}, size_t{}); }) {
+            size_t nodeCpus = static_cast<size_t>(Numatic::GetNodeCpuCount(Numatic::GetCurrentNode()));
+            return Store(cap, Store::DefaultShardCount(cap, nodeCpus), af, ff);
+        } else {
+            return Store(cap, af, ff);
+        }
+    }
+
     PerNodeDetails(size_t arcCap, CMapAllocFn af = CMapDefaultAlloc, CMapFreeFn ff = CMapDefaultFree, bool useAnnex = false, size_t annexCap = 0)
-         : NodePages(&nodeMR), KeyStore(arcCap, af, ff), annexIdx(annexCap > 0 ? annexCap : 1), annexEnabled(useAnnex) {}
+         : NodePages(&nodeMR), KeyStore(MakeKeyStore(arcCap, af, ff)), annexIdx(annexCap > 0 ? annexCap : 1), annexEnabled(useAnnex) {}
 };
 
 template<typename Policy>
@@ -2045,3 +2059,6 @@ NuAtlas::FurrBall<Policy>::~FurrBall() noexcept {
 template class FurrBall<ArcPolicy>;
 template class FurrBall<LruPolicy>;
 template class FurrBall<S3FifoPolicy>;
+template class FurrBall<ShardedArcPolicy>;
+template class FurrBall<ShardedLruPolicy>;
+template class FurrBall<ShardedS3FifoPolicy>;

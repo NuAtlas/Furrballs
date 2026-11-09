@@ -8,6 +8,8 @@ namespace NuAtlas::Numatic {
     bool IsNUMAAvailable() noexcept;
     int GetNodeCount() noexcept;
     int GetCurrentNode() noexcept;
+    // Logical CPUs on a node (at least 1).
+    int GetNodeCpuCount(int nodeId) noexcept;
     void SetCurrentNodeOverride(int nodeId) noexcept;
     void ClearCurrentNodeOverride() noexcept;
     void PinCurrentThreadToNode(int nodeId) noexcept;

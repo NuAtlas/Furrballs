@@ -81,4 +81,17 @@ namespace NuAtlas {
         static uint8_t InitialState() noexcept { return 0; }
     };
 
+    template<class Inner> class ShardedStore;
+
+    // Any policy above, split into independent hash-partitioned shards (see
+    // ShardedStore): one lock per shard instead of one per cache.
+    template<class Base>
+    struct Sharded : Base {
+        template<typename Value> using Store = ShardedStore<typename Base::template Store<Value>>;
+    };
+
+    using ShardedArcPolicy    = Sharded<ArcPolicy>;
+    using ShardedLruPolicy    = Sharded<LruPolicy>;
+    using ShardedS3FifoPolicy = Sharded<S3FifoPolicy>;
+
 } // namespace NuAtlas

@@ -32,8 +32,10 @@ namespace {
             "Replay:\n"
             "  --sizes LIST          cache sizes; values < 1 are fractions of the unique keys\n"
             "                        (default 0.001,0.01,0.1)\n"
-            "  --policies LIST       lru,arc,s3fifo,ref-lru,ref-fifo,opt (default: all)\n"
-            "  --threads N           threads for lru/arc/s3fifo (default 1; others always 1)\n"
+            "  --policies LIST       lru,arc,s3fifo,sharded-lru,sharded-arc,sharded-s3fifo,\n"
+            "                        ref-lru,ref-fifo,opt (default: all)\n"
+            "  --threads N           threads for the concurrent policies (default 1;\n"
+            "                        ref-* and opt always run on one thread)\n"
             "  --csv-out PATH        also write results as CSV\n";
     }
 

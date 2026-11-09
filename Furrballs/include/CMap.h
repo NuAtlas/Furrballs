@@ -16,6 +16,7 @@
 #include <mutex>
 #include <vector>
 #include <unordered_map>
+#include <thread>
 
 namespace NuAtlas {
 
@@ -1058,6 +1059,8 @@ namespace NuAtlas {
         void setWakeCallback(std::function<void()> cb) { promoteBuf_.setWakeCallback(std::move(cb)); }
 
         void drainPromotes() {
+            std::lock_guard<SpinLock> guard(arcLock_);
+            drainPromoteBufAndApply();
         }
 
         void SetEvictionCallback(EvictionCallback cb) { evictionCallback_ = cb; }
@@ -1092,10 +1095,18 @@ namespace NuAtlas {
             HashPair hashes = HashKey(key);
             auto val = store_.FindByHash(hashes);
             if (!val) return std::nullopt;
-            // Promote inline: deferring ARC promotions lets a pending promote
-            // be evicted first, collapsing the hit rate (see 53a1422).
-            std::lock_guard<SpinLock> guard(arcLock_);
-            promoteLocked(hashes);
+            // Promote inline when the lock is free; otherwise defer to the
+            // ring, which every eviction decision drains first, so a pending
+            // promotion is never evicted ahead of being applied. If the ring
+            // is full, promote inline rather than lose the hint.
+            if (arcLock_.try_lock()) {
+                promoteLocked(hashes);
+                arcLock_.unlock();
+            } else if (!promoteBuf_.enqueue(hashes)) {
+                std::lock_guard<SpinLock> guard(arcLock_);
+                drainPromoteBufAndApply();
+                promoteLocked(hashes);
+            }
             return val;
         }
 
@@ -1143,6 +1154,7 @@ namespace NuAtlas {
 
         Error Set(const std::string& key, const Value& val) {
             std::lock_guard<SpinLock> guard(arcLock_);
+            drainPromoteBufAndApply();
 
             HashPair hashes = HashKey(key);
             uint64_t h2 = hashes.h2;
@@ -1178,6 +1190,7 @@ namespace NuAtlas {
 
         Error EvictAndSet(const std::string& key, const Value& val) {
             std::lock_guard<SpinLock> guard(arcLock_);
+            drainPromoteBufAndApply();
 
             bool evicted = false;
             if (!lists_.emptyT1() && (lists_.sizeT1() > p_ || lists_.emptyT2())) {
@@ -1233,77 +1246,6 @@ namespace NuAtlas {
             lists_.pushT1(hashes);
             return NO_ERR;
         }
-    };
-
-    template <class Value>
-        requires std::is_move_constructible_v<Value> && std::is_trivially_copyable_v<Value>
-    class FragmentedCMapStore {
-        struct alignas(64) Segment {
-            ConcurrentARC<Value> arc;
-            Segment(size_t cap, CMapAllocFn af, CMapFreeFn ff) : arc(cap, af, ff) {}
-        };
-
-        std::vector<std::unique_ptr<Segment>> segments_;
-        size_t numSegments_;
-
-    public:
-        using EvictionCallback = std::function<void(const Value&)>;
-
-        FragmentedCMapStore(size_t totalCapacity, size_t numSegments,
-                            CMapAllocFn af = CMapDefaultAlloc, CMapFreeFn ff = CMapDefaultFree)
-            : numSegments_(numSegments) {
-            size_t perSeg = totalCapacity / numSegments;
-            for (size_t i = 0; i < numSegments; i++) {
-                segments_.push_back(std::make_unique<Segment>(perSeg, af, ff));
-            }
-        }
-
-        void SetEvictionCallback(EvictionCallback cb) {
-            for (auto& seg : segments_) seg->arc.SetEvictionCallback(cb);
-        }
-        void setWakeCallback(std::function<void()>) {}
-        void drainPromotes() {}
-        uint8_t GetDesire(uint64_t) const { return 0; }
-
-        std::optional<Value> Find(const std::string& key) {
-            HashPair hashes = HashKey(key);
-            return segments_[hashes.h2 % numSegments_]->arc.Find(key);
-        }
-
-        Error Set(const std::string& key, const Value& val) {
-            HashPair hashes = HashKey(key);
-            return segments_[hashes.h2 % numSegments_]->arc.Set(key, val);
-        }
-
-        bool ForceEvictOne() {
-            for (auto& seg : segments_) {
-                if (seg->arc.ForceEvictOne()) return true;
-            }
-            return false;
-        }
-
-        typename CMap<Value>::FindAndEraseResult Erase(const std::string& key) {
-            HashPair hashes = HashKey(key);
-            return segments_[hashes.h2 % numSegments_]->arc.Erase(key);
-        }
-
-        auto EraseByHash(const HashPair& hashes) {
-            return segments_[hashes.h2 % numSegments_]->arc.EraseByHash(hashes);
-        }
-
-        template <typename Fn>
-        Error UpdateInPlace(const std::string& key, Fn&& fn) {
-            HashPair hashes = HashKey(key);
-            return segments_[hashes.h2 % numSegments_]->arc.UpdateInPlace(key, std::forward<Fn>(fn));
-        }
-
-        template <typename Fn>
-        Error UpdateInPlaceByHash(const HashPair& hashes, Fn&& fn) {
-            return segments_[hashes.h2 % numSegments_]->arc.UpdateInPlaceByHash(hashes, std::forward<Fn>(fn));
-        }
-
-        bool MigrateAndLeaveSentinel(const HashPair&, int) { return false; }
-        int FindSentinel(const HashPair&) const { return -1; }
     };
 
     template <class Value>
@@ -1655,5 +1597,116 @@ namespace NuAtlas {
             return setLocked(key, val);
         }
     };
+
+    // ============================================================================
+    //  ShardedStore: N independent policy instances, picked by key hash.
+    //
+    //  Every policy serializes misses (and ARC some hits) on one lock, and the
+    //  critical section touches list and slot lines last written by other
+    //  cores, so a single instance gets slower as threads are added. Sharding
+    //  splits that lock N ways. Each shard runs the policy over cap/N keys of
+    //  a hashed partition of the key space, which for reasonably sized shards
+    //  barely moves the miss ratio.
+    //
+    //  Shards are picked from h1 bits 32 and up; CMap uses h1's low bits for
+    //  the home group and h2 for fingerprints, so per-shard tables stay uniform.
+    // ============================================================================
+
+    template <class Inner>
+    class ShardedStore {
+        struct alignas(64) Shard {
+            Inner store;
+            Shard(size_t cap, CMapAllocFn af, CMapFreeFn ff) : store(cap, af, ff) {}
+        };
+
+        std::vector<std::unique_ptr<Shard>> shards_;
+        size_t mask_ = 0;
+        alignas(64) std::atomic<size_t> evictCursor_{0};
+
+        Inner& shardFor(const HashPair& hashes) const noexcept {
+            return shards_[(hashes.h1 >> 32) & mask_]->store;
+        }
+        Inner& shardFor(std::string_view key) const noexcept { return shardFor(HashKey(key)); }
+
+        // Smallest shard that still behaves like the policy it wraps.
+        static constexpr size_t kMinShardCapacity = 256;
+
+    public:
+        using EvictionCallback = typename Inner::EvictionCallback;
+
+        // A couple of shards per thread expected to use the store, as long as
+        // shards stay large. Pass the threads that actually share this store
+        // (for a per-NUMA-node store, that node's CPUs, not the machine's):
+        // every LRU/ARC shard carries its own fixed-size promotion ring.
+        static size_t DefaultShardCount(size_t capacity, size_t threads) noexcept {
+            size_t want = std::bit_ceil(2 * std::max<size_t>(1, threads));
+            size_t fit = std::bit_floor(std::max<size_t>(1, capacity / kMinShardCapacity));
+            return std::min(want, fit);
+        }
+        static size_t DefaultShardCount(size_t capacity) noexcept {
+            return DefaultShardCount(capacity, std::max(1u, std::thread::hardware_concurrency()));
+        }
+
+        ShardedStore(size_t capacity, CMapAllocFn af = CMapDefaultAlloc, CMapFreeFn ff = CMapDefaultFree)
+            : ShardedStore(capacity, DefaultShardCount(capacity), af, ff) {}
+
+        // numShards is rounded down to a power of two.
+        ShardedStore(size_t capacity, size_t numShards, CMapAllocFn af = CMapDefaultAlloc,
+                     CMapFreeFn ff = CMapDefaultFree) {
+            size_t n = std::bit_floor(std::clamp<size_t>(numShards, 1, std::max<size_t>(1, capacity)));
+            mask_ = n - 1;
+            for (size_t i = 0; i < n; i++) {
+                size_t cap = capacity / n + (i < capacity % n ? 1 : 0);
+                shards_.push_back(std::make_unique<Shard>(cap, af, ff));
+            }
+        }
+
+        size_t ShardCount() const noexcept { return shards_.size(); }
+
+        void SetEvictionCallback(const EvictionCallback& cb) {
+            for (auto& sh : shards_) sh->store.SetEvictionCallback(cb);
+        }
+        void setWakeCallback(const std::function<void()>& cb) {
+            for (auto& sh : shards_) sh->store.setWakeCallback(cb);
+        }
+        void drainPromotes() {
+            for (auto& sh : shards_) sh->store.drainPromotes();
+        }
+        uint8_t GetDesire(uint64_t) const { return 0; }
+
+        auto Find(const std::string& key) { return shardFor(key).Find(key); }
+        template <class Value>
+        Error Set(const std::string& key, const Value& val) { return shardFor(key).Set(key, val); }
+        template <class Value>
+        Error EvictAndSet(const std::string& key, const Value& val) { return shardFor(key).EvictAndSet(key, val); }
+        auto Erase(const std::string& key) { return shardFor(key).Erase(key); }
+        auto EraseByHash(const HashPair& hashes) { return shardFor(hashes).EraseByHash(hashes); }
+
+        template <typename Fn>
+        Error UpdateInPlace(const std::string& key, Fn&& fn) {
+            return shardFor(key).UpdateInPlace(key, std::forward<Fn>(fn));
+        }
+        template <typename Fn>
+        Error UpdateInPlaceByHash(const HashPair& hashes, Fn&& fn) {
+            return shardFor(hashes).UpdateInPlaceByHash(hashes, std::forward<Fn>(fn));
+        }
+
+        bool MigrateAndLeaveSentinel(const HashPair& hashes, int destNode) {
+            return shardFor(hashes).MigrateAndLeaveSentinel(hashes, destNode);
+        }
+        int FindSentinel(const HashPair&) const { return -1; }
+
+        // Rotates the starting shard so forced evictions spread across shards.
+        bool ForceEvictOne() {
+            size_t start = evictCursor_.fetch_add(1, std::memory_order_relaxed);
+            for (size_t i = 0; i < shards_.size(); i++)
+                if (shards_[(start + i) & mask_]->store.ForceEvictOne()) return true;
+            return false;
+        }
+    };
+
+    // ARC sharded by key hash (formerly a standalone class).
+    template <class Value>
+    using FragmentedCMapStore = ShardedStore<ConcurrentARC<Value>>;
 
 } // namespace NuAtlas

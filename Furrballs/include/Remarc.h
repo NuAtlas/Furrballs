@@ -24,8 +24,11 @@ namespace NuAtlas
                 if (!locked_.exchange(true, std::memory_order_acquire)) return;
             }
         }
+        // Test before exchanging: a failed try_lock must not write the line,
+        // or opportunistic callers (ARC hits) ping-pong it with the holder.
         bool try_lock() noexcept {
-            return !locked_.exchange(true, std::memory_order_acquire);
+            return !locked_.load(std::memory_order_relaxed) &&
+                   !locked_.exchange(true, std::memory_order_acquire);
         }
         void unlock() noexcept {
             locked_.store(false, std::memory_order_release);

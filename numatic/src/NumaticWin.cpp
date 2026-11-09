@@ -23,6 +23,14 @@ namespace NuAtlas::Numatic {
         return 1;
     }
 
+    int GetNodeCpuCount(int nodeId) noexcept {
+        GROUP_AFFINITY affinity{};
+        if (!GetNumaNodeProcessorMaskEx(static_cast<USHORT>(nodeId), &affinity)) return 1;
+        int count = 0;
+        for (KAFFINITY m = affinity.Mask; m; m &= m - 1) ++count;
+        return count > 0 ? count : 1;
+    }
+
     static thread_local int sNodeOverride = -1;
 
     int GetCurrentNode() noexcept {

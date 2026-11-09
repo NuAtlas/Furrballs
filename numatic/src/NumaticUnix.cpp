@@ -19,6 +19,17 @@ namespace NuAtlas::Numatic {
         return numa_max_node() + 1;
     }
 
+    int GetNodeCpuCount(int nodeId) noexcept {
+        if (!IsNUMAAvailable()) {
+            long n = sysconf(_SC_NPROCESSORS_ONLN);
+            return n > 0 ? static_cast<int>(n) : 1;
+        }
+        struct bitmask* mask = numa_allocate_cpumask();
+        int count = numa_node_to_cpus(nodeId, mask) == 0 ? static_cast<int>(numa_bitmask_weight(mask)) : 0;
+        numa_free_cpumask(mask);
+        return count > 0 ? count : 1;
+    }
+
     static thread_local int sNodeOverride = -1;
 
     int GetCurrentNode() noexcept {
