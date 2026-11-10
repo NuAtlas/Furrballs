@@ -987,8 +987,23 @@ namespace NuAtlas {
         SpinLock arcLock_;
         PromoteBuf promoteBuf_;
         size_t capacity_;
+        // ARC's c for p_, the ghost bounds and REPLACE. FurrBall's capacity_ is
+        // far above what memory holds, so a forced eviction (memory is full at
+        // this many resident keys) lowers it to the observed resident count.
+        // Set() still evicts residents only at the real capacity_.
+        size_t effCap_;
         size_t p_;
         EvictionCallback evictionCallback_ = [](const Value&) {};
+
+        bool residentFullLocked() const {
+            return lists_.sizeT1() + lists_.sizeT2() >= capacity_;
+        }
+
+        void trimGhostsLocked() {
+            while (lists_.sizeT1() + lists_.sizeB1() > effCap_ && !lists_.emptyB1()) lists_.popBackB1();
+            while (lists_.sizeT1() + lists_.sizeT2() + lists_.sizeB1() + lists_.sizeB2() > 2 * effCap_ &&
+                   !lists_.emptyB2()) lists_.popBackB2();
+        }
 
         void promoteLocked(const HashPair& hashes) {
             uint8_t lid = lists_.whichList(hashes.h2);
@@ -1029,14 +1044,17 @@ namespace NuAtlas {
         // ARC case IV (miss on a key in no list), Megiddo & Modha 2003. Dropping
         // a ghost entry only trims history; REPLACE is what makes room.
         bool evictLocked(uint64_t h2) {
+            size_t c = effCap_;
+            // Ghost bounds use c; resident keys are evicted only at the real capacity.
+            bool full = residentFullLocked();
             size_t l1 = lists_.sizeT1() + lists_.sizeB1();
             size_t total = l1 + lists_.sizeT2() + lists_.sizeB2();
-            if (l1 >= capacity_) {
-                if (lists_.sizeT1() < capacity_ && !lists_.emptyB1()) {
+            if (l1 >= c) {
+                if (lists_.sizeT1() < c && !lists_.emptyB1()) {
                     lists_.popBackB1();
-                    return replaceLocked(h2);
+                    return full ? replaceLocked(h2) : true;
                 }
-                if (lists_.emptyT1()) return true;
+                if (!full || lists_.emptyT1()) return true;
                 HashPair hashes = lists_.backT1();
                 auto result = store_.FindAndEraseByHash(hashes);
                 if (result.err != NO_ERR) { return false; }
@@ -1044,9 +1062,9 @@ namespace NuAtlas {
                 if (result.value) evictionCallback_(*result.value);
                 return true;
             }
-            if (total >= capacity_) {
-                if (total >= 2 * capacity_ && !lists_.emptyB2()) lists_.popBackB2();
-                return replaceLocked(h2);
+            if (total >= c) {
+                if (total >= 2 * c && !lists_.emptyB2()) lists_.popBackB2();
+                return full ? replaceLocked(h2) : true;
             }
             return true;
         }
@@ -1054,7 +1072,7 @@ namespace NuAtlas {
     public:
         ConcurrentARC(size_t cap, CMapAllocFn af = CMapDefaultAlloc, CMapFreeFn ff = CMapDefaultFree)
             : store_(cap, af, ff), lists_(cap),
-              capacity_(cap), p_(0) {}
+              capacity_(cap), effCap_(cap), p_(0) {}
 
         void setWakeCallback(std::function<void()> cb) { promoteBuf_.setWakeCallback(std::move(cb)); }
 
@@ -1068,6 +1086,11 @@ namespace NuAtlas {
         bool ForceEvictOne() {
             std::lock_guard<SpinLock> guard(arcLock_);
             drainPromoteBufAndApply();
+            size_t resident = lists_.sizeT1() + lists_.sizeT2();
+            if (resident == 0) return false;
+            effCap_ = std::min(capacity_, resident);
+            p_ = std::min(p_, effCap_);
+            trimGhostsLocked();
             if (!lists_.emptyT1() && (lists_.sizeT1() > p_ || lists_.emptyT2())) {
                 HashPair old = lists_.backT1();
                 auto result = store_.FindAndEraseByHash(old);
@@ -1168,8 +1191,8 @@ namespace NuAtlas {
 
             if (lists_.containsB1(h2)) {
                 size_t delta1 = lists_.sizeB1() > 0 ? lists_.sizeB2() / lists_.sizeB1() : 1;
-                p_ = std::min(capacity_, p_ + std::max(delta1, (size_t)1));
-                replaceLocked(h2);  // key is already stored: never orphan it on a failed eviction
+                p_ = std::min(effCap_, p_ + std::max(delta1, (size_t)1));
+                if (residentFullLocked()) replaceLocked(h2);  // key is already stored: never orphan it on a failed eviction
                 lists_.promoteB1toT2(hashes);
                 return NO_ERR;
             }
@@ -1178,7 +1201,7 @@ namespace NuAtlas {
                 size_t delta2 = lists_.sizeB2() > 0 ? lists_.sizeB1() / lists_.sizeB2() : 1;
                 size_t dec = std::max(delta2, (size_t)1);
                 p_ = (p_ >= dec) ? p_ - dec : 0;
-                replaceLocked(h2);  // key is already stored: never orphan it on a failed eviction
+                if (residentFullLocked()) replaceLocked(h2);  // key is already stored: never orphan it on a failed eviction
                 lists_.promoteB2toT2(hashes);
                 return NO_ERR;
             }
@@ -1227,8 +1250,8 @@ namespace NuAtlas {
 
             if (lists_.containsB1(h2)) {
                 size_t delta1 = lists_.sizeB1() > 0 ? lists_.sizeB2() / lists_.sizeB1() : 1;
-                p_ = std::min(capacity_, p_ + std::max(delta1, (size_t)1));
-                replaceLocked(h2);  // key is already stored: never orphan it on a failed eviction
+                p_ = std::min(effCap_, p_ + std::max(delta1, (size_t)1));
+                if (residentFullLocked()) replaceLocked(h2);  // key is already stored: never orphan it on a failed eviction
                 lists_.promoteB1toT2(hashes);
                 return NO_ERR;
             }
@@ -1237,7 +1260,7 @@ namespace NuAtlas {
                 size_t delta2 = lists_.sizeB2() > 0 ? lists_.sizeB1() / lists_.sizeB2() : 1;
                 size_t dec = std::max(delta2, (size_t)1);
                 p_ = (p_ >= dec) ? p_ - dec : 0;
-                replaceLocked(h2);  // key is already stored: never orphan it on a failed eviction
+                if (residentFullLocked()) replaceLocked(h2);  // key is already stored: never orphan it on a failed eviction
                 lists_.promoteB2toT2(hashes);
                 return NO_ERR;
             }
@@ -1434,8 +1457,6 @@ namespace NuAtlas {
         FlatList ghost_;
         SpinLock lock_;
         size_t capacity_;
-        size_t smallCap_;
-        size_t mainCap_;
         EvictionCallback evictionCallback_ = [](const Value&) {};
 
         // Counter of a resident key, or nullptr if the key left the store.
@@ -1445,13 +1466,29 @@ namespace NuAtlas {
             return std::atomic_ref<uint8_t>(*const_cast<uint8_t*>(&r->aux[0]));
         }
 
+        // Small/Main targets and the Ghost bound follow what is resident, not the
+        // constructor capacity: under memory-driven eviction (ForceEvictOne) the
+        // capacity can be many times what fits, which would pin Small below
+        // target and drain Main. In key-capacity mode eviction starts at
+        // resident == capacity_, so these match the fixed split there.
+        size_t residentTarget() const {
+            return std::min(capacity_, small_.size() + main_.size());
+        }
+        size_t smallTarget() const {
+            return std::max(size_t(1), residentTarget() * kSmallRatio / 100);
+        }
+        size_t mainTarget() const {
+            size_t res = residentTarget(), smallSz = smallTarget();
+            return res > smallSz ? res - smallSz : 1;
+        }
+
         // Removes the key from the store and records it in Ghost.
         // Fails only if the slot is momentarily held by an in-place update.
         bool evictToGhost(const HashPair& hashes) {
             auto r = store_.EvictWithAux(hashes);
             if (!r) return false;
             ghost_.erase(hashes.h2);
-            if (ghost_.size() >= mainCap_) ghost_.pop_back();
+            if (ghost_.size() >= mainTarget()) ghost_.pop_back();
             ghost_.push_front(hashes);
             evictionCallback_(r->value);
             return true;
@@ -1489,7 +1526,7 @@ namespace NuAtlas {
             if (!counter) return true;
             if (counter->load(std::memory_order_relaxed) > 1) {
                 main_.push_front(old);
-                return main_.size() > mainCap_ ? evictMainTail() : false;
+                return main_.size() > mainTarget() ? evictMainTail() : false;
             }
             if (evictToGhost(old)) return true;
             small_.push_front(old);
@@ -1498,7 +1535,7 @@ namespace NuAtlas {
 
         bool evictOneLocked() {
             for (size_t i = 0, n = small_.size(); i < n; ++i) {
-                if (small_.empty() || (small_.size() < smallCap_ && !main_.empty())) break;
+                if (small_.empty() || (small_.size() < smallTarget() && !main_.empty())) break;
                 if (evictSmallTail()) return true;
             }
             return evictMainTail();
@@ -1528,10 +1565,7 @@ namespace NuAtlas {
               small_(cap + 1),
               main_(cap + 1),
               ghost_(cap + 1),
-              capacity_(cap) {
-            smallCap_ = std::max(size_t(1), cap * kSmallRatio / 100);
-            mainCap_ = cap > smallCap_ ? cap - smallCap_ : 1;
-        }
+              capacity_(cap) {}
 
         ~ConcurrentS3FIFO() = default;
 

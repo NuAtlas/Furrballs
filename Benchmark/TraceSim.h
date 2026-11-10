@@ -309,6 +309,45 @@ namespace TraceSim {
         return r;
     }
 
+    // Replay the way FurrBall drives a store: its key capacity is `slack`
+    // times what fits (FurrBall sizes it as bytes / sizeof(KeyMeta)), and
+    // eviction comes from memory pressure through ForceEvictOne() once `cap`
+    // keys are resident. Single-threaded.
+    template <class Store>
+    ReplayResult ReplayForced(const Trace& trace, size_t cap, size_t slack) {
+        Store store(cap * slack);
+        size_t resident = 0;
+        store.SetEvictionCallback([&](const ReplayValue&) { resident--; });
+        ReplayResult r;
+        auto t0 = std::chrono::steady_clock::now();
+        for (uint64_t id : trace) {
+            std::string key = IdKey(id);
+            if (store.Find(key)) continue;
+            r.misses++;
+            while (resident >= cap && store.ForceEvictOne()) {}
+            if (store.Set(key, ReplayValue{&store, 1, id}) == NuAtlas::NO_ERR) resident++;
+            else r.failedSets++;
+        }
+        r.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        r.requests = trace.size();
+        return r;
+    }
+
+    // ReplayForced for the concurrent policies, by Replay() name.
+    inline ReplayResult ReplayForced(const std::string& policy, const Trace& trace, size_t cap, size_t slack) {
+        using namespace NuAtlas;
+        if (policy == "lru") return ReplayForced<ConcurrentLRU<ReplayValue>>(trace, cap, slack);
+        if (policy == "arc") return ReplayForced<ConcurrentARC<ReplayValue>>(trace, cap, slack);
+        if (policy == "s3fifo") return ReplayForced<ConcurrentS3FIFO<ReplayValue>>(trace, cap, slack);
+        if (policy == "sharded-lru")
+            return ReplayForced<ShardedStore<ConcurrentLRU<ReplayValue>>>(trace, cap, slack);
+        if (policy == "sharded-arc")
+            return ReplayForced<ShardedStore<ConcurrentARC<ReplayValue>>>(trace, cap, slack);
+        if (policy == "sharded-s3fifo")
+            return ReplayForced<ShardedStore<ConcurrentS3FIFO<ReplayValue>>>(trace, cap, slack);
+        throw std::invalid_argument("not a concurrent policy: " + policy);
+    }
+
     // Policy names accepted by Replay().
     inline const std::vector<std::string>& PolicyNames() {
         static const std::vector<std::string> names = {"lru",         "arc",            "s3fifo",

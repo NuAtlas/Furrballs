@@ -142,3 +142,53 @@ TEST(S3FIFO, GhostReadmitsRecentlyEvictedKey) {
     for (size_t i = 6000; i < 7000; i++) s.Set(Key(i), MakeValue(i));
     EXPECT_TRUE(s.Find("g").has_value());
 }
+
+// Random mix of caller-forced and Set-driven eviction, erases and re-inserts
+// at varying resident counts: bookkeeping (lists, ghosts) must stay in bounds
+// and every key must be accounted for.
+TYPED_TEST(PolicyTest, RandomOpsWithForcedEviction) {
+    const size_t cap = TestFixture::kCap, keyRange = 6 * cap;
+    std::mt19937_64 rng(7);
+    std::vector<bool> present(keyRange, false);
+    size_t erased = 0, inserted = 0;
+    size_t forcedLimit = cap / 2;  // what "memory" holds; changes over time
+    this->store.SetEvictionCallback([&](const TestValue& v) {
+        this->evicted++;
+        present[v.id] = false;
+    });
+    auto resident = [&] { return inserted - erased - this->evicted; };
+
+    for (size_t i = 0; i < 400000; i++) {
+        if (i % 50000 == 0) forcedLimit = cap / 8 + rng() % cap;
+        size_t k = rng() % 4 ? rng() % (keyRange / 8) : rng() % keyRange;
+        switch (rng() % 8) {
+        case 0:
+            if (this->store.Erase(Key(k)).err == NO_ERR) {
+                ASSERT_TRUE(present[k]);
+                present[k] = false;
+                erased++;
+            }
+            break;
+        case 1:
+        case 2:
+        case 3:
+            this->store.Find(Key(k));
+            break;
+        default:
+            if (this->store.Find(Key(k))) break;
+            while (resident() >= forcedLimit && this->store.ForceEvictOne()) {}
+            ASSERT_EQ(this->store.Set(Key(k), MakeValue(k)), NO_ERR);
+            ASSERT_FALSE(present[k]);
+            present[k] = true;
+            inserted++;
+        }
+        ASSERT_LE(resident(), cap);
+    }
+    size_t live = 0;
+    for (size_t k = 0; k < keyRange; k++) {
+        bool found = this->store.Find(Key(k)).has_value();
+        ASSERT_EQ(found, bool(present[k])) << k;
+        live += found;
+    }
+    EXPECT_EQ(live, resident());
+}

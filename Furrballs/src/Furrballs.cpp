@@ -509,6 +509,17 @@ void NuAtlas::FurrBall<Policy>::OnEvict(const size_t& key, Page*& page) noexcept
     }
 }
 
+namespace {
+    // What the store's eviction callback just freed on this thread. The store
+    // invokes the callback synchronously inside ForceEvictOne(), so
+    // EvictOneKey reads it back there to get the freed size.
+    struct LastStoreEviction {
+        size_t Size = 0;
+        uint64_t H2 = 0;
+    };
+    thread_local LastStoreEviction tlLastStoreEviction;
+}
+
 template<typename Policy>
 void NuAtlas::FurrBall<Policy>::OnKeyEvict(int nodeID, const KeyMeta& meta) noexcept {
     auto* details = DataMembers->privateNumaState->NodeDetails[nodeID];
@@ -543,6 +554,7 @@ void NuAtlas::FurrBall<Policy>::OnKeyEvict(int nodeID, const KeyMeta& meta) noex
 
     Stats.EvictionCount.fetch_add(1, std::memory_order_relaxed);
     Stats.PerKeyEvictionCount.fetch_add(1, std::memory_order_relaxed);
+    tlLastStoreEviction = {meta.DataSize, meta.KeyHash.h2};
 }
 
 template<typename Policy>
@@ -728,6 +740,21 @@ size_t NuAtlas::FurrBall<Policy>::EvictOneKey(int nodeID) noexcept {
 
     auto* details = DataMembers->privateNumaState->NodeDetails[nodeID];
     if (!details) return 0;
+
+    // The store's policy picks the victim; OnKeyEvict (its eviction callback)
+    // already freed the slot and counted the eviction.
+    if constexpr (Policy::HasStoreEviction && !Policy::HasPerKeyState) {
+        tlLastStoreEviction = {};
+        if (!details->KeyStore.ForceEvictOne()) return 0;
+        LastStoreEviction freed = tlLastStoreEviction;
+        if (!Volatile && freed.H2 != 0) {
+            details->FrozenLock.lock();
+            details->KeyNames.erase(freed.H2);
+            details->FrozenIndex.erase(freed.H2);
+            details->FrozenLock.unlock();
+        }
+        return freed.Size;
+    }
 
     size_t bestPageIdx = SIZE_MAX;
     size_t bestKeyIdx = SIZE_MAX;
@@ -1017,8 +1044,14 @@ void NuAtlas::FurrBall<Policy>::BackgroundEvict(int nodeID) noexcept {
 
     // --- Phase 2: Reserve replenishment (reactive) ---
     while (details->ReserveLow()) {
-        size_t freedSz = EvictOneKey(nodeID);
-        if (freedSz == 0) break;
+        // A store-chosen victim is scattered across pages, so evicting for the
+        // reserve would drain the cache without emptying a page: only adopt a
+        // page that is already empty, once per pass.
+        constexpr bool kStoreChosen = Policy::HasStoreEviction && !Policy::HasPerKeyState;
+        if constexpr (!kStoreChosen) {
+            size_t freedSz = EvictOneKey(nodeID);
+            if (freedSz == 0) break;
+        }
 
         for (size_t p = 0; p < details->NodePages.size(); p++) {
             Page& page = details->NodePages[p];
@@ -1029,6 +1062,7 @@ void NuAtlas::FurrBall<Policy>::BackgroundEvict(int nodeID) noexcept {
                 break;
             }
         }
+        if constexpr (kStoreChosen) break;
     }
 
     // --- Phase 3: Page drain compaction (proactive) ---

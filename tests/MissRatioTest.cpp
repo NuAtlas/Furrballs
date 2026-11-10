@@ -97,3 +97,48 @@ TEST(ShardedStore, ShardCountStaysPowerOfTwoAndCoversCapacity) {
     EXPECT_LE(live, 1000u);
     EXPECT_GE(live, 950u);  // every shard fills to its own capacity
 }
+
+// --- Memory-driven eviction (how FurrBall uses the stores) ---
+// FurrBall gives a store far more key capacity than fits in memory and evicts
+// through ForceEvictOne() under page pressure. A policy must behave the same
+// whether it is told its real capacity or an inflated one.
+
+namespace {
+    constexpr size_t kSlacks[] = {2, 25, 100};
+    constexpr const char* kPolicies[] = {"lru", "arc", "s3fifo"};
+}
+
+TEST(ForcedEviction, MatchesKeyCapacityMode) {
+    for (const Trace* trace : {&ZipfTrace(), &ScanTrace()})
+        for (size_t cap : kCaps)
+            for (const char* p : kPolicies) {
+                double keyMode = Replay(p, *trace, cap).MissRatio();
+                for (size_t slack : kSlacks) {
+                    ReplayResult forced = ReplayForced(p, *trace, cap, slack);
+                    EXPECT_EQ(forced.failedSets, 0u);
+                    EXPECT_NEAR(forced.MissRatio(), keyMode, 0.03)
+                        << p << " cap=" << cap << " slack=" << slack << (trace == &ScanTrace() ? " scan" : " zipf");
+                }
+            }
+}
+
+TEST(ForcedEviction, AdaptivePoliciesStillBeatLRU) {
+    for (const Trace* trace : {&ZipfTrace(), &ScanTrace()})
+        for (size_t cap : kCaps) {
+            double lru = Replay("ref-lru", *trace, cap).MissRatio();
+            for (const char* p : {"arc", "s3fifo", "sharded-arc", "sharded-s3fifo"}) {
+                // Shards of a 200-key cache are too small to judge a policy by.
+                if (cap < 2000 && std::string(p).starts_with("sharded-")) continue;
+                EXPECT_LT(ReplayForced(p, *trace, cap, 25).MissRatio(), lru - 0.02)
+                    << p << " cap=" << cap << (trace == &ScanTrace() ? " scan" : " zipf");
+            }
+        }
+}
+
+// A store that is told its exact capacity must behave the same whether the
+// caller or Set() triggers the eviction.
+TEST(ForcedEviction, ExactCapacityIsUnchanged) {
+    for (const char* p : kPolicies)
+        EXPECT_NEAR(ReplayForced(p, ZipfTrace(), 2000, 1).MissRatio(), Replay(p, ZipfTrace(), 2000).MissRatio(), 0.002)
+            << p;
+}
